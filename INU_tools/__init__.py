@@ -4599,6 +4599,22 @@ def register():
     # Blender at draw time when the user is on a non-Russian UI.
     _register_blender_translations()
 
+    # Blender's native i18n only kicks in when "Translate Interface" is ON.
+    # This addon's source strings are Russian, so with that toggle OFF a
+    # non-Russian user sees raw Russian everywhere (only English-source labels
+    # like "Lighting" render, and Blender translates those itself). Auto-enable
+    # it for a non-Russian locale so our registered translations actually apply.
+    # Russian/empty/unknown locales are left untouched — the source already IS
+    # Russian, and we must not force-translate Blender's own UI for them.
+    try:
+        _loc = (bpy.app.translations.locale or '').lower()
+        _view = bpy.context.preferences.view
+        if (_loc and not _loc.startswith('ru')
+                and not getattr(_view, 'use_translate_interface', True)):
+            _view.use_translate_interface = True
+    except Exception:                                    # noqa: BLE001
+        pass
+
     # Load our PNG icons into a bpy.utils.previews collection so
     # `icon_value=icon_previews.get('NAME')` works in panel draw().
     from .data import icon_previews
