@@ -312,6 +312,50 @@ class GTATOOLS_OT_col_surface_menu(bpy.types.Operator):
 # enclosing class/method wrapper is gone. Each takes (layout, mat) so
 # they're testable and reusable from elsewhere.
 
+class GTATOOLS_OT_auto_find_lod(bpy.types.Operator):
+    """Найти LOD выделенных моделей в сцене по имени и подставить их в «LOD partner».
+
+    Для каждой выделенной модели ищется её LOD-двойник среди объектов сцены
+    (то же базовое имя, а имя несёт маркер lod — распознаётся тем же
+    классификатором, что и весь аддон) и записывается в lod_object. Сами
+    LOD-объекты в выделении пропускаются."""
+    bl_idname = "gtatools.auto_find_lod"
+    bl_label = "INU: Найти LOD автоматически"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        from ..tools.model_utils import get_model_type
+        sel = [o for o in context.selected_objects if o.type == 'MESH']
+        if not sel:
+            self.report({'WARNING'}, T("Выдели модели"))
+            return {'CANCELLED'}
+        # Индекс всех LOD сцены по базовому имени (первый побеждает).
+        lod_by_base = {}
+        for o in context.scene.objects:
+            if o.type != 'MESH':
+                continue
+            mt, base = get_model_type(o)
+            if mt == 'LOD' and base:
+                lod_by_base.setdefault(base.rstrip('_'), o)
+        found = missing = 0
+        for obj in sel:
+            inu = getattr(obj, 'inu', None)
+            if inu is None:
+                continue
+            mt, base = get_model_type(obj)
+            if mt == 'LOD':
+                continue                       # сам LOD — не ищем ему LOD
+            lod = lod_by_base.get((base or '').rstrip('_'))
+            if lod is not None and lod is not obj:
+                inu.lod_object = lod
+                found += 1
+            else:
+                missing += 1
+        self.report({'INFO'},
+                    T("LOD найден: {0}, не найдено: {1}").format(found, missing))
+        return {'FINISHED'}
+
+
 class GTATOOLS_OT_batch_set_distance(bpy.types.Operator):
     """Задать Draw Distance и/или LOD Distance всем выделенным MESH-объектам.
 

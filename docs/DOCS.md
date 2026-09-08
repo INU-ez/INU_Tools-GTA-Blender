@@ -171,7 +171,7 @@ The active game is picked from the top of the **GTA Tools** N-sidebar — three 
 **Automatic on import:** the import operators (DFF/COL/IPL/TXD/IMG) have a "Game" dropdown in the file browser sidebar with **Auto** as the default. Auto reads the file's header/columns and stamps the right game on imported objects. If the detected game differs from the active scene's:
 
 - **Fresh scene (game=SA + 0 INU-tagged objects):** scene auto-flips to detected.
-- **Populated scene:** WARNING shown — `Импортированный файл = VC, но активная игра сцены = SA. Переключи вкладку GTA Tools на «VC»`. Tab switch is manual to avoid surprise flips in mixed-game projects.
+- **Populated scene:** WARNING shown — `Imported file = VC, but the scene's active game = SA. Switch the GTA Tools tab to "VC"`. Tab switch is manual to avoid surprise flips in mixed-game projects.
 
 **On export:** every export dialog opens with an **"Export to game:"** block at the very top — a PC/Mobile row over a SA/VC/III row — that sets the output's RW version (III 3.3 / VC 3.4 / SA 3.6) and IPL/IDE column layout. It defaults to the project game (set by auto-detect on import); override it right before exporting.
 
@@ -187,7 +187,7 @@ When you import a III file and export it as SA (or vice versa), the writer route
 
 ### Validate Scene — cross-game warnings
 
-When the scene targets III/VC but objects still carry SA-only features, **Проверка перед экспортом** flags them:
+When the scene targets III/VC but objects still carry SA-only features, **Validate before export** flags them:
 
 - `model_id > vanilla_max` (would need FLA)
 - `has_night_vcols` (SA-only RW extension)
@@ -254,7 +254,7 @@ in uint16 (max 65536). Split the mesh or simplify (Decimate).
 | Export COL | `gtatools.export_col` | Export as COL3 format |
 | Generate COL | `gtatools.auto_col` | Build a collision mesh from the selected model — **Convex hull** or **Bounding box** |
 
-**Generate COL** (`gtatools.auto_col`, button "Сгенерировать COL" in the Export/Import section): select a model and it creates an editable `<name>_COL` mesh, either a **convex hull** ("Выпуклая оболочка") or an axis-aligned **bounding box** ("Габаритный бокс"). The mesh is tagged `inu.type='COL'` and flows into normal COL export; you can edit it afterwards like any COL.
+**Generate COL** (`gtatools.auto_col`, button "Generate COL" in the Export/Import section): select a model and it creates an editable `<name>_COL` mesh, either a **convex hull** ("Convex Hull") or an axis-aligned **bounding box** ("Bounding Box"). The mesh is tagged `inu.type='COL'` and flows into normal COL export; you can edit it afterwards like any COL.
 
 COL export writes surface material IDs and keeps the geometry in model-local space. It bakes the object's **scale** but **not its rotation** — a viewport rotation is placement (it belongs in the IPL), so it is never baked into the collision, and the COL matches the DFF under the same IPL placement.
 
@@ -329,22 +329,22 @@ Drag PNG/JPG/TGA images from File Browser into the 3D viewport to automatically 
 
 ### Multi-select DFF Import (2.1.0)
 
-**Menu:** File → Import → **INU Import** *(or View3D → Sidebar (N) → GTA Tools → Экспорт / Импорт → **DFF**)*
+**Menu:** File → Import → **INU Import** *(or View3D → Sidebar (N) → GTA Tools → Export / Import → **DFF**)*
 
 The DFF importer now accepts many files at once. Ctrl- or Shift-click any number of `.dff` files in the file browser and every one is imported as a separate model in a single run, with a live progress bar (press **ESC** to abort — models already built stay in the scene).
 
 **Pipeline:**
-1. In the N-panel open **GTA Tools → Экспорт / Импорт** and click the **Импорт** *(Import)* button, then pick **DFF** — or use the popover **DFF** entry directly.
+1. In the N-panel open **GTA Tools → Export / Import** and click the **Import** button, then pick **DFF** — or use the popover **DFF** entry directly.
 2. In the file browser, Ctrl/Shift-select all the `.dff` files you want.
-3. (Optional) In the sidebar set **Игра** *(Game)* — leave on **Авто-определение** *(Auto-detect)* to read each file's RW version, or force III / Vice City / San Andreas.
-4. (Optional) toggle **Авто TXD** *(Auto TXD)* — see *smart TXD auto-pull* below.
+3. (Optional) In the sidebar set **Game** — leave on **Auto-detect** to read each file's RW version, or force III / Vice City / San Andreas.
+4. (Optional) toggle **Auto TXD** — see *smart TXD auto-pull* below.
 5. Click **Import DFF**. Each selected file is parsed and built in turn; the status bar shows `current/total`.
 
 **What you get automatically (no extra clicks):**
 
 | Feature | What it does |
 | --- | --- |
-| Smart TXD auto-pull | With **Авто TXD** on, for each DFF the addon looks for a matching `.txd` next to it: ① `<dffname>.txd` in the same folder, ② a `.txd` covering ≥50% of the DFF's textures (highest coverage wins, smaller file breaks ties), ③ the only `.txd` in the folder. Only the textures that DFF actually references are decoded, so dropping a model into an already-loaded map stays fast. |
+| Smart TXD auto-pull | With **Auto TXD** on, for each DFF the addon looks for a matching `.txd` next to it: ① `<dffname>.txd` in the same folder, ② a `.txd` covering ≥50% of the DFF's textures (highest coverage wins, smaller file breaks ties), ③ the only `.txd` in the folder. Only the textures that DFF actually references are decoded, so dropping a model into an already-loaded map stays fast. |
 | LOD-aware naming | A file recognised as a LOD (e.g. `LODham_orz_str_18`) is named `ham_orz_str_18_LOD`; normal models get the `_DFF` suffix. Multi-part DFFs keep clean frame names. |
 | Auto weld + sharpen | Map/terrain meshes (no authored normals) are welded and their hard edges split right into the geometry — no piles of EdgeSplit modifiers, so FPS stays high. |
 | Custom split normals | The DFF's per-vertex normals are re-applied as custom split normals, so the model shades **exactly** as it was authored (hard/soft edges preserved). |
@@ -357,7 +357,7 @@ The DFF importer now accepts many files at once. Ctrl- or Shift-click any number
 
 **Menu:** File → Import → **INU Import**
 
-The **INU Import** dialog is a pure dispatcher: it imports **exactly** the files you tick, each through its own importer by extension. The sidebar header **Показывать форматы:** *(Show formats:)* has six toggle buttons that filter which file types the browser shows:
+The **INU Import** dialog is a pure dispatcher: it imports **exactly** the files you tick, each through its own importer by extension. The sidebar header **Show formats:** has six toggle buttons that filter which file types the browser shows:
 
 | Toggle | Extension |
 | --- | --- |
@@ -376,23 +376,23 @@ The **INU Import** dialog is a pure dispatcher: it imports **exactly** the files
 
 ### Export DFF — per model (2.1.0)
 
-**Panel:** View3D → Sidebar (N) → GTA Tools → Экспорт / Импорт → **DFF** (under the **Экспорт** *(Export)* popover)
+**Panel:** View3D → Sidebar (N) → GTA Tools → Export / Import → **DFF** (under the **Export** popover)
 
 The mirror of multi-select import: select several models and get **one `.dff` per model**, each named from its model name. Parts of a single model (a hierarchy) export into one file.
 
 **Pipeline:**
 1. Select the model(s) in the viewport. The panel's top box shows the detected **DFF / LOD / COL** counts so you can confirm the batch size.
-2. Open the **Экспорт** popover and click **DFF**.
-3. In the file browser pick the destination **folder**. The sidebar reminds you *"Каждая выделенная модель → свой .dff"* (each selected model → its own `.dff`) and shows the **Pipeline + DFF Flags** block (these come straight from each object's N-panel DFF Flags — no separate export override).
+2. Open the **Export** popover and click **DFF**.
+3. In the file browser pick the destination **folder**. The sidebar reminds you *"Each selected model → its own .dff"* and shows the **Pipeline + DFF Flags** block (these come straight from each object's N-panel DFF Flags — no separate export override).
 4. Confirm. Each model group is written as `<modelname>.dff`.
 
-> 💡 **Example — export 10 reworked props:** Box-select 10 prop meshes, **Экспорт → DFF**, choose your `models/` folder. You get 10 separate `.dff` files named after the meshes, each carrying its own DFF flags.
+> 💡 **Example — export 10 reworked props:** Box-select 10 prop meshes, **Export → DFF**, choose your `models/` folder. You get 10 separate `.dff` files named after the meshes, each carrying its own DFF flags.
 
 ### Export All — to folder or into .img (2.1.0)
 
-**Panel:** View3D → Sidebar (N) → GTA Tools → Экспорт / Импорт → **Экспорт** → **All → Папка** *(folder)* or **All → IMG**
+**Panel:** View3D → Sidebar (N) → GTA Tools → Export / Import → **Export** → **All → Folder** or **All → IMG**
 
-**Export All** writes every selected model group — DFF + LOD + COL + TXD (+ optional CST) — in one pass. In the export dialog the **Что экспортировать:** *(What to export:)* row holds the format toggles:
+**Export All** writes every selected model group — DFF + LOD + COL + TXD (+ optional CST) — in one pass. In the export dialog the **What to export:** row holds the format toggles:
 
 | Toggle | Output per model |
 | --- | --- |
@@ -404,22 +404,22 @@ The mirror of multi-select import: select several models and get **one `.dff` pe
 
 Conditional options appear when their format is on: a **COL Library** package toggle (all collisions into one multi-entry `.col`), shared-TXD packaging, and the collision auto-light block (shared by COL and CST).
 
-**Также в IDE / IPL** *(Also to IDE / IPL — paths from the panel)*: when ticked, after the models are written the exporter also appends each one to the **IDE** and **IPL** files currently picked in the **IDE / IPL / IMG** panel (id, name, TXD, draw distance + placement, and the recomputed `lod_index`).
+**Also to IDE / IPL** *(paths from the panel)*: when ticked, after the models are written the exporter also appends each one to the **IDE** and **IPL** files currently picked in the **IDE / IPL / IMG** panel (id, name, TXD, draw distance + placement, and the recomputed `lod_index`).
 
 **All → IMG:** at the bottom of the dialog, the **All → IMG** toggle redirects the whole export straight into the `.img` archive whose path is set in the addon preferences — the chosen folder is ignored. If no `.img` path is configured the dialog shows an error and the export is blocked.
 
 **Pipeline (to a folder):**
 1. Select all the models to export.
-2. **Экспорт → All → Папка**.
-3. In the dialog tick the formats you want under **Что экспортировать:** (e.g. DFF + COL + TXD).
+2. **Export → All → Folder**.
+3. In the dialog tick the formats you want under **What to export:** (e.g. DFF + COL + TXD).
 4. Pick the destination folder and confirm. Files are written per model group with a progress bar.
 
 **Pipeline (into gta3.img):**
 1. Set the `.img` path in the addon preferences once.
-2. Select the models, then **Экспорт → All → IMG** (or open **All → Папка** and tick **All → IMG**).
+2. Select the models, then **Export → All → IMG** (or open **All → Folder** and tick **All → IMG**).
 3. Confirm — every model is packed directly into that archive, no folder needed.
 
-> 💡 **Example — export 10 selected models straight into gta3.img:** With the addon's `.img` path pointing at `gta3.img`, select your 10 finished buildings and run **Экспорт → All → IMG**. Their DFFs (and TXDs/COLs for the ticked formats) are written into the archive in one operation — no intermediate folder, no manual repacking.
+> 💡 **Example — export 10 selected models straight into gta3.img:** With the addon's `.img` path pointing at `gta3.img`, select your 10 finished buildings and run **Export → All → IMG**. Their DFFs (and TXDs/COLs for the ticked formats) are written into the archive in one operation — no intermediate folder, no manual repacking.
 
 ---
 
@@ -430,22 +430,22 @@ Conditional options appear when their format is on: a **COL Library** package to
 
 ### Import / Export / Map — three tabs
 
-The top of the IDE / IPL / IMG panel has three toggle buttons, **Импорт** (Import) | **Экспорт** (Export) | **Карта** (Map), like the Ariane tab. These used to be separate collapsible sub-panels. The active tab's button is depressed; everything below belongs to it. The **Карта** (Map) tab holds the full map import/export workflow (Game Root, region, resource extraction, Import Map / Export Map, BBox) — it moved here from *Properties → Scene → INU Tools*.
+The top of the IDE / IPL / IMG panel has three toggle buttons, **Import** | **Export** | **Map**, like the Ariane tab. These used to be separate collapsible sub-panels. The active tab's button is depressed; everything below belongs to it. The **Map** tab holds the full map import/export workflow (Game Root, region, resource extraction, Import Map / Export Map, BBox) — it moved here from *Properties → Scene → INU Tools*.
 
 **Import tab** — pulls models from the game into the scene:
-- **Папка с IDE** (IDE folder) — the game root, or any folder holding `.ide` files (the narrower, the faster the scan).
-- **IPL** — multi-select: the 📁 button accepts Ctrl/Shift, and picked files accumulate in the collapsible **IPL для импорта** (IPL to import) list. Import merges all selected IPLs (with a `lod_index` offset).
-- **IMG** — path to the primary archive + **LOD / TXD / COL** toggles. These are **ON = load** (the old "Skip"/"Без" prefixes are gone — LOD on pulls LOD models, TXD on pulls textures, COL on pulls collisions).
-- **Найти IDE** (Find IDE) — scans the game folder for the `.ide` files that declare the selected IPLs' models (**IDE с моделями из IPL** list).
-- **Найти IMG** (Find IMG) — scans the game folder recursively for every `.img` that actually contains the IPL's model DFFs (**IMG с моделями из IPL** list). Import then pulls models from the primary IMG **plus** all found custom archives (e.g. `maps/RESOURCES`). Needed when a custom map's models are split across several `.img`.
-- **Импорт** (Import) — the big button. IMG import is **modal**: an **«Импорт из IMG: X/Y»** counter shows at the bottom, Blender doesn't freeze, and **ESC** cancels. On import it fills: TXD name, LOD partner (`inu.lod_object` from the IPL `lod_index`), distances (LOD → LOD Dist, main model → Draw Dist), and the IDE link (status «В IDE (file)», just like IPL).
-- **Обновить из IDE/IPL** (Refresh from IDE/IPL) — pulls fresh data (distances / TXD / flags / coordinates) from the files **into the scene** (file→scene direction). Handy after editing the files by hand.
+- **IDE folder** — the game root, or any folder holding `.ide` files (the narrower, the faster the scan).
+- **IPL** — multi-select: the 📁 button accepts Ctrl/Shift, and picked files accumulate in the collapsible **IPL to import** list. Import merges all selected IPLs (with a `lod_index` offset).
+- **IMG** — path to the primary archive + **LOD / TXD / COL** toggles. These are **ON = load** (the old "Skip" prefixes are gone — LOD on pulls LOD models, TXD on pulls textures, COL on pulls collisions).
+- **Find IDE** — scans the game folder for the `.ide` files that declare the selected IPLs' models (**IDE with IPL models** list).
+- **Find IMG** — scans the game folder recursively for every `.img` that actually contains the IPL's model DFFs (**IMG with IPL models** list). Import then pulls models from the primary IMG **plus** all found custom archives (e.g. `maps/RESOURCES`). Needed when a custom map's models are split across several `.img`.
+- **Import** — the big button. IMG import is **modal**: an **"Import from IMG: X/Y"** counter shows at the bottom, Blender doesn't freeze, and **ESC** cancels. On import it fills: TXD name, LOD partner (`inu.lod_object` from the IPL `lod_index`), distances (LOD → LOD Dist, main model → Draw Dist), and the IDE link (status "In IDE (file)", just like IPL).
+- **Refresh from IDE/IPL** — pulls fresh data (distances / TXD / flags / coordinates) from the files **into the scene** (file→scene direction). Handy after editing the files by hand.
 
-**Export tab** — writing and syncing back to files. At the top sits the **Выделенная модель** (Selected model) status box:
-- **Выделенная модель** (Selected model) — a per-file status board for the active model. It shows the model name plus one status row each for **IDE**, **IPL** and **IMG** — «В IDE (file)» / «Не в IDE» / «параметры разошлись», «В IPL (file)» / «координаты разошлись» / «копия», «В IMG (file)» / «Не в IMG». Each row carries its own action buttons: **Add** / **Export** (write this model to its own file), a **🗑** to remove it from that file, and a **🔄** icon (in the IPL row, **🔄 = restore coordinates from IPL**; in the IMG row, verify which archive holds the DFF). At the model name: **Check** (read-only present/missing/no-ID) and **🗑 Убрать из IDE+IPL** (remove from *both* IDE and IPL and clear link tracking — distinct from a single-file **🗑**).
-- Collapsible **IPL для экспорта** and **IDE для экспорта** boxes (collapsed by default) — the *same* shared lists populated on the Import tab («Найти IDE/IMG», multi-select IPL) — a round-trip. Each header carries icon-only buttons: **🔄 Refresh-from-files** · **＋ Add** · **📁 Folder** · **🗑 Clear**.
+**Export tab** — writing and syncing back to files. At the top sits the **Selected model** status box:
+- **Selected model** — a per-file status board for the active model. It shows the model name plus one status row each for **IDE**, **IPL** and **IMG** — "In IDE (file)" / "Not in IDE" / "params differ", "In IPL (file)" / "coordinates differ" / "duplicate", "In IMG (file)" / "Not in IMG". Each row carries its own action buttons: **Add** / **Export** (write this model to its own file), a **🗑** to remove it from that file, and a **🔄** icon (in the IPL row, **🔄 = restore coordinates from IPL**; in the IMG row, verify which archive holds the DFF). At the model name: **Check** (read-only present/missing/no-ID) and **🗑 Remove from IDE+IPL** (remove from *both* IDE and IPL and clear link tracking — distinct from a single-file **🗑**).
+- Collapsible **IPL to export** and **IDE to export** boxes (collapsed by default) — the *same* shared lists populated on the Import tab (Find IDE/IMG, multi-select IPL) — a round-trip. Each header carries icon-only buttons: **🔄 Refresh-from-files** · **＋ Add** · **📁 Folder** · **🗑 Clear**.
 - The **📄 (open in text editor)** button next to the IPL/IDE paths and in the found lists opens the file in the OS external editor.
-- Below: **Дополнительно (IPL)** (Additional — cull/paths/garages sections + «Заменить Empty») and the **IMG** box (Export to IMG / Remove from IMG / Rebuild IMG).
+- Below: **Additional (IPL)** (cull/paths/garages sections + "Replace Empty") and the **IMG** box (Export to IMG / Remove from IMG / Rebuild IMG).
 
 ### Adding models to the game — full pipeline
 
@@ -556,7 +556,7 @@ IDE files define model properties: ID, texture dictionary, draw distance, flags.
 | Remove | `gtatools.remove_ide` | Remove entry by Model ID |
 | Export | `gtatools.export_ide` | Write selected objects to a new IDE file |
 
-> **Add / Del / Export** live on the **Export** tab. There is no standalone "Import" button anymore: geometry comes from **Import from IMG** (Import tab), and **Обновить из IDE/IPL** pulls the definitions into the scene.
+> **Add / Del / Export** live on the **Export** tab. There is no standalone "Import" button anymore: geometry comes from **Import from IMG** (Import tab), and **Refresh from IDE/IPL** pulls the definitions into the scene.
 
 **All sections supported:** objs, tobj, anim, cars, peds, weap, hier, txdp.
 
@@ -597,7 +597,7 @@ IPL files define object positions, rotations, and LOD links on the map.
 | Remove | `gtatools.remove_ipl` | Remove by Model ID. When an entry is deleted from the middle of the file, all LOD indices of remaining objects are automatically recalculated — otherwise the game would reference wrong lines and may crash |
 | Export | `gtatools.export_ipl` | Write selected objects with world transforms |
 
-> The IPL box no longer has a standalone Import button — placement is done by **Import from IMG** (Import tab), and stubs are resolved by «Заменить Empty» under **Дополнительно (IPL)**.
+> The IPL box no longer has a standalone Import button — placement is done by **Import from IMG** (Import tab), and stubs are resolved by "Replace Empty" under **Additional (IPL)**.
 
 **Quaternion conversion:** GTA SA stores (X,Y,Z,W) conjugated, Blender uses (W,X,Y,Z). Conversion is automatic.
 
@@ -633,18 +633,18 @@ All IPL sections are supported for import/export as Blender objects:
 |--------|----------|-------------|
 | Export to IMG | `gtatools.export_to_img` | Pack DFF+COL+LOD+TXD directly into .img archive |
 
-> **Import from IMG** (`gtatools.import_from_img`) and the **LOD / TXD / COL** toggles (ON = load) moved to the **Import** tab (now modal, with an «Импорт из IMG: X/Y» counter, ESC to cancel). The Export tab's IMG box keeps only writing and archive service: **Export to IMG**, **Remove from IMG**, **Rebuild IMG**.
+> **Import from IMG** (`gtatools.import_from_img`) and the **LOD / TXD / COL** toggles (ON = load) moved to the **Import** tab (now modal, with an "Import from IMG: X/Y" counter, ESC to cancel). The Export tab's IMG box keeps only writing and archive service: **Export to IMG**, **Remove from IMG**, **Rebuild IMG**.
 
 **Export to IMG dialog — per-model hierarchy.** The dialog is a tree with one box per selected model:
-- **DFF** — a checkbox (include this model) plus its **TXD name** field (hidden when **Общий TXD** / Shared TXD is on).
-- Indented under it, a **LOD** checkbox and a **COL** checkbox. If the model has no LOD in the scene, the row reads **«LOD: основная модель (заглушка)»** — the main model is written as the LOD (stub). If it has no COL, the row reads **«COL: пустая заглушка»** — an empty bounding-box COL is created so the game still finds collision by ID.
-- At the top of the dialog: an **IMG архив** (IMG archive) dropdown — defaults to the model's own IMG (the archive it was imported from), or any `.img` in the game folder.
-- **Общий TXD** (Shared TXD) toggle + name field — packs all textures of every exported model into one shared `.txd` (default `textures.txd`) instead of one `.txd` per model.
-- **Пересобрать после экспорта** (Rebuild after export) checkbox — compacts the IMG right after writing, reclaiming the dead space left by replaced entries.
+- **DFF** — a checkbox (include this model) plus its **TXD name** field (hidden when **Shared TXD** is on).
+- Indented under it, a **LOD** checkbox and a **COL** checkbox. If the model has no LOD in the scene, the row reads **"LOD: main model (stub)"** — the main model is written as the LOD (stub). If it has no COL, the row reads **"COL: empty stub"** — an empty bounding-box COL is created so the game still finds collision by ID.
+- At the top of the dialog: an **IMG archive** dropdown — defaults to the model's own IMG (the archive it was imported from), or any `.img` in the game folder.
+- **Shared TXD** toggle + name field — packs all textures of every exported model into one shared `.txd` (default `textures.txd`) instead of one `.txd` per model.
+- **Rebuild after export** checkbox — compacts the IMG right after writing, reclaiming the dead space left by replaced entries.
 
 **Batch writer + parallel encode (big exports):** `Export to IMG` opens the archive once, appends every new payload sequentially, and rewrites the directory exactly once at the end — not per-file. Plus DFF and COL serialisation (`to_bytes()` / `write_col()`) runs in a 4-worker `ThreadPoolExecutor` (numpy/zlib release the GIL). For a full-district export this replaces ~3000 directory rewrites (~2.6 GB of redundant writes) with one, plus ~4× speedup on the CPU-bound encode — typically **5–15× end-to-end**.
 
-> 💡 **Example — batch upload to gta3.img:** you have 50 buildings ready to export. Select the buildings → **Export to IMG** → the per-model dialog opens, each model as a box (DFF + its TXD name, plus indented LOD/COL checkboxes; models with no LOD/COL show a "stub" note). Pick the **IMG архив** (defaults to each model's own IMG), optionally toggle **Общий TXD** if they share textures, and tick **Пересобрать после экспорта** to compact in one go. Click OK — all DFF+COL+LOD+TXD get encoded in parallel and written to the archive.
+> 💡 **Example — batch upload to gta3.img:** you have 50 buildings ready to export. Select the buildings → **Export to IMG** → the per-model dialog opens, each model as a box (DFF + its TXD name, plus indented LOD/COL checkboxes; models with no LOD/COL show a "stub" note). Pick the **IMG archive** (defaults to each model's own IMG), optionally toggle **Shared TXD** if they share textures, and tick **Rebuild after export** to compact in one go. Click OK — all DFF+COL+LOD+TXD get encoded in parallel and written to the archive.
 
 ### Preset / data folder
 
@@ -749,16 +749,16 @@ When importing maps, INU Tools decides which models are LODs in two layers:
 
 ### Multi-IPL Sync (2.1.0)
 
-**Panel:** the **Import** tab (**IPL для импорта** list, multi-select) and the **Export** tab (**IPL для экспорта** list) — the lists are shared. The reconcile button is now **Обновить из IDE/IPL** (`gtatools.link_sync`) on the Import tab, replacing the former «Sync».
+**Panel:** the **Import** tab (**IPL to import** list, multi-select) and the **Export** tab (**IPL to export** list) — the lists are shared. The reconcile button is now **Refresh from IDE/IPL** (`gtatools.link_sync`) on the Import tab, replacing the former "Sync".
 
 A district is rarely one `.ipl`. Vanilla SA splits each region across several files (`LAn.ipl`, `LAs.ipl`, `LAe.ipl`, streamed chunks…), and the single **IPL File** picker in the box above only reconciles one of them per click. The Multi-IPL Sync list lets you register every `.ipl` that makes up a map and reconcile your whole scene against all of them in **one** pass.
 
 When the list is empty, **Sync** behaves exactly as before — it uses the single IPL path from the IPL box. As soon as the list has entries, **Sync** iterates every listed file instead.
 
 **Pipeline:**
-1. Expand **Sync несколько IPL** (▸ disclosure triangle, collapsed by default — the row shows a live `(N)` count once files are added).
-2. **Добавить** (*Add*) → file dialog. Multi-select is supported: hold **Ctrl/Shift** to pick several `.ipl` files at once. Duplicates (same absolute path) are silently skipped; the report reads **«Added IPL: N»**.
-3. Each row shows a short clickable path label + an **X** to drop that one file. **Очистить** (*Clear*) empties the whole list.
+1. Expand **Sync multiple IPL** (▸ disclosure triangle, collapsed by default — the row shows a live `(N)` count once files are added).
+2. **Add** → file dialog. Multi-select is supported: hold **Ctrl/Shift** to pick several `.ipl` files at once. Duplicates (same absolute path) are silently skipped; the report reads **"Added IPL: N"**.
+3. Each row shows a short clickable path label + an **X** to drop that one file. **Clear** empties the whole list.
 4. Click **Sync** (the unified IDE+IPL button below the list).
 
 What one Sync pass does, per object:
@@ -769,7 +769,7 @@ What one Sync pass does, per object:
 
 The alarming "nothing matched" warning fires **only** when truly zero objects linked or synced — a `skipped N` with successful work elsewhere is normal (that part of the selection just lives in a file you didn't list).
 
-> 💡 **Example — sync Los Santos after Map Import:** you imported the LS district and have ~2000 fresh objects with no IPL links yet. Open **Sync несколько IPL** → **Добавить** → Ctrl-select `LAn.ipl`, `LAs.ipl`, `LAe.ipl`, `LAw.ipl`, `LAhills.ipl` → the row now reads `Sync multiple IPL (5)`. Deselect everything (Sync then sweeps every mesh in the scene) → **Sync**. Each object is matched against whichever of the 5 files holds its placement, and you get `Sync IPL: updated 0, new links 1980, skipped 20 (5 IPL)` — the 20 skips are props you added by hand that aren't in any vanilla IPL.
+> 💡 **Example — sync Los Santos after Map Import:** you imported the LS district and have ~2000 fresh objects with no IPL links yet. Open **Sync multiple IPL** → **Add** → Ctrl-select `LAn.ipl`, `LAs.ipl`, `LAe.ipl`, `LAw.ipl`, `LAhills.ipl` → the row now reads `Sync multiple IPL (5)`. Deselect everything (Sync then sweeps every mesh in the scene) → **Sync**. Each object is matched against whichever of the 5 files holds its placement, and you get `Sync IPL: updated 0, new links 1980, skipped 20 (5 IPL)` — the 20 skips are props you added by hand that aren't in any vanilla IPL.
 
 ### IDE/IPL routing on Add + LOD indexing
 
@@ -780,9 +780,13 @@ The alarming "nothing matched" warning fires **only** when truly zero objects li
 - **A path is picked** → every selected object is written to **that** file. If an object was previously linked to a *different* file, it is still written to the picked one and you get a warning (*N objects were linked to another IPL — check the old file for duplicates*). This is what keeps a DFF and its `LOD…` companion in the **same** file, which the LOD cross-reference needs (see below) — splitting them across files silently breaks LOD.
 - **The box is empty** → each object falls back to **its own** remembered file (the one it was imported from or last added to), grouped one write per file. Use this to update objects spread across several districts in one click.
 
-The active object's box shows where it lives — **В IDE ({file})** / **В IPL ({file})** *(In IDE/IPL (file))* with a checkmark, or **…параметры / координаты разошлись** when it has drifted from what was last written (re-**Add** to push the new state).
+The active object's box shows where it lives — **In IDE ({file})** / **In IPL ({file})** with a checkmark, or **…params / coordinates differ** when it has drifted from what was last written (re-**Add** to push the new state).
 
 **LOD `lod_index` is written automatically.** The SA IPL `lod_index` field is the **line number** of the LOD's `inst` row in the *same* file (`-1` = no LOD). When you select a DFF together with its `LOD…` companion and Add to IPL, the addon upserts the LOD row first, then stores that row's line number in the DFF's `lod_index` — the cross-reference that makes the LOD actually swap in-game. The same linking now runs in the **INU Export** IPL-upsert path (it previously wrote `-1`, so LODs never swapped). Deleting a middle row via **Remove** renumbers everyone else's `lod_index` so the references stay valid.
+
+**LOD partner is pulled in automatically.** You don't have to select the `LOD…` mesh by hand: when a DFF carries a LOD partner (its `inu.lod_object`), Add to IPL pulls that partner into the write even if only the DFF is selected. A LOD with no Model ID is auto-assigned **DFF ID + 1**, and the LOD row's coordinates/rotation are copied from its DFF sibling — so LODs are placed at the model's real position instead of landing at `0, 0, 0`. The add report spells out the split, e.g. `IPL: updated 0, added 2 (DFF 1, LOD 1)`.
+
+**Setting the LOD partner — "Find LOD".** Everything above rides on the `inu.lod_object` link (shown as the **LOD** row in the Selected-model box, with an editable **LOD ID** field next to it). Set it by hand, or click **Find LOD** (`gtatools.auto_find_lod`) beside the row: it scans the scene for the selected models' LOD twins by base name (same LOD detection as above) and fills `inu.lod_object` for each — the report reads `LOD found: N, not found: M`. LOD meshes themselves are skipped as sources.
 
 > 💡 **Example — update two buildings in their own files:** `bank01` came from `LAn.ipl`, `tower05` from `LAs.ipl`. Nudge both, leave the IPL box **empty**, select both → **Add**. Each is written back to its origin file (`IPL: updated 2, added 0`). Pick a specific IPL instead and both would go there — with a duplicate warning for the one that lived elsewhere.
 
@@ -790,7 +794,7 @@ The active object's box shows where it lives — **В IDE ({file})** / **В IPL 
 
 **Panel:** View3D → Sidebar (N) → GTA Tools → IDE / IPL / IMG → IDE / IPL / IMG box headers
 
-Each of the three boxes carries a 📁 **file-browser button** in its header. Click it to pick the target file; the box then shows the chosen path as a short, read-only label (last two path segments, e.g. `…/data/maps/LA/LAn.ipl`) under the header. If nothing is set yet, the label reads **Файл не выбран** *(File not selected)*. The label itself is not editable inline — to change a path, click 📁 again. The same picker serves all three boxes; the file dialog filters to `*.ipl / *.ide / *.img`.
+Each of the three boxes carries a 📁 **file-browser button** in its header. Click it to pick the target file; the box then shows the chosen path as a short, read-only label (last two path segments, e.g. `…/data/maps/LA/LAn.ipl`) under the header. If nothing is set yet, the label reads **File not selected**. The label itself is not editable inline — to change a path, click 📁 again. The same picker serves all three boxes; the file dialog filters to `*.ipl / *.ide / *.img`.
 
 ### Region filter pulls streamed child IPLs (2.1.0)
 
@@ -798,7 +802,7 @@ Each of the three boxes carries a 📁 **file-browser button** in its header. Cl
 
 When you import a single region (Map Region ≠ ALL), the old folder rule only loaded IPLs physically sitting in `maps/<region>/`. That silently dropped **streamed / child IPLs** — vanilla splits big districts into a base file plus streamed chunks named `<base>_<suffix>` (e.g. `countn2` → `countn2_stream3`) that usually live **outside** the region folder. The region filter now keeps a chunk if **either** its folder is the selected region **or** its basename is `<base>_<suffix>` where `<base>` is one of the region's base IPLs. So selecting the countryside now pulls in `countn2.ipl` **and** `countn2_stream3.ipl` — the district loads whole. The `_` guard keeps `countn` from grabbing unrelated `countnXYZ` files. The system console prints which IPLs the region filter dropped vs loaded, so an incomplete district can be traced.
 
-**Map import — «Без 2DFX» (Skip 2DFX).** The Import Map toggle **Без 2DFX** (default ON) controls whether 2DFX effects (lights, particles…) are imported with each model. It is read once at import start and passed explicitly into the builder, so the bulk/modal path can't silently flip back to "load 2DFX". Leaving it ON makes a map import lighter and faster; turn it OFF only when you actually need the 2DFX data in-scene.
+**Map import — "Skip 2DFX".** The Import Map toggle **Skip 2DFX** (default ON) controls whether 2DFX effects (lights, particles…) are imported with each model. It is read once at import start and passed explicitly into the builder, so the bulk/modal path can't silently flip back to "load 2DFX". Leaving it ON makes a map import lighter and faster; turn it OFF only when you actually need the 2DFX data in-scene.
 
 **Texture-alpha auto-link.** During Map Import, the first time each material is seen the addon inspects its image: if it has genuinely transparent pixels (foliage, fences, windows) it wires *texture Alpha → BSDF Alpha* and switches the material to alpha-test so the cutouts render correctly; opaque textures are untouched. This runs once per material (not per instance), so a district reusing one fence texture across hundreds of buildings pays the check exactly once.
 
@@ -823,28 +827,28 @@ When you import a single region (Map Region ≠ ALL), the old folder rule only l
 
 ### GTA Material Presets
 
-**Panel:** View3D → Sidebar (N) → GTA Tools → **GTA Material** → **EFFECTS** tab → **Быстрые пресеты** (Quick presets)
+**Panel:** View3D → Sidebar (N) → GTA Tools → **GTA Material** → **EFFECTS** tab → **Quick presets**
 
 Four one-click buttons write a full GTA effect setup onto the active material in a single click — no dropdown, no save dialog. The button labels appear in the UI in Russian:
 
 | Button (RU / EN) | Preset | What it sets |
 |---|---|---|
-| **Стекло** (Glass) | `VEHICLE_GLASS` | Car glass: env map with framebuffer alpha |
-| **Хром** (Chrome) | `CHROME` | Strong environment reflection + specular (bumpers, trim) |
-| **Краска** (Paint) | `VEHICLE` | Car body: `xvehicleenv128` env map + `vehiclespecdot64` specular + reflection |
-| **Сброс** (Reset) | `GENERIC` | Clears every effect flag — plain textured material |
+| **Glass** | `VEHICLE_GLASS` | Car glass: env map with framebuffer alpha |
+| **Chrome** | `CHROME` | Strong environment reflection + specular (bumpers, trim) |
+| **Paint** | `VEHICLE` | Car body: `xvehicleenv128` env map + `vehiclespecdot64` specular + reflection |
+| **Reset** | `GENERIC` | Clears every effect flag — plain textured material |
 
 #### Example — modeling a car
 
 Say you're building a car with body, glass and chrome-trim materials.
 
-**Step 1.** Select the car-body material in the object's material stack → click **Краска** (Paint). Env map, specular and reflection are all set at once.
+**Step 1.** Select the car-body material in the object's material stack → click **Paint**. Env map, specular and reflection are all set at once.
 
-**Step 2.** Switch to the glass material → **Стекло** (Glass). Done.
+**Step 2.** Switch to the glass material → **Glass**. Done.
 
-**Step 3.** Select the bumper/trim material → **Хром** (Chrome). Made a mistake → **Сброс** (Reset) clears it back to a plain textured material.
+**Step 3.** Select the bumper/trim material → **Chrome**. Made a mistake → **Reset** clears it back to a plain textured material.
 
-> 💡 Use **Копировать на выделенные** (Copy to Selected) below the buttons to push the active material's GTA settings onto the materials of every other selected object in one go.
+> 💡 Use **Copy to Selected** below the buttons to push the active material's GTA settings onto the materials of every other selected object in one go.
 
 ### COL Surface Types
 
@@ -870,19 +874,19 @@ Say you're building a car with body, glass and chrome-trim materials.
 
 ### Alpha Materials
 
-**Panel:** Properties → Material → **GTA Material** → **Альфа** (Alpha) tab
+**Panel:** Properties → Material → **GTA Material** → **Alpha** tab
 
 A bulk editor for the transparency mode of alpha materials — GTA maps carry hundreds of alpha-cutout materials (fences, foliage, windows) and fixing each one in Blender's native Material panel is tedious. The tool scans the scene (or the selection), lists every alpha material in a scrollable list with a per-row blend-mode dropdown, and offers one-click bulk actions.
 
-- **Scope** — **Сцена** (whole scene) or **Выделенные** (selected objects only).
-- **Режим** (Filter mode) — how a material counts as "alpha":
+- **Scope** — **Scene** (whole scene) or **Selected** (selected objects only).
+- **Filter mode** — how a material counts as "alpha":
   - **NODE** (default) — the Principled BSDF's **Alpha** input is actually wired (the material genuinely uses texture alpha).
   - **CHANNEL** — the base texture has a *significant* alpha channel.
   - **TRANSPARENT** — the material's blend method is already non-opaque.
   - **ALL** — any of the above.
-- **Обновить** (Scan) — (re)builds the list under the current scope + filter; the header shows how many were found.
-- **Режим для всех** + **Применить ко всем** (Apply blend mode to all) — set one transparency mode (OPAQUE / CLIP / HASHED / BLEND) on every listed material at once.
-- **Выделить объекты** (Select objects) — select the objects that use the listed alpha materials.
+- **Scan** — (re)builds the list under the current scope + filter; the header shows how many were found.
+- **Blend mode for all** + **Apply to all** (Apply blend mode to all) — set one transparency mode (OPAQUE / CLIP / HASHED / BLEND) on every listed material at once.
+- **Select objects** — select the objects that use the listed alpha materials.
 
 > **Unified transparency standard:** applying any transparent mode also switches Blender's *Show Backface* / transparency-overlap **off** — the project's standard for GTA alpha materials — and writes both the legacy `blend_method` and the 4.2+ `surface_render_method` so it also takes on EEVEE Next.
 
@@ -900,13 +904,13 @@ A bulk editor for the transparency mode of alpha materials — GTA maps carry hu
 ### Baking
 
 1. **Create Day/Night** — creates `Day` and `Night` color attributes
-2. **Свет (8 ламп)** (Lights) — places 8 point lights around the object; **Солнце** (Sun) adds an independent directional source
-3. **Запечь** (Bake, Fast) — CPU bake without shadows
-4. **Запечь с тенями** (Bake with Shadows) — raycast shadow baking via depsgraph
+2. **Lights (8 lamps)** — places 8 point lights around the object; **Sun** adds an independent directional source
+3. **Bake (Fast)** — CPU bake without shadows
+4. **Bake with Shadows** — raycast shadow baking via depsgraph
 
 **Light sources — the toggle row** below the bake buttons chooses what the bake samples. It is no longer just the 8-lamp rig:
 - **Point / Sun / Spot / Area** — four toggles, one per Blender light type. Only the enabled types contribute, so you can bake from your own scene lamps of any kind, not only the auto-placed 8 point lights.
-- **HDRI** (World, 🌐) — also add world/HDRI lighting: the sky colour is sampled along each vertex normal and combined with the lamps. The HDRI is taken from the viewport's *Окружение сцены* (studio light) or the real `scene.world`.
+- **HDRI** (World, 🌐) — also add world/HDRI lighting: the sky colour is sampled along each vertex normal and combined with the lamps. The HDRI is taken from the viewport's *Scene Environment* (studio light) or the real `scene.world`.
 
 **Settings:**
 - Ambient (0-1) — base brightness
@@ -1005,7 +1009,7 @@ Type a value → press Enter → the brightness offset is applied **immediately*
 
 ### VC Layer System (BETA)
 
-**Section:** Prelight panel → ▸ **Слои Vertex Color (BETA)** (collapsible, between LightMap and Запекание)
+**Section:** Prelight panel → ▸ **Vertex Color Layers (BETA)** (collapsible, between LightMap and Bake)
 
 Photoshop-style **non-destructive** vertex color editing. Stack of named layers per scope (Day / Night), each with its own opacity / blend mode / brightness / contrast. The composite is written back into `Day` / `Night` automatically — both for live viewport preview AND on DFF export. Layers themselves stay editable in the .blend.
 
@@ -1015,13 +1019,13 @@ Photoshop-style **non-destructive** vertex color editing. Stack of named layers 
 - Adjust shadow intensity in one area without touching the rest
 - Try a colour variation, then revert with one slider
 
-**Storage:** each layer is a `BYTE_COLOR` color attribute on the mesh, named `VCL_D_<label>` (Day stack) or `VCL_N_<label>` (Night stack). Capped at **10 layers per scope**. Visible in the Color Attributes list under «Дополнительные атрибуты» — layers are first-class data, painted with Blender's standard Vertex Paint mode.
+**Storage:** each layer is a `BYTE_COLOR` color attribute on the mesh, named `VCL_D_<label>` (Day stack) or `VCL_N_<label>` (Night stack). Capped at **10 layers per scope**. Visible in the Color Attributes list under "Additional attributes" — layers are first-class data, painted with Blender's standard Vertex Paint mode.
 
 #### Pipeline (typical workflow)
 
 1. **Create `Day` / `Night`** — already there from your bake or via the regular Day/Night buttons above
-2. **Add Layer** — click [+] in «Слои Day» — creates `VCL_D_Layer_1`, fully transparent
-3. **Paint the layer** — click **Рисовать** on the active layer row → enters Vertex Paint mode on `VCL_D_Layer_1`
+2. **Add Layer** — click [+] in "Day layers" — creates `VCL_D_Layer_1`, fully transparent
+3. **Paint the layer** — click **Paint** on the active layer row → enters Vertex Paint mode on `VCL_D_Layer_1`
 4. **Tune layer** — adjust Opacity / Blend Mode / Brightness / Contrast on the active layer
 5. **Toggle Live Preview** ON → `Day` attribute now shows the composite (base + all visible Day layers)
 6. **Export DFF** — composite is auto-flattened into `Day` / `Night` for the duration of the export; layers stay intact in the .blend
@@ -1030,26 +1034,26 @@ Photoshop-style **non-destructive** vertex color editing. Stack of named layers 
 
 | Button | Description |
 |--------|-------------|
-| **▸ Слои Vertex Color (BETA)** | Expand / collapse the section |
+| **▸ Vertex Color Layers (BETA)** | Expand / collapse the section |
 | **Live preview** (toggle) | Hijack `Day` / `Night` to show the composite. ON: original baked into custom prop, composite written into `Day` / `Night` live. OFF: originals restored from backup |
 | **↻** | Refresh composite manually (when Live Preview is on) |
 | **☀ Day** / **🌙 Night** | Switch active color attribute to `Day` or `Night` (which holds the composite when Live Preview is on). The currently-shown scope's button is depressed |
-| «Дополнительные атрибуты» list | All non-Day/Night color attributes (VCL layers, custom prelight). Radio = activate, ❌ = remove |
-| **Слои Day** [+] | Create a new Day-stack layer (cap: 10) |
-| **Слои Day** [−] | Remove the active layer + its attribute |
-| **Слои Day** [▲] [▼] | Reorder active layer in the blend stack |
+| "Additional attributes" list | All non-Day/Night color attributes (VCL layers, custom prelight). Radio = activate, ❌ = remove |
+| **Day layers** [+] | Create a new Day-stack layer (cap: 10) |
+| **Day layers** [−] | Remove the active layer + its attribute |
+| **Day layers** [▲] [▼] | Reorder active layer in the blend stack |
 | Per-row [☑] | Multi-select for group editing |
 | Per-row [👁] | Visibility — hidden = excluded from composite (alpha → 0) |
 | Per-row [🔒] | Lock paint — slider edits still work, but Vertex Paint won't write |
 | Per-row label | Click to rename (renames the underlying attribute too) |
 | Per-row opacity slider | 0–1 layer opacity in the blend |
-| **Режим** | Blend mode: Normal / Multiply / Add / Subtract |
-| **Яркость до** | Pre-blend brightness offset on this layer's pixels (−1..+1) |
-| **Контраст до** | Pre-blend contrast scale around 0.5 mid-grey (0..3) |
-| **Рисовать** | Activate this layer's attribute + enter Vertex Paint mode |
-| **→ База** | Promote this VCL layer to a standalone color attribute (drops VCL prefix) |
+| **Mode** | Blend mode: Normal / Multiply / Add / Subtract |
+| **Brightness before** | Pre-blend brightness offset on this layer's pixels (−1..+1) |
+| **Contrast before** | Pre-blend contrast scale around 0.5 mid-grey (0..3) |
+| **Paint** | Activate this layer's attribute + enter Vertex Paint mode |
+| **→ Base** | Promote this VCL layer to a standalone color attribute (drops VCL prefix) |
 | Multi-edit footer (Absolute / Relative) | Group sliders applied to all selected (☑) layers |
-| **Перекрасить выделенные…** | Replace RGB of all painted pixels in selected layers with a chosen colour (alpha untouched) |
+| **Recolour selected…** | Replace RGB of all painted pixels in selected layers with a chosen colour (alpha untouched) |
 
 #### Live Preview details
 
@@ -1058,7 +1062,7 @@ Photoshop-style **non-destructive** vertex color editing. Stack of named layers 
 - Composite recomputes on: any layer slider change, `▲`/`▼` move, layer add/remove/promote/demote, paint stroke (depsgraph hook detects when active is a `VCL_*`)
 - The recompose is debounced ~100 ms via a one-shot `bpy.app.timers` so a rapid drag-slide produces one final composite, not 50
 
-> ⚠ **Don't paint directly on `Day` / `Night` while Live Preview is ON.** Those attributes hold the composite; your stroke gets overwritten on the next recompose. Paint on a layer instead — click **Рисовать** on the row.
+> ⚠ **Don't paint directly on `Day` / `Night` while Live Preview is ON.** Those attributes hold the composite; your stroke gets overwritten on the next recompose. Paint on a layer instead — click **Paint** on the row.
 
 #### Export-time auto-flatten
 
@@ -1074,115 +1078,115 @@ Net effect: the .blend looks exactly like before export, but the .dff contains t
 
 ### Prelight Sun (2.1.0)
 
-**Button:** Prelight panel → **Солнце** (Sun) — also in the Lighting floater.
+**Button:** Prelight panel → **Sun** — also in the Lighting floater.
 
 Adds a single directional **SUN** light to the prelight rig (the same #BCBCBC colour as the 8-point ring, angled top-front). It is baked together with the point lights, so you get an even directional fill on top of the local point lighting — useful for flat roofs / large façades that the point ring alone lights unevenly.
 
 **Pipeline:**
 1. Select the mesh → **Create Day/Night** (if not done).
 2. **Create 8 Lights** (optional — Sun works with or without them).
-3. **Солнце** → a `Prelight_Sun` is created (toggle again to remove it).
+3. **Sun** → a `Prelight_Sun` is created (toggle again to remove it).
 4. **Bake** / **Bake with Shadows** — the Sun contributes to the bake like any other light.
 
 > 💡 Works even with no active mesh selected (it only manages the light). Hide it via the 👁 outliner toggle to bake without the directional fill, like any other light.
 
 ### Bake Over Existing (additive)
 
-**Buttons:** Prelight panel → **Запечь поверх** / **Запечь поверх с тенями** (the tall row above the normal Bake row; mirrored in the Lighting floater).
+**Buttons:** Prelight panel → **Bake on top** / **Bake on top with shadows** (the tall row above the normal Bake row; mirrored in the Lighting floater).
 
-Normal **Bake** *overwrites* the active Day/Night attribute. **Запечь поверх** instead *adds* the new bake on top of the current prelight (Add, clamped to 1.0), so you can layer several lighting passes.
+Normal **Bake** *overwrites* the active Day/Night attribute. **Bake on top** instead *adds* the new bake on top of the current prelight (Add, clamped to 1.0), so you can layer several lighting passes.
 
 **Pipeline:**
 1. Bake your base lighting normally (overwrites).
 2. Add/move some lights (e.g. a warm lamp near a doorway).
-3. **Запечь поверх** → only the new light's contribution is added on top — the base is preserved.
+3. **Bake on top** → only the new light's contribution is added on top — the base is preserved.
 
-> 💡 Plain **Bake** always re-bakes from scratch (clean). **Запечь поверх** never resets — repeat it to accumulate multiple passes (sun pass + lamp pass + neon pass).
+> 💡 Plain **Bake** always re-bakes from scratch (clean). **Bake on top** never resets — repeat it to accumulate multiple passes (sun pass + lamp pass + neon pass).
 
 ### Fill Day/Night Prelight
 
-**Sub-panel:** Prelight → Tools → **Залить одним цветом** (Fill one colour).
+**Sub-panel:** Prelight → Tools → **Fill one colour**.
 
 Flood-fills the `Day` and `Night` attributes from two colour pickers in one click — byte-exact (`color_srgb`), preserving existing vertex alpha, and it sets the Day/Night export flags so the model exports as a day/night prelit object.
 
 **Pipeline:**
-1. Pick **День** (Day) and **Ночь** (Night) colours.
-2. Optional: ☑ **Только выделенные** (selected faces only) — fills just the selection, in Edit Mode.
-3. **Применить** (Apply).
+1. Pick **Day** and **Night** colours.
+2. Optional: ☑ **Selected only** (selected faces only) — fills just the selection, in Edit Mode.
+3. **Apply**.
 
 > 💡 **Example — flat ambient base:** new building with no bake yet. Fill Day = RGB(0.75,0.75,0.75), Night = RGB(0.3,0.3,0.38) → instant neutral day/night base you can then bake *over* or hand-paint.
 
 ### Foliage / Tree Prelight (2.1.0)
 
-**Sub-panel:** Prelight → ▸ **Листва / деревья** (Foliage).
+**Sub-panel:** Prelight → ▸ **Foliage / trees**.
 
 Geometric crown shading + leaf tint for trees and bushes — **no scene lights needed**. It computes a radial gradient from the crown centre outward (and optionally top-down), so leaves get a natural darker-inside / brighter-outside look. Split into two independent operations, each with its own material picker:
 
-- **Крона** (Shade) — brightness gradient (the lighting look).
-- **Цвет** (Colour) — colour tint gradient (autumn/season tinting, bottom darkening).
+- **Shade** — brightness gradient (the lighting look).
+- **Colour** — colour tint gradient (autumn/season tinting, bottom darkening).
 
 **Key settings:**
-- *Сфера / Цилиндр* — radial metric (sphere = full 3D radius; cylinder = ignore height, good for tall trees).
-- *Внутри / Снаружи* — brightness (or colour) at crown centre vs edge.
-- *Кривая* — gradient falloff shape.
-- *Подсветить верх / Высота подсветки* (Colour block) — multiplicative brightness boost toward the top of the crown.
-- *Разброс* (variation) — per-leaf random noise so it doesn't look uniform.
-- *Затемнить низ* — extra darkening at the bottom of the crown.
-- *Запечь цвет* / *Сброс* — snapshot the current prelight before tinting, and restore it.
+- *Sphere / Cylinder* — radial metric (sphere = full 3D radius; cylinder = ignore height, good for tall trees).
+- *Inside / Outside* — brightness (or colour) at crown centre vs edge.
+- *Curve* — gradient falloff shape.
+- *Highlight top / Highlight height* (Colour block) — multiplicative brightness boost toward the top of the crown.
+- *Variation* — per-leaf random noise so it doesn't look uniform.
+- *Darken bottom* — extra darkening at the bottom of the crown.
+- *Bake colour* / *Reset* — snapshot the current prelight before tinting, and restore it.
 
 **Pipeline:**
-1. Select the tree mesh → expand **Листва / деревья**.
-2. Pick the leaf material in **Крона**, set Сфера/Цилиндр + Внутри/Снаружи → **apply** → crown shading baked into the active layer.
-3. (Optional) Pick the material in **Цвет**, set a tint + Подсветить верх + Затемнить низ → **Запечь цвет** (snapshots first) → apply.
-4. Not happy with the tint → **Сброс** restores the pre-tint prelight.
+1. Select the tree mesh → expand **Foliage / trees**.
+2. Pick the leaf material in **Shade**, set Sphere/Cylinder + Inside/Outside → **apply** → crown shading baked into the active layer.
+3. (Optional) Pick the material in **Colour**, set a tint + Highlight top + Darken bottom → **Bake colour** (snapshots first) → apply.
+4. Not happy with the tint → **Reset** restores the pre-tint prelight.
 
 > 💡 **Two-sided leaf cards:** duplicated leaf planes (same position, flipped normals) are matched by vertex position, so both sides of a fence/leaf card receive the same colour even on triangulated meshes.
 
 ### Light Cutter — Light → Topology (2.1.0)
 
-**Sub-panel:** Prelight → Tools → **Свет → топология** (Инструменты).
+**Sub-panel:** Prelight → Tools → **Light → topology** (Tools).
 
 Builds geometry under a lamp and bakes a smooth radial light pool into it — for soft prelit light circles on floors that a coarse mesh can't show. A visible **wire cutter** (concentric ring cylinders, or a sphere) lets you dial in the size/rings before cutting.
 
 **Settings:**
-- *Тип* — Cylinder (concentric rings, for floors) / Sphere.
-- *Радиус* / *Сегменты* — overall size + roundness.
-- *Кольца* — per-ring radius list (each ring its own slider); more rings = smoother gradient.
+- *Type* — Cylinder (concentric rings, for floors) / Sphere.
+- *Radius* / *Segments* — overall size + roundness.
+- *Rings* — per-ring radius list (each ring its own slider); more rings = smoother gradient.
 
 **Pipeline:**
-1. Select the lamp (or place the 3D cursor) → set Тип / Радиус / Сегменты.
-2. **Создать резак** → a wire `INU_LightCutter` appears at the lamp. Tweak radius / segments / add rings — it **rebuilds live**. Move it where you want the light pool.
+1. Select the lamp (or place the 3D cursor) → set Type / Radius / Segments.
+2. **Create cutter** → a wire `INU_LightCutter` appears at the lamp. Tweak radius / segments / add rings — it **rebuilds live**. Move it where you want the light pool.
 3. Choose the mode:
-   - ☑ **Отдельной геометрией** → builds a clean separate disc, conformed to the surface below.
+   - ☑ **As separate geometry** → builds a clean separate disc, conformed to the surface below.
    - ☐ off → pick a **floor** target → it knives the rings into that mesh.
-4. **Нарезать по резаку** → geometry is cut and a radial gradient (bright centre → dark edge, × lamp colour) is baked into `Day`.
+4. **Cut by cutter** → geometry is cut and a radial gradient (bright centre → dark edge, × lamp colour) is baked into `Day`.
 
 > 💡 The cutter is a normal wire object — you can enter Edit Mode and tweak its polygons/rings manually; changing a ring slider afterwards rebuilds it.
 
 ### Multi-Object Paint (Merge / Split)
 
-**Sub-panel:** Prelight → Tools — **Объединить для покраски** / **Разъединить**.
+**Sub-panel:** Prelight → Tools — **Merge for painting** / **Split apart**.
 
 Paint Day/Night vertex colours across **many models at once**. It merges the selected meshes into a single textured throwaway proxy, you brush-paint on it, then it copies the colours back to each original by loop range.
 
 **Pipeline:**
 1. Select all the meshes you want to paint together.
-2. **Объединить для покраски** → a temporary merged proxy is created in Vertex Paint mode (textures visible).
+2. **Merge for painting** → a temporary merged proxy is created in Vertex Paint mode (textures visible).
 3. Paint Day (and/or Night) across the whole cluster as if it were one object.
-4. **Разъединить** → colours are written back to each original mesh; the proxy is removed.
+4. **Split apart** → colours are written back to each original mesh; the proxy is removed.
 
 > 💡 **Example — a row of shopfronts:** 6 separate building DFFs that should share one continuous evening gradient. Merge → paint the gradient once across all 6 → split. Each model keeps its own slice, the gradient flows seamlessly across them.
 
 ### Vertex Alpha Preview (scene-wide)
 
-**Button:** Prelight (and Textures) → **Альфа вершины (сцена)** + 🗑 cleanup.
+**Button:** Prelight (and Textures) → **Vertex alpha (scene)** + 🗑 cleanup.
 
 Shows per-vertex transparency in the viewport, independent of the RGB prelight preview. It scans the scene, finds only the meshes/material-slots whose Day/Night alpha is actually `< 255` (fences, foliage, glass, LOD edges) and wires their vertex alpha into the material's Alpha + a blended draw mode. Solid geometry is never touched.
 
 **Pipeline:**
-1. **Альфа вершины (сцена)** ON → all fading models go translucent in the viewport per their vertex alpha.
+1. **Vertex alpha (scene)** ON → all fading models go translucent in the viewport per their vertex alpha.
 2. Edit / bake / erase alpha as needed.
-3. **Альфа вершины (сцена)** OFF → preview nodes are fully removed (graph left clean).
+3. **Vertex alpha (scene)** OFF → preview nodes are fully removed (graph left clean).
 4. 🗑 **(cleanup)** — the *check*: removes leftover AlphaView nodes from any material that no longer has vertex alpha (e.g. you erased it on some meshes), keeping them only where still needed. Runs automatically on enable, or anytime via the button.
 
 > 💡 Only slots that actually fade get wired — a mesh mixing an opaque wall material and a transparent glass material keeps nodes only on the glass.
@@ -1230,7 +1234,7 @@ Create and configure 2DFX effects that export into DFF files.
 
 **Attach to Model:** parent 2DFX Empty to mesh object. Coordinates auto-recalculate on export.
 
-> ⚠ **Gotcha — effect textures (coronas/shadows/water) are NOT bundled with the addon.** They are GTA SA assets (Rockstar IP), so the preview pulls them from your own game. The 2DFX panel header shows the **real source** inline on the **"Create Effect: …"** line — a short `.txd` path, or **"Не выбран" (Not selected)** when there's no source. The folder button (📁) next to it picks your own `.txd` (e.g. `particle.txd`) — picking it loads the textures; there's no separate "Load" button anymore.
+> ⚠ **Gotcha — effect textures (coronas/shadows/water) are NOT bundled with the addon.** They are GTA SA assets (Rockstar IP), so the preview pulls them from your own game. The 2DFX panel header shows the **real source** inline on the **"Create Effect: …"** line — a short `.txd` path, or **"Not selected"** when there's no source. The folder button (📁) next to it picks your own `.txd` (e.g. `particle.txd`) — picking it loads the textures; there's no separate "Load" button anymore.
 >
 > With no explicit `.txd`, the addon resolves from the **Game Root** in order: `models/particle.txd` → `particle2.txd` / `effectsPC.txd` / `misc.txd` → embedded `gta3.img/particle.txd`. The preview pulls textures lazily. With no source, the corona/shadow render as a flat placeholder (doesn't affect DFF export — only the texture name is written there).
 
@@ -1238,9 +1242,9 @@ Create and configure 2DFX effects that export into DFF files.
 
 **Preview:** real-time corona/shadow visualization in viewport. Billboard tracking implemented via **draw handler** *(1.6.3)* — works reliably across scene switches.
 
-**Применить настройки** (Apply Settings): copies the active 2DFX's settings — its `inu.*` props plus the raw `2dfx_*` custom properties — onto every other selected 2DFX Empty at once. Select the targets, keep the source active, click the button; the affected previews rebuild automatically afterwards.
+**Apply Settings**: copies the active 2DFX's settings — its `inu.*` props plus the raw `2dfx_*` custom properties — onto every other selected 2DFX Empty at once. Select the targets, keep the source active, click the button; the affected previews rebuild automatically afterwards.
 
-**Связи (пунктир)** (Relationship lines): a checkbox that toggles the dashed parent→child relationship-line overlay drawn from each mesh to its attached 2DFX Empties.
+**Relationship lines**: a checkbox that toggles the dashed parent→child relationship-line overlay drawn from each mesh to its attached 2DFX Empties.
 
 **Preview auto-rebuild:** duplicating or copying a 2DFX Empty (Shift+D, or Ctrl+C / Ctrl+V) automatically regenerates its preview — a background timer detects the fresh copy and rebuilds the missing corona/shadow rig, so native Blender duplication just works without pressing any button.
 
@@ -1252,13 +1256,13 @@ Create and configure 2DFX effects that export into DFF files.
 
 ### 2DFX Light flags & corona/shadow (2.1.0)
 
-**Panel:** `N-panel ▸ INU ▸ 2DFX Effects` (with a Light-type 2DFX Empty selected) ▸ section **Флаги** (Flags), **Свойства света** (Light Properties), **Тень** (Shadow)
+**Panel:** `N-panel ▸ INU ▸ 2DFX Effects` (with a Light-type 2DFX Empty selected) ▸ section **Flags**, **Light Properties**, **Shadow**
 
 In 2.1.0 the day/night visibility flags were corrected (they were off-by-one before, so "night-only" lamps still glowed in daytime), and corona/shadow handling was clarified.
 
 #### Day / night visibility flags
 
-Open the **Флаги** (Flags) section. The buttons under **Видимость** (Visibility) are toggles — a depressed (highlighted) button means the bit is ON. Hover any button to see what the bit does.
+Open the **Flags** section. The buttons under **Visibility** are toggles — a depressed (highlighted) button means the bit is ON. Hover any button to see what the bit does.
 
 | Button | Raw bit | Meaning |
 |---|---|---|
@@ -1270,38 +1274,38 @@ The default for a new light is both **AT_DAY** + **AT_NIGHT** ON (always-on lamp
 
 **Pipeline — make a light glow ONLY at night:**
 1. Select the Light 2DFX Empty.
-2. Expand **Флаги** (Flags) ▸ **Видимость** (Visibility).
+2. Expand **Flags** ▸ **Visibility**.
 3. Enable **AT_NIGHT** (click so it is depressed/highlighted).
 4. Disable **AT_DAY** (click so it is no longer depressed).
 5. Done — the lamp is dark at daytime and lit at night.
 
 #### Corona only — no ground light pool / shadow
 
-The visible glowing sprite (the "light") is the **corona**, driven by **Размер короны** (Corona Size) in **Свойства света** (Light Properties). The ground light pool / shadow patch and the surrounding flood-light are driven by **Размер пятна** (Shadow/Spot Size) in the **Тень** (Shadow) section.
+The visible glowing sprite (the "light") is the **corona**, driven by **Corona Size** in **Light Properties**. The ground light pool / shadow patch and the surrounding flood-light are driven by **Shadow/Spot Size** in the **Shadow** section.
 
 **Pipeline — keep only the corona, remove the ground pool:**
-1. Expand the **Тень** (Shadow) section.
-2. Set **Размер пятна** (Shadow Size) to **0**. The panel confirms: *"Размер = 0 → только корона, без пятна"* (Size = 0 → corona only, no pool).
-3. Make sure **Размер короны** (Corona Size) in **Свойства света** is greater than 0 — that is the part you keep. (Corona Size 0 = no visible glow at all.)
+1. Expand the **Shadow** section.
+2. Set **Shadow Size** to **0**. The panel confirms: *"Size = 0 → corona only, no pool"*.
+3. Make sure **Corona Size** in **Light Properties** is greater than 0 — that is the part you keep. (Corona Size 0 = no visible glow at all.)
 
 #### Per-object preview materials (multiple lamps, same corona texture)
 
 Previously, several lamps that shared one corona texture (e.g. every street lamp using `coronastar`) collapsed onto a single shared preview material, so only one corona actually rendered in the viewport. Each light now gets its own preview material keyed to the object, so every lamp renders its corona.
 
 - New lights and refreshed lights get this automatically.
-- If an **existing** scene still shows only one corona: select each lamp and click **Обновить превью** (Refresh Preview) at the top of the panel to rebuild its per-object material.
+- If an **existing** scene still shows only one corona: select each lamp and click **Refresh Preview** at the top of the panel to rebuild its per-object material.
 
 #### Hover tooltips
 
 Hover (don't click) these controls for an in-panel explanation:
 
-- **Режим показа** (Show Mode) and **Тип бликов** (Flare Type) enum items — each option (DEFAULT, RANDOM_FLASHING, FLASH_RAIN, ONLY_RAIN, NO_RAIN, FLASH_5, lens-flare types) describes its behaviour.
-- **Имя короны** (Corona Name) / **Имя тени** (Shadow Name) entries — each texture (`coronastar`, `coronamoon`, `shad_exp`, vehicle/ped silhouettes…) describes its look.
-- In the **Тень** (Shadow) section: **Дистанция** (Distance) = how many metres down the light pool is projected; **Множитель** (Multiplier) = brightness/contrast of the ground pool (0–255).
+- **Show Mode** and **Flare Type** enum items — each option (DEFAULT, RANDOM_FLASHING, FLASH_RAIN, ONLY_RAIN, NO_RAIN, FLASH_5, lens-flare types) describes its behaviour.
+- **Corona Name** / **Shadow Name** entries — each texture (`coronastar`, `coronamoon`, `shad_exp`, vehicle/ped silhouettes…) describes its look.
+- In the **Shadow** section: **Distance** = how many metres down the light pool is projected; **Multiplier** = brightness/contrast of the ground pool (0–255).
 
-> 💡 **Example — night-only street lamp:** Select the lamp's Light 2DFX Empty ▸ **Флаги** ▸ **Видимость**: turn ON **AT_NIGHT**, turn OFF **AT_DAY**. Leave **Размер короны** (Corona Size) at ~1.0 and **Размер пятна** (Shadow Size) at ~8 for a glowing lamp with a soft ground pool that only appears after dark.
+> 💡 **Example — night-only street lamp:** Select the lamp's Light 2DFX Empty ▸ **Flags** ▸ **Visibility**: turn ON **AT_NIGHT**, turn OFF **AT_DAY**. Leave **Corona Size** at ~1.0 and **Shadow Size** at ~8 for a glowing lamp with a soft ground pool that only appears after dark.
 
-> 💡 **Example — corona-only neon (no ground pool):** In **Свойства света** set **Размер короны** (Corona Size) to taste and pick a corona in **Имя короны** (e.g. `coronastar`). In the **Тень** (Shadow) section set **Размер пятна** (Shadow Size) to **0** — you get a floating glow with no light circle on the ground. If you have several such signs sharing the same corona texture, click **Обновить превью** (Refresh Preview) on each so they all render.
+> 💡 **Example — corona-only neon (no ground pool):** In **Light Properties** set **Corona Size** to taste and pick a corona in **Corona Name** (e.g. `coronastar`). In the **Shadow** section set **Shadow Size** to **0** — you get a floating glow with no light circle on the ground. If you have several such signs sharing the same corona texture, click **Refresh Preview** on each so they all render.
 
 ---
 
@@ -1467,7 +1471,7 @@ Two visual feedback modes — **static preview** (default) and **live simulation
 
 **Live simulation** — actual GPU-driven particle simulator. Scene-wide toggle, runs at 30 Hz:
 
-- Toggle: **N-sidebar → 2DFX panel → Симуляция** checkbox (`▶` / `⏸` icon depending on state). Scene property `gtatools_particle_sim`.
+- Toggle: **N-sidebar → 2DFX panel → Simulation** checkbox (`▶` / `⏸` icon depending on state). Scene property `gtatools_particle_sim`.
 - On enable, registers a `bpy.app.timers` tick at `1/30 s` and walks every PARTICLE Empty in the scene.
 - Each Empty gets a child mesh `<empty_name>_psim` with a pool of up to **`MAX_PARTICLES_PER_EMITTER = 64`** quads.
 - Per-particle state (position, velocity, age, life) lives in module-level dicts — ephemeral, not saved to `.blend`.
@@ -1652,23 +1656,23 @@ force: (0, 0, -9.8)
 | 9 Alignment Points | Choose position within cell (top-left, center, etc.) |
 | Link Polygons | Move polygons with overlapping UVs together |
 | Show UV Grid | Visualize GTA texture atlas grid |
-| Island Scale — В сетку (To grid) | Fit island UV height (Rows) / width (Columns) to the Value/Texture-size fraction |
-| Island Scale — Тексель (Texel) | Set real texel density (area-based, TexTools-style) |
+| Island Scale — To grid | Fit island UV height (Rows) / width (Columns) to the Value/Texture-size fraction |
+| Island Scale — Texel | Set real texel density (area-based, TexTools-style) |
 
 **Grid settings:** columns × rows (default 4×4).
 
 > 💡 **Example — UV grid for a 4×4 atlas:** ground mesh with 16 grass variants in a 4×4 atlas. In Edit Mode select faces → UV Editor → **UV Grid Randomizer** → each face's UV coords land in a random cell of the 16. In the viewport the ground shows natural variety without manual texture assignment.
 
-### Island Scale (Масштаб островов)
+### Island Scale
 
-**Box:** UV Editor → Sidebar (N) → GTA Tools → **Масштаб островов** (below the UV Grid Randomizer).
+**Box:** UV Editor → Sidebar (N) → GTA Tools → **Island Scale** (below the UV Grid Randomizer).
 
-Two ways to normalise UV island scale. Fields: **Текстура** (Texture size, 128…4096, default 512) and **Значение** (Value).
+Two ways to normalise UV island scale. Fields: **Texture** (Texture size, 128…4096, default 512) and **Value**.
 
-- **В сетку** (To grid) — uniformly scales each island so its UV **height** (when **Rows** is set) or **width** (when **Columns** is set) becomes `Value / Texture size`. Aspect is preserved, 3D size is ignored (pure UV fraction). Works **only** when exactly one of Rows **or** Columns is set (not both); the hint line shows the active axis.
-- **Тексель** (Texel) — real texel density (px per unit), area-based (UV↔3D) like TexTools. It accounts for the actual geometry size, so detail is levelled across islands. Computed on local geometry — apply object scale first.
+- **To grid** — uniformly scales each island so its UV **height** (when **Rows** is set) or **width** (when **Columns** is set) becomes `Value / Texture size`. Aspect is preserved, 3D size is ignored (pure UV fraction). Works **only** when exactly one of Rows **or** Columns is set (not both); the hint line shows the active axis.
+- **Texel** — real texel density (px per unit), area-based (UV↔3D) like TexTools. It accounts for the actual geometry size, so detail is levelled across islands. Computed on local geometry — apply object scale first.
 
-> 💡 **Example — uniform texel across buildings:** select all faces in Edit Mode → **Текстура** 1024, **Значение** 256 → **Тексель** → every island is scaled to 256 px/unit, one consistent texture density everywhere.
+> 💡 **Example — uniform texel across buildings:** select all faces in Edit Mode → **Texture** 1024, **Value** 256 → **Texel** → every island is scaled to 256 px/unit, one consistent texture density everywhere.
 
 ---
 
@@ -1852,63 +1856,63 @@ Settings at the top of the panel apply to every map you bake:
 
 | Setting | Description |
 |---|---|
-| **Размер** (Size) | Square power-of-two preset (32 … 8192). Sets X and Y together. |
+| **Size** | Square power-of-two preset (32 … 8192). Sets X and Y together. |
 | **X / Y** | Independent width/height; each snaps to the nearest power of two. |
 | **Padding** | Bleed in pixels past the UV island edges (default 8). |
-| **АА** (AA) | Supersampling: bakes at an internally larger resolution and shrinks down — removes jaggies/banding (TexTools-style). `Выкл` (Off), `2×` (default), `4×` (cleaner, slower). Internal resolution is capped at 4096, and Cycles samples are reduced by AA² so AA is almost free on noisy maps. |
+| **AA** | Supersampling: bakes at an internally larger resolution and shrinks down — removes jaggies/banding (TexTools-style). `Off`, `2×` (default), `4×` (cleaner, slower). Internal resolution is capped at 4096, and Cycles samples are reduced by AA² so AA is almost free on noisy maps. |
 
 > 💡 The output texture name is derived automatically from your model name (known `_DFF` / `_LOD` / `_COL` prefixes and `_hi` / `_low` suffixes are stripped) — there is no name field.
 
 ### Bake modes
 
-**Panel:** `Texture Bake` → **Режим** (Mode) row — the three mode buttons (UV → UV / Hi → Low / Камера) are shown directly at the top of the bake box (the old collapsible «Запекание» header was removed).
+**Panel:** `Texture Bake` → **Mode** row — the three mode buttons (UV → UV / Hi → Low / Camera) are shown directly at the top of the bake box (the old collapsible "Bake" header was removed).
 
 | Mode | What it does |
 |---|---|
 | **UV → UV** | Bakes the object onto itself. Source = render UV (the 📷 `active_render` layer); target = the **selected** UV layer. Designed for trim sheets: keep textures on the trim UV and bake light/AO into a separate clean UV. |
-| **Hi → Low** | Transfers detail from a high-poly onto a selected low-poly. The pair is found by name suffixes `_hi` / `_low` (e.g. `wheel_hi` ↔ `wheel_low`). The low-poly must have a UV layout. Cage / Max Ray live in **Дополнительно** (Advanced). |
-| **Камера** (Camera) | Renders the object with an orthographic camera into a texture with transparency. For billboard trees / impostors: nothing is clipped, the silhouette fills the frame and alpha is taken from it. |
+| **Hi → Low** | Transfers detail from a high-poly onto a selected low-poly. The pair is found by name suffixes `_hi` / `_low` (e.g. `wheel_hi` ↔ `wheel_low`). The low-poly must have a UV layout. Cage / Max Ray live in **Advanced**. |
+| **Camera** | Renders the object with an orthographic camera into a texture with transparency. For billboard trees / impostors: nothing is clipped, the silhouette fills the frame and alpha is taken from it. |
 
 When a mesh is selected the panel shows live info under the mode row (source/target UV, detected Hi/Low pair, or camera framing).
 
 **Camera mode specifics:**
 - If the selected model has a `_hi` / `_low` pair, the **high-poly is rendered** and mapped onto the **low-poly billboard plane**; the camera orients itself **along the plane's normal** and the plane's UV is reprojected from that exact viewpoint, so the texture lands pixel-perfect.
-- If there is no pair, the object renders itself along a world axis you pick with **Ракурс** (View): `Спереди −Y` / `Сзади +Y` / `Справа +X` / `Слева −X` / `Сверху +Z`.
-- **Отступ** (Padding) — extra room around the silhouette so the crown doesn't touch the texture edge.
+- If there is no pair, the object renders itself along a world axis you pick with **View**: `Front −Y` / `Back +Y` / `Right +X` / `Left −X` / `Top +Z`.
+- **Padding** — extra room around the silhouette so the crown doesn't touch the texture edge.
 - Camera mode renders with EEVEE (matching Material Preview), produces a clean **standard Principled material** with alpha-clip, and does **not** build a layer composite.
 
 > 💡 **Example — tree billboard via Camera mode:**
 > 1. Model the detailed tree as `tree_hi` and a flat billboard quad as `tree_low`, and give `tree_low` a UV layout.
-> 2. Select the pair, open **Texture Bake**, set **Размер** 512, **АА** `2×`.
-> 3. Set **Режим** → **Камера**. The panel confirms `Рендер: tree_hi`, `На модель: tree_low`, `Ракурс: по нормали плоскости`.
+> 2. Select the pair, open **Texture Bake**, set **Size** 512, **AA** `2×`.
+> 3. Set **Mode** → **Camera**. The panel confirms `Render: tree_hi`, `Onto model: tree_low`, `View: by plane normal`.
 > 4. Add one **Diffuse** layer and press **Bake**.
-> 5. The billboard now wears a standard material with the rendered tree and a clean alpha silhouette. Save it with **Сохранить как** (Save as).
+> 5. The billboard now wears a standard material with the rendered tree and a clean alpha silhouette. Save it with **Save as**.
 
 ### The layer stack
 
-**Sub-panel:** `Texture Bake → Добавить слой` (Add layer) and the layer list below it
+**Sub-panel:** `Texture Bake → Add layer` and the layer list below it
 
 The stack reads like Photoshop: the **bottom** layer is the base, layers above blend down onto it. New layers are added at the **top**.
 
 > The layer stack is **per-model** — each object keeps its own bake layers (stored on `obj.inu`), not a single scene-global stack. Select a different model and its own stack appears.
 
-**Add a layer:** in the **Добавить слой** box, pick a map in the dropdown → **Добавить** (Add). The layer appears at the top of the list with that map's default blend mode and opacity. (Normal Map is added with **Обесцветить** / Desaturate already on.)
+**Add a layer:** in the **Add layer** box, pick a map in the dropdown → **Add**. The layer appears at the top of the list with that map's default blend mode and opacity. (Normal Map is added with **Desaturate** already on.)
 
 **Per-layer row controls:**
 
 | Control | Description |
 |---|---|
 | Eye toggle | Enable/disable the layer in the composite and in flatten. |
-| Layer name | Click to **select** the layer (its baked map shows in the Image Editor and its parameters appear in **Выбранный слой**). |
+| Layer name | Click to **select** the layer (its baked map shows in the Image Editor and its parameters appear in **Selected layer**). |
 | **Bake** | Bakes **only this layer's** map into its own image. |
 | Save icon (✓) | Saves this single map to a file (enabled once the map is baked). |
 | **X / ▲ / ▼** | Remove / move up / move down the selected layer. Order = blend order. |
 
-**Selected layer parameters** (**Выбранный слой** box):
-- **Режим** (Blend mode) — how this layer blends onto the layers below (18 modes, below).
-- **Прозрачность** (Opacity) — 0…1, mixes this layer's blend result over the layers below.
-- **Контраст** (Contrast) / **Гамма** (Gamma) — per-layer tone adjustment, live in the preview and the final flatten.
-- **Обесцветить** (Desaturate) — *Normal Map layers only*; greyscales the layer to remove the blue tangent-space tint (like flattening a normal map in Photoshop).
+**Selected layer parameters** (**Selected layer** box):
+- **Mode** (Blend mode) — how this layer blends onto the layers below (18 modes, below).
+- **Opacity** — 0…1, mixes this layer's blend result over the layers below.
+- **Contrast** / **Gamma** — per-layer tone adjustment, live in the preview and the final flatten.
+- **Desaturate** — *Normal Map layers only*; greyscales the layer to remove the blue tangent-space tint (like flattening a normal map in Photoshop).
 
 ### Available maps
 
@@ -1931,48 +1935,48 @@ Unlike Shadow / Diffuse Lit (internal light rig, scene isolated), **LightMap** b
 no albedo → a clean lighting multiplier). Move a lamp and the bake changes — it's your real
 lighting, à la *The Lightmapper*.
 
-- **Denoise** (Дополнительно → **Денойз**): cleans the noise of *any* light-dependent map
+- **Denoise** (Advanced → **Denoise**): cleans the noise of *any* light-dependent map
   (AO / Shadow / Diffuse Lit / Emission GI / LightMap), not just the LightMap. Uses Blender's
   built-in **OIDN** (compositor Denoise node — no external binary) on Blender 4.x, and falls back
   to a **numpy bilateral filter** on Blender 5.x / headless. Clean maps (Diffuse / Normal /
   Emission / Bevel) don't get it. On by default.
-- **LightMap samples** (Дополнительно → **Сэмплы LightMap**): separate, higher sample budget
+- **LightMap samples** (Advanced → **LightMap samples**): separate, higher sample budget
   (GI is noisier than AO).
-- **Apply as** (Дополнительно → **Применить как**) + the **Применить LightMap** button pick how
+- **Apply as** (Advanced → **Apply as**) + the **Apply LightMap** button pick how
   the baked LightMap is used in GTA SA (SA has no native lightmap-UV):
 
 | Apply mode | What it does | GTA SA target |
 |---|---|---|
-| **Слой в стеке** (Layer in stack) | Leaves it as a MULTIPLY layer — flatten/save yourself | Any (manual) |
-| **Впечь в диффуз** (Bake into diffuse) | `LightMap × <base>_DIFFUSE` → one texture (needs a baked Diffuse layer) | Vanilla, no shader |
-| **В vertex prelight** (To vertex prelight) | Samples the LightMap per-loop into the **Day** prelight color attribute | Vanilla static lighting |
-| **Отдельная текстура + 2 UV** (Separate texture + 2 UV) | Saves an `LP_<base>` texture and wires it via a 2nd UV channel Multiply shader (auto-unwraps a non-overlapping **LightMap** UV when **Авто lightmap-UV** is on) | MTA custom shader |
+| **Layer in stack** | Leaves it as a MULTIPLY layer — flatten/save yourself | Any (manual) |
+| **Bake into diffuse** | `LightMap × <base>_DIFFUSE` → one texture (needs a baked Diffuse layer) | Vanilla, no shader |
+| **To vertex prelight** | Samples the LightMap per-loop into the **Day** prelight color attribute | Vanilla static lighting |
+| **Separate texture + 2 UV** | Saves an `LP_<base>` texture and wires it via a 2nd UV channel Multiply shader (auto-unwraps a non-overlapping **LightMap** UV when **Auto lightmap-UV** is on) | MTA custom shader |
 
 > 💡 **Example — bake a scene-lit LightMap into vertex prelight:**
 > 1. Light your scene (sun + lamps + a world/sky). Select the building mesh.
-> 2. **Texture Bake** → **Добавить слой** → **LightMap** → **Добавить**.
-> 3. **Дополнительно** → keep **Денойз** on, set **Применить как** → **В vertex prelight**.
+> 2. **Texture Bake** → **Add layer** → **LightMap** → **Add**.
+> 3. **Advanced** → keep **Denoise** on, set **Apply as** → **To vertex prelight**.
 > 4. Press **Bake** (the map captures your real lights + bounce, denoised).
-> 5. Press **Применить LightMap** → the lighting lands in the **Day** vcol; export the DFF as usual.
+> 5. Press **Apply LightMap** → the lighting lands in the **Day** vcol; export the DFF as usual.
 
 ### Blend modes (18)
 
-Each layer's **Режим** (Blend mode) dropdown matches Blender's Mix node / Photoshop and is identical in the live preview and the final flatten:
+Each layer's **Mode** (Blend mode) dropdown matches Blender's Mix node / Photoshop and is identical in the live preview and the final flatten:
 Normal, Darken, Multiply, Color Burn, Lighten, Screen, Color Dodge, Add, Overlay, Soft Light, Linear Light, Difference, Subtract, Divide, Hue, Saturation, Color, Value.
 
-### Advanced settings (Дополнительно)
+### Advanced settings
 
-**Sub-panel:** `Texture Bake → Дополнительно` (collapsed by default). Filtered to the **selected** layer's map — only relevant options show:
+**Sub-panel:** `Texture Bake → Advanced` (collapsed by default). Filtered to the **selected** layer's map — only relevant options show:
 - **Samples** — Cycles samples for noisy maps (AO / lit / GI).
-- **Свет от сцены** (Scene lights, **Shadow / Diffuse-Lit only**, default **ON**) — bake these maps from the **real scene lights** (your lamps / sun / world), the way LightMap does. Off = the internal calibrated SUN rig (works even with no lamps in the scene).
-- **Свет (экспозиция)** (Light exposure) — energy multiplier for the internal light rig (Shadow / Diffuse Lit). Shown only when **Свет от сцены** is off.
-- **Изолировать объект** (Isolate object, shared, default **ON**) — hide every *other* mesh in the scene for the duration of the bake (lamps are left alone). Fixes **black AO** when the model sits among other map objects (neighbours no longer shadow it) and speeds the bake up (Cycles builds its BVH from the target only). Off = bake with neighbours' shadows. Not applied in **Camera** mode.
-- **Bevel радиус** / **Bevel samples** / **Только выделенные полигоны** (Selected faces only) — only for the Bevel map. "Selected faces only" now applies specifically to Bevel; with multiple Bevel layers each gets its own image.
-- **Прозрачный фон** (Transparent background, shared, default OFF): off — the baked-map background outside the UV islands is filled with the texture's **average colour** (alpha 1), so seams/mips don't bleed black; on — the background is transparent (alpha 0). Does not affect the **ALPHA** map, decal layers, or **Camera** mode, where alpha is meaningful.
-- **LightMap** map only (see the LightMap section): **Качество** (sample preset Preview→Production, or Custom→**Сэмплы LightMap**), **Режим света** (Combined / Indirect only / Direct only), **Денойз** + **Денойз по albedo/normal** (feature-guided), **Интенсивность** (exposure) + **Смягчение** (Gaussian blur), **Применить как**, **Авто lightmap-UV**. Intensity/Softening re-apply without re-baking via the **Пост-обработка** button.
+- **Scene lights** (**Shadow / Diffuse-Lit only**, default **ON**) — bake these maps from the **real scene lights** (your lamps / sun / world), the way LightMap does. Off = the internal calibrated SUN rig (works even with no lamps in the scene).
+- **Light exposure** (Shadow / Diffuse Lit) — energy multiplier for the internal light rig. Shown only when **Scene lights** is off.
+- **Isolate object** (shared, default **ON**) — hide every *other* mesh in the scene for the duration of the bake (lamps are left alone). Fixes **black AO** when the model sits among other map objects (neighbours no longer shadow it) and speeds the bake up (Cycles builds its BVH from the target only). Off = bake with neighbours' shadows. Not applied in **Camera** mode.
+- **Bevel radius** / **Bevel samples** / **Selected faces only** — only for the Bevel map. "Selected faces only" now applies specifically to Bevel; with multiple Bevel layers each gets its own image.
+- **Transparent background** (shared, default OFF): off — the baked-map background outside the UV islands is filled with the texture's **average colour** (alpha 1), so seams/mips don't bleed black; on — the background is transparent (alpha 0). Does not affect the **ALPHA** map, decal layers, or **Camera** mode, where alpha is meaningful.
+- **LightMap** map only (see the LightMap section): **Quality** (sample preset Preview→Production, or Custom→**LightMap samples**), **Light mode** (Combined / Indirect only / Direct only), **Denoise** + **Denoise by albedo/normal** (feature-guided), **Intensity** (exposure) + **Softening** (Gaussian blur), **Apply as**, **Auto lightmap-UV**. Intensity/Softening re-apply without re-baking via the **Post-process** button.
 - **Cage** / **Max Ray** — only in **Hi → Low** mode (Max Ray 0 = auto).
 
-> **Baking quality (2.1.x):** compositing and the **Сохранить как** flatten now run in **linear space**, so the saved texture matches the live preview and the in-game look. **Adaptive sampling is disabled** during bakes, so the **Samples** slider actually controls the result (higher = cleaner — no early-out cutting it short).
+> **Baking quality (2.1.x):** compositing and the **Save as** flatten now run in **linear space**, so the saved texture matches the live preview and the in-game look. **Adaptive sampling is disabled** during bakes, so the **Samples** slider actually controls the result (higher = cleaner — no early-out cutting it short).
 
 ### Previewing and saving
 
@@ -1980,17 +1984,17 @@ After baking, two actions appear at the bottom of the panel:
 
 | Button | Description |
 |---|---|
-| **Показать текстуру** / **Скрыть текстуру** (Show / Hide texture) | Toggles a flat-emission preview of the baked result directly on the model (visible under any lighting). For a layer stack it shows the live node composite — editing opacity/blend/contrast/gamma updates it instantly. Click again to restore your original materials and render UV. |
-| **Сохранить как** (Save as) | Flattens the enabled layers into one texture (numpy composite, sRGB) and saves it to a file, with a **Размер** downscale option: `Оригинал` / `½` / `¼` / `⅛` (proper box-averaging — cleaner than baking small directly). |
-| **Показать поверх базы (UV2)** (Show over base) | Final two-UV look: builds a node material where the model's **base texture (via its own UV1)** is multiplied by the **baked stack composite (via the bake UV / UV2)** — i.e. `TexUV1 × TexUV2`. Use when you bake AO/LightMap into a separate UV2 and want to see them over the existing diffuse. Per-material (each slot keeps its own base). Click **Скрыть текстуру** to restore. |
+| **Show texture** / **Hide texture** | Toggles a flat-emission preview of the baked result directly on the model (visible under any lighting). For a layer stack it shows the live node composite — editing opacity/blend/contrast/gamma updates it instantly. Click again to restore your original materials and render UV. |
+| **Save as** | Flattens the enabled layers into one texture (numpy composite, sRGB) and saves it to a file, with a **Size** downscale option: `Original` / `½` / `¼` / `⅛` (proper box-averaging — cleaner than baking small directly). |
+| **Show over base (UV2)** | Final two-UV look: builds a node material where the model's **base texture (via its own UV1)** is multiplied by the **baked stack composite (via the bake UV / UV2)** — i.e. `TexUV1 × TexUV2`. Use when you bake AO/LightMap into a separate UV2 and want to see them over the existing diffuse. Per-material (each slot keeps its own base). Click **Hide texture** to restore. |
 
 > 💡 **Example — bake AO + Diffuse and flatten to a TXD texture:**
-> 1. Select the building mesh; make sure the working texture UV is the render UV (📷). Open **Texture Bake**, set **Размер** 1024, **АА** `2×`, **Режим** → **UV → UV**.
-> 2. **Добавить слой** → **Diffuse** → **Добавить** (base layer).
-> 3. **AO** → **Добавить** (lands on top with Multiply).
-> 4. (Optional) select the AO layer and lower **Прозрачность** to soften the occlusion.
-> 5. Press **Bake** — the live composite appears on the model; inspect via **Показать текстуру**.
-> 6. **Сохранить как** → `Оригинал` (or `½` for 512) → save the PNG.
+> 1. Select the building mesh; make sure the working texture UV is the render UV (📷). Open **Texture Bake**, set **Size** 1024, **AA** `2×`, **Mode** → **UV → UV**.
+> 2. **Add layer** → **Diffuse** → **Add** (base layer).
+> 3. **AO** → **Add** (lands on top with Multiply).
+> 4. (Optional) select the AO layer and lower **Opacity** to soften the occlusion.
+> 5. Press **Bake** — the live composite appears on the model; inspect via **Show texture**.
+> 6. **Save as** → `Original` (or `½` for 512) → save the PNG.
 > 7. Import that PNG into your TXD with the texture/TXD tools as the model's diffuse.
 
 ---
@@ -2216,14 +2220,14 @@ If the game crashes when the model appears:
 
 ## Cutscene Cameras (.dat)
 
-**Panel:** View3D → Sidebar (N) → GTA Tools → **Анимации** (Animations) → **Камера (катсцена .dat)** box
+**Panel:** View3D → Sidebar (N) → GTA Tools → **Animations** → **Camera (cutscene .dat)** box
 
 Import/export a GTA cutscene-camera trajectory (`.dat`, the same format as the `SetCamera.ms` MaxScript).
 
 | Button | Operator | Description |
 |--------|----------|-------------|
-| Импорт | `gtatools.import_camera_dat` | Load a camera `.dat` — builds a **Camera + Empty** (`…​.Target`) linked by a **Track To** constraint |
-| Экспорт | `gtatools.export_camera_dat` | Write the Camera + its Target back to `.dat` |
+| Import | `gtatools.import_camera_dat` | Load a camera `.dat` — builds a **Camera + Empty** (`…​.Target`) linked by a **Track To** constraint |
+| Export | `gtatools.export_camera_dat` | Write the Camera + its Target back to `.dat` |
 
 The `.dat` is a text file of four blocks (FOV keys, Roll angle, camera position, target position), each closed by `;`, then padded with zeros to a multiple of 2048. Coordinates are metres, Z-up — 1:1 with Blender, with a single Z-offset (−1.0 on import, +1.0 on export) to work around the engine's Z-bug, exactly like the original script. FOV is stored as the camera's vertical field of view.
 
@@ -2231,15 +2235,15 @@ The `.dat` is a text file of four blocks (FOV keys, Roll angle, camera position,
 
 ## Handsign (ghands.ifp)
 
-**Panel:** View3D → Sidebar (N) → GTA Tools → **Анимации** (Animations) → **Handsign Tools** box
+**Panel:** View3D → Sidebar (N) → GTA Tools → **Animations** → **Handsign Tools** box
 
 Author gang-sign gestures for `ghands.ifp`. In GTA SA a hand sign is **three separate skeletons/animations** in one file: `gsignN` / `gsignNlh` (the pose of the player's **arms**; the `lh` variant is left-arm-only, used when a weapon is in the right hand), `lhgsignN` (the fingers of the left hand model `shandl.dff`) and `rhgsignN` (the fingers of the right hand `shandr.dff`) — 20 blocks in all (`gsign1..5` + `gsign1lh..5lh` + `lhgsign1..5` + `rhgsign1..5`).
 
 | Button | Operator | Description |
 |--------|----------|-------------|
-| Прицепить кисти | `gtatools.handsign_attach` | **Child Of** constrain the hand models' forearm/wrist bones to the player skeleton's wrists so the hands ride along when you animate the gesture in the viewport (bones are not merged) |
-| Отцепить кисти | `gtatools.handsign_detach` | Remove those constraints |
-| Экспорт жеста → ghands.ifp | `gtatools.handsign_export` | Export the gesture in one pass — the three active actions (arms + both hands) via the standard IFP exporter, one armature at a time |
+| Attach hands | `gtatools.handsign_attach` | **Child Of** constrain the hand models' forearm/wrist bones to the player skeleton's wrists so the hands ride along when you animate the gesture in the viewport (bones are not merged) |
+| Detach hands | `gtatools.handsign_detach` | Remove those constraints |
+| Export gesture → ghands.ifp | `gtatools.handsign_export` | Export the gesture in one pass — the three active actions (arms + both hands) via the standard IFP exporter, one armature at a time |
 
 > The export back-fills each bone's canonical SA `bone_id` by name (ped and hand skeletons use separate id tables) — without a correct `bone_id` the ANP3 animation wouldn't be applied by the game.
 
@@ -2247,16 +2251,16 @@ Author gang-sign gestures for `ghands.ifp`. In GTA SA a hand sign is **three sep
 
 ## Fragment Mesh
 
-**Panel:** View3D → Sidebar (N) → GTA Tools → **Проверка** (Check) → **Фрагментация меша** button (`gtatools.fragment_mesh`)
+**Panel:** View3D → Sidebar (N) → GTA Tools → **Check** → **Fragment mesh** button (`gtatools.fragment_mesh`)
 
 Split the active mesh into separate **shard objects** (a port of `object_explode.ms`). Each shard is a full copy of the object with the "foreign" faces deleted, so UVs, vertex colours and materials are preserved as-is.
 
 | Mode | What it does |
 |---|---|
-| **Сетка (шаг X/Y)** (Grid) | Slice into a rectangular grid by X/Y step. |
-| **Кластеры (N семян)** (Scatter) | Group faces by the nearest of **N** random seeds — a coarse Voronoi split **without** adding new cuts (existing faces are just partitioned). |
+| **Grid (X/Y step)** | Slice into a rectangular grid by X/Y step. |
+| **Clusters (N seeds)** | Group faces by the nearest of **N** random seeds — a coarse Voronoi split **without** adding new cuts (existing faces are just partitioned). |
 
-Options in the dialog: **Шаг X / Y** (grid step) or **Число осколков / Seed** (scatter), **Имя осколков** (base name), and **Удалить оригинал** (delete original, on by default). For true geometric fracturing with real break planes, use Blender's built-in **Cell Fracture**.
+Options in the dialog: **X / Y step** (grid step) or **Shard count / Seed** (scatter), **Shard name** (base name), and **Delete original** (on by default). For true geometric fracturing with real break planes, use Blender's built-in **Cell Fracture**.
 
 ---
 
@@ -2360,7 +2364,7 @@ Auto-splits into groups of 12 nodes (GTA SA limit).
 
 ## Vehicles
 
-**Panel:** View3D → Sidebar (N) → GTA Tools → **Машины** (Vehicles)
+**Panel:** View3D → Sidebar (N) → GTA Tools → **Vehicles**
 
 Vehicle-workflow tools: quick single-DFF export, uniform scaling of the whole vehicle hierarchy, and `_ok` / `_dam` damage-variant management.
 
@@ -2390,7 +2394,7 @@ Collapsible sub-panel under Vehicles — an indented tree of the active object's
 
 ## Grass
 
-**Panel:** View3D → Sidebar (N) → GTA Tools → **Трава** (Grass)
+**Panel:** View3D → Sidebar (N) → GTA Tools → **Grass**
 
 Editor for GTA SA procedural grass from `plants.dat`: import/edit/export entries, a live scatter preview in the viewport, and assigning a plants.dat surface (COL material) to selected faces so grass grows there.
 
@@ -2519,7 +2523,7 @@ preLit = day * (1 - dnParam) + night * dnParam
 **Worth knowing:**
 - Row width is detected per file: vanilla SA is 51 values (with `Dir` RGB, no `DirectionalMult`), some total conversions ship 52. Short rows — the vanilla `UNDERWATER` block has one — keep their width on export, so no column is ever added or lost.
 - If a row is shorter than the schema, the panel says so: its fields are read shifted, exactly the way the game's parser reads them.
-- Fog is a World volume: it is visible in the viewport but costs real frames on a full map, so it is off by default.
+- Fog is a compositor **screen** stage (not a World volume) and is on by default with the cycle; it costs real viewport frames on a full map, so turn the **Fog** toggle off if the viewport gets heavy.
 - This is an atmosphere match, not a pixel match. SA is not PBR — it lights the world as `texture × (prelight vcol × ambient + directional)` — so use it to pick lighting and shoot screenshots, not to predict the in-game frame exactly.
 
 ---
@@ -2615,24 +2619,24 @@ The **Normals** toggle controls vertex normal export in DFF:
 
 Live two-way link between the **Ariane** map editor and Blender — click a model in Ariane and it lands in Blender ready to edit; send it back with one button.
 
-**Panel:** N → GTA Tools → **Export / Import** → **Ariane** tab. The shared **selection block** (Выделено / DFF / LOD / COL) sits on top; the bridge controls are grouped below it.
+**Panel:** N → GTA Tools → **Export / Import** → **Ariane** tab. The shared **selection block** (Selected / DFF / LOD / COL) sits on top; the bridge controls are grouped below it.
 
 | Control | What it does |
 |---------|--------------|
 | 📁 game folder | Path to the game — the bridge exchanges files via `<game>\ariane\bridge`. **Set this first**; the row is highlighted red until it is. |
-| **Ручной импорт** | Pull whatever Ariane has dropped into the inbox, once. |
-| **⟳ Авто** | Toggle the watcher — auto-imports models as Ariane sends them. |
-| **Экспорт → Ariane** | Send the selected meshes back to Ariane (DFF + TXD, plus any attached **2DFX** empties — the mesh's direct children tagged `inu.type == '2DFX'` — so coronas/particles/lights ride along with the model). |
-| **COL / LOD / Позиция** | Include collision / distant LOD / position in that export. |
-| **Live-синхронизация** | Two-way live sync of position, selection and camera between Blender and Ariane (needs the ⟳ watcher on). |
-| **Ещё** ▸ | Rare/advanced: **Синхр. удаления** (deleting in Blender soft-deletes the instance in Ariane), **Создать модель** (register a brand-new model), **Очистить кэш**. |
+| **Manual import** | Pull whatever Ariane has dropped into the inbox, once. |
+| **⟳ Auto** | Toggle the watcher — auto-imports models as Ariane sends them. |
+| **Export → Ariane** | Send the selected meshes back to Ariane (DFF + TXD, plus any attached **2DFX** empties — the mesh's direct children tagged `inu.type == '2DFX'` — so coronas/particles/lights ride along with the model). |
+| **COL / LOD / Position** | Include collision / distant LOD / position in that export. |
+| **Live sync** | Two-way live sync of position, selection and camera between Blender and Ariane (needs the ⟳ watcher on). |
+| **More** ▸ | Rare/advanced: **Sync deletions** (deleting in Blender soft-deletes the instance in Ariane), **Create model** (register a brand-new model), **Clear cache**. |
 
 **Workflow:**
 1. Set the **game folder** (📁).
-2. In Ariane, click **Export to Blender** on a model → it appears in Blender (turn on **⟳ Авто** to auto-import a whole selection as it streams in).
+2. In Ariane, click **Export to Blender** on a model → it appears in Blender (turn on **⟳ Auto** to auto-import a whole selection as it streams in).
 3. Edit / prelight the model in Blender.
-4. **Экспорт → Ariane** → it's rebuilt in the game.
-5. For live editing, turn on **Live-синхронизация** — move or select in either app and the other follows.
+4. **Export → Ariane** → it's rebuilt in the game.
+5. For live editing, turn on **Live sync** — move or select in either app and the other follows.
 
 ---
 
@@ -2727,26 +2731,26 @@ Source: [`core/ipl.py`](INU_tools/core/ipl.py) → `_write_binary_ipl`, `write_b
 
 GTA SA UV animation (chunks `0x2B` UV-anim dict + `0x135` material PLG, Kam's `UVanim_tool` layout) is authored on the **material** and previewed live in the viewport. v2.1.0 splits it into two modes — a constant **Scroll** and per-frame **Keyframes** authored on a Mapping node — plus a Spacebar live preview.
 
-**Material panel:** Properties → Material → *GTA Material* → block **UV Анимация** (UV Animation).
+**Material panel:** Properties → Material → *GTA Material* → block **UV Animation**.
 
 **Pipeline (common setup):**
 1. Build a material with an **Image Texture** node feeding the BSDF *Base Color* (tileable texture for scrolls).
-2. Enable ☑ **UV Анимация** (UV Animation). This both flags the material for export and builds the in-shader preview rig (a `UVMap → Mapping → texture Vector` chain named `INU_UVAnim_*`).
-3. Set **Имя анимации** (Animation Name) — the UVAnim name written to the DFF (defaults to the material name, max 31 chars).
-4. Choose a mode below (**Прокрутка** / **Ключевые кадры**), set its values, and press **Spacebar** in the 3D viewport to watch the texture move (use Material Preview or Rendered shading).
+2. Enable ☑ **UV Animation**. This both flags the material for export and builds the in-shader preview rig (a `UVMap → Mapping → texture Vector` chain named `INU_UVAnim_*`).
+3. Set **Animation Name** — the UVAnim name written to the DFF (defaults to the material name, max 31 chars).
+4. Choose a mode below (**Scroll** / **Keyframes**), set its values, and press **Spacebar** in the 3D viewport to watch the texture move (use Material Preview or Rendered shading).
 
 > Turning the toggle **off** removes the preview nodes and frees the texture Vector inputs — the mesh returns to static UVs. The preview only attaches to texture nodes whose Vector input is *unconnected*, so it never clobbers a custom mapping you already wired.
 
 #### Scroll mode (constant speed)
 
-**Material panel:** *GTA Material* → **UV Анимация** → **Прокрутка** (Scroll).
+**Material panel:** *GTA Material* → **UV Animation** → **Scroll**.
 
 A constant linear scroll. The preview hangs drivers on the Mapping node's *Location* (`speed × frame / fps`) so the viewport scrolls at exactly the speed that exports.
 
 **Settings:**
 - **Speed U** — units/sec along U. `+` scrolls right, `−` left.
 - **Speed V** — units/sec along V. `+` scrolls down, `−` up.
-- **Длительность** (Duration) — cycle length in seconds.
+- **Duration** — cycle length in seconds.
 
 On export this writes two keyframes: t=0 identity, and t=Duration with translation = `speed × duration`.
 
@@ -2759,36 +2763,36 @@ On export this writes two keyframes: t=0 identity, and t=Duration with translati
 | Neon scrolling right | 1.0 | 0 | 4.0 | 4 U units |
 | Water (diagonal) | 0.2 | 0.1 | 5.0 | 1 U + 0.5 V |
 
-> 💡 **Example — scrolling water / conveyor:** make a tileable strip texture, enable **UV Анимация** → **Прокрутка**, set **Speed V = 0.5**, **Длительность = 2.0** (= 1 V unit per cycle, seamless). Press Spacebar — the surface flows in the viewport, and the same motion ships in the DFF.
+> 💡 **Example — scrolling water / conveyor:** make a tileable strip texture, enable **UV Animation** → **Scroll**, set **Speed V = 0.5**, **Duration = 2.0** (= 1 V unit per cycle, seamless). Press Spacebar — the surface flows in the viewport, and the same motion ships in the DFF.
 
 #### Keyframe mode (author your own keys) `(2.1.0)`
 
-**Material panel:** *GTA Material* → **UV Анимация** → **Ключевые кадры** (Keyframes).
-**UV Editor → N → GTA Tools → UV Анимация:** insert/clear keys here.
+**Material panel:** *GTA Material* → **UV Animation** → **Keyframes**.
+**UV Editor → N → GTA Tools → UV Animation:** insert/clear keys here.
 
 Instead of a fixed scroll you author keys directly on the preview Mapping node's **Location** (UV shift) and **Scale**. The exporter reads those keys back and writes them as real UVAnim frames — multiple steps, holds, jumps, scale pulses. No drivers are placed in this mode, so your keys are free to set.
 
-In **Keyframe** mode the material panel just points you to the UV editor. Open the **UV Editor** (the GTA Tools panel has a button to split one out), press **N**, and open the **GTA Tools → UV Анимация** panel. It shows:
-- **Кадр** (Frame) — the current timeline frame.
-- **Сдвиг UV** (UV Shift) — Mapping *Location* X/Y for this frame.
-- **Масштаб** (Scale) — Mapping *Scale* for this frame.
-- **Вставить ключ** (Insert Key) — keys both Location and Scale at the current frame (auto-creates the rig if missing).
-- **Очистить** (Clear) — removes all UV-anim keys on this material.
+In **Keyframe** mode the material panel just points you to the UV editor. Open the **UV Editor** (the GTA Tools panel has a button to split one out), press **N**, and open the **GTA Tools → UV Animation** panel. It shows:
+- **Frame** — the current timeline frame.
+- **UV Shift** — Mapping *Location* X/Y for this frame.
+- **Scale** — Mapping *Scale* for this frame.
+- **Insert Key** — keys both Location and Scale at the current frame (auto-creates the rig if missing).
+- **Clear** — removes all UV-anim keys on this material.
 
 **Pipeline:**
-1. Material panel → enable **UV Анимация**, choose **Ключевые кадры**.
-2. UV Editor → N → **GTA Tools → UV Анимация**.
-3. Go to a frame, set **Сдвиг UV** / **Масштаб**, press **Вставить ключ** (panel hint: «Меняй Сдвиг/Кадр → Вставить ключ»).
-4. Advance the timeline, change the values, **Вставить ключ** again. Repeat per step.
+1. Material panel → enable **UV Animation**, choose **Keyframes**.
+2. UV Editor → N → **GTA Tools → UV Animation**.
+3. Go to a frame, set **UV Shift** / **Scale**, press **Insert Key** (panel hint: "Change Shift/Frame → Insert Key").
+4. Advance the timeline, change the values, **Insert Key** again. Repeat per step.
 5. **Spacebar** to preview; export when happy. The first key becomes t=0; frame times are converted to seconds by the scene FPS, and the last key sets the duration.
 
-> Each key stores Location (UV translation) and Scale. If the panel says «Нода не создана (нет текстуры?)», the material has no Image Texture with a free Vector input — add/connect one first. If you switch to Keyframe mode but leave **no** keys, export quietly falls back to Scroll (Speed U/V).
+> Each key stores Location (UV translation) and Scale. If the panel says "Node not created (no texture?)", the material has no Image Texture with a free Vector input — add/connect one first. If you switch to Keyframe mode but leave **no** keys, export quietly falls back to Scroll (Speed U/V).
 
-> 💡 **Example — 4-frame switching sign:** UV-map the sign face onto column 1 of a 4-column texture atlas. Frame 1: **Сдвиг UV = (0, 0)** → **Вставить ключ**. Frame 13: **(0.25, 0)** → key. Frame 25: **(0.5, 0)** → key. Frame 37: **(0.75, 0)** → key. With constant interpolation you get a hard-switching 4-state sign; with linear, a sliding ticker.
+> 💡 **Example — 4-frame switching sign:** UV-map the sign face onto column 1 of a 4-column texture atlas. Frame 1: **UV Shift = (0, 0)** → **Insert Key**. Frame 13: **(0.25, 0)** → key. Frame 25: **(0.5, 0)** → key. Frame 37: **(0.75, 0)** → key. With constant interpolation you get a hard-switching 4-state sign; with linear, a sliding ticker.
 
 #### Export & engine support
 
-Any DFF export path (single DFF, Export All, Export to IMG) picks up the material's **UV Анимация** flag automatically and writes the `0x2B` dict + `0x135` material PLG — no IDE flag needed. After replacing the DFF in an IMG, **Rebuild Archive** so the game drops its cached copy.
+Any DFF export path (single DFF, Export All, Export to IMG) picks up the material's **UV Animation** flag automatically and writes the `0x2B` dict + `0x135` material PLG — no IDE flag needed. After replacing the DFF in an IMG, **Rebuild Archive** so the game drops its cached copy.
 
 > ⚠️ **The #1 reason "the animation doesn't play in single-player" is night vertex colors.** If the model has night vertex colors (the **Night** flag in DFF Flags, or the **Day/Night** pipeline, which writes `extra_colors` into the DFF), retail GTA SA's engine **will not play** the UV animation: the colour shows up but nothing moves. This is confirmed in-game and documented in SA modding tutorials. **librw-based viewers** and **euryopa** ignore night vcols, so the animation runs there — which makes it look like an export/DFF bug when it isn't. **Fix:** clear the **Night** flag / drop the night layer on the animated model (you can keep the day prelight so the model isn't black). The addon flags this conflict for you — the **Night** row in DFF Flags turns red, and the pre-export **Validate Scene** sweep warns when a mesh has both a UV-anim material and night colors.
 
@@ -2800,7 +2804,7 @@ Two more conditions from the tutorials: the animated **material must not be shar
 
 Marks a mesh as destructible by the GTA SA physics engine via chunk `0x253F2FD`.
 
-**Location:** Properties → Object → *GTA SA: IDE / IPL* panel → block **Разрушаемый (Breakable)** (checkbox) + **Break Force**.
+**Location:** Properties → Object → *GTA SA: IDE / IPL* panel → block **Breakable** (checkbox) + **Break Force**.
 
 **What is written:** a 32-byte breakable chunk on the geometry extension with vertex/face/material/UV buffer counts derived from the exported mesh, plus the break force. Defaults mirror what Kams's `brakableobjects.ms` writes.
 
@@ -2810,7 +2814,7 @@ Source: [`core/dff.py`](INU_tools/core/dff.py) → `BreakableData`, `CHUNK_BREAK
 
 Import a folder of `.ifp` files and stack every animation onto one NLA track of the active armature.
 
-**Location:** View3D → Sidebar (N) → GTA Tools → *Anim* panel → button **Batch папка…**.
+**Location:** View3D → Sidebar (N) → GTA Tools → *Anim* panel → button **Batch folder…**.
 
 **Options:**
 - **Name Prefix** — only apply animations whose name starts with this prefix (case-insensitive). Empty = all.
@@ -2828,11 +2832,11 @@ A condensed material UI that writes GTA-specific properties in one click.
 
 **Location:** Properties → Material → *GTA Material* panel → **EFFECTS** tab.
 
-**Quick presets** (four buttons under *Быстрые пресеты* — UI labels are in Russian):
-- **Стекло** (Glass) — `xvehicleenv128` env map with framebuffer alpha (VEHICLE_GLASS)
-- **Хром** (Chrome) — strong env reflection + specular (CHROME)
-- **Краска** (Paint) — `xvehicleenv128` env + `vehiclespecdot64` specular + reflection blend (VEHICLE)
-- **Сброс** (Reset) — clears every effect flag back to a plain textured material (GENERIC)
+**Quick presets** (four buttons under *Quick presets*):
+- **Glass** — `xvehicleenv128` env map with framebuffer alpha (VEHICLE_GLASS)
+- **Chrome** — strong env reflection + specular (CHROME)
+- **Paint** — `xvehicleenv128` env + `vehiclespecdot64` specular + reflection blend (VEHICLE)
+- **Reset** — clears every effect flag back to a plain textured material (GENERIC)
 
 Each button one-shot-applies its effect configuration to `mat.inu.*` (round-trips through the DFF writer). The operator `gtatools.material_preset` also accepts the extra built-in ids `PED` / `ENV` / `DUAL` / `SPECULAR` via scripting/F3.
 
@@ -2883,7 +2887,7 @@ Source: [`core/cst.py`](INU_tools/core/cst.py), [`ops/cst_import.py`](INU_tools/
 
 Uniformly rescale a whole vehicle hierarchy (Empty root + mesh + dummy children) preserving the structure for DFF export.
 
-**Location:** View3D → Sidebar (N) → GTA Tools → *Vehicles* panel → button **Масштаб машины…** (also exposed as the operator `gtatools.vehicle_scale` for scripting).
+**Location:** View3D → Sidebar (N) → GTA Tools → *Vehicles* panel → button **Vehicle scale…** (also exposed as the operator `gtatools.vehicle_scale` for scripting).
 
 **Options:**
 - **Factor** — uniform scale multiplier

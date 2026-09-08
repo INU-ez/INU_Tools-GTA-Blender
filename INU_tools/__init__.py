@@ -3130,6 +3130,7 @@ from .ops.col_surface_ops import (
     GTATOOLS_OT_set_col_surface,
     GTATOOLS_OT_toggle_col_surface_fav,
     GTATOOLS_OT_col_surface_menu,
+    GTATOOLS_OT_auto_find_lod,
     GTATOOLS_OT_batch_set_distance,
 )
 # ============================================================================
@@ -3694,6 +3695,7 @@ classes = (
     GTATOOLS_OT_id_manager_auto_assign,
     GTATOOLS_OT_id_manager_assign_from,
     GTATOOLS_OT_batch_set_type,
+    GTATOOLS_OT_auto_find_lod,
     GTATOOLS_OT_batch_set_distance,
     GTATOOLS_OT_id_manager_clear_selected,
     GTATOOLS_OT_id_manager_clear,

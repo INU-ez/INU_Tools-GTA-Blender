@@ -238,12 +238,15 @@ class GTATOOLS_OT_upsert_ide(bpy.types.Operator):
         if not groups:
             self.report({'ERROR'}, T("Укажите путь к IDE файлу"))
             return {'CANCELLED'}
-        total_u = total_a = 0
+        total_u = total_a = total_dff = total_lod = 0
         for _fp, _grp in groups.items():
-            u, a = self._upsert_into(context, _fp, _grp)
+            u, a, ndff, nlod = self._upsert_into(context, _fp, _grp)
             total_u += u
             total_a += a
-        msg = f"IDE: {T('обновлено')} {total_u}, {T('добавлено')} {total_a}"
+            total_dff += ndff
+            total_lod += nlod
+        msg = (f"IDE: {T('обновлено')} {total_u}, {T('добавлено')} {total_a} "
+               f"(DFF {total_dff}, LOD {total_lod})")
         if redirected:
             msg += " — " + T("{0} были в другом IDE (проверь дубли)").format(redirected)
         _pub(self, 'INFO', msg)
@@ -254,6 +257,7 @@ class GTATOOLS_OT_upsert_ide(bpy.types.Operator):
         from ..core.ide import upsert_ide
 
         entries = []
+        n_dff = n_lod = 0     # для детального отчёта (сколько DFF / LOD строк)
 
         # Classify every object ONCE, then group by base name. This used
         # to be O(N²) — a nested get_model_type loop over the whole
@@ -281,6 +285,7 @@ class GTATOOLS_OT_upsert_ide(bpy.types.Operator):
 
             if dff_obj:
                 entries.append(_ide_entry_from_obj(dff_obj))
+                n_dff += 1
             if lod_obj:
                 lod_entry = _ide_entry_from_obj(lod_obj)
                 # LOD model name: LOD + base_name
@@ -303,6 +308,7 @@ class GTATOOLS_OT_upsert_ide(bpy.types.Operator):
                 if dff_obj:
                     lod_entry.draw_distance = dff_obj.inu.lod_draw_distance
                 entries.append(lod_entry)
+                n_lod += 1
 
         # Validate model IDs
         zero_ids = [e for e in entries if e.model_id == 0]
@@ -353,7 +359,7 @@ class GTATOOLS_OT_upsert_ide(bpy.types.Operator):
             inu.ide_last_model_id = int(getattr(inu, 'model_id', 0) or 0)
             inu.ide_linked = True
 
-        return updated, added
+        return updated, added, n_dff, n_lod
 
 
 class GTATOOLS_OT_upsert_ipl(bpy.types.Operator):
@@ -377,6 +383,28 @@ class GTATOOLS_OT_upsert_ipl(bpy.types.Operator):
         if not objs:
             self.report({'ERROR'}, T("Выделите меш объекты"))
             return {'CANCELLED'}
+        # Подтянуть LOD-партнёров: у выделенных DFF с заполненным «LOD partner»
+        # (inu.lod_object) их LOD тоже уходит в IPL и связывается по lod_index,
+        # даже если сам LOD не выделен. Если у LOD ещё нет Model ID — назначаем
+        # DFF+1 (та же эвристика, что и при записи LOD; видно в поле «LOD ID»,
+        # при коллизии оператор предупредит ниже).
+        _present = {id(o) for o in objs}
+        _lod_extra = []
+        for o in objs:
+            _lodo = getattr(getattr(o, 'inu', None), 'lod_object', None)
+            if (_lodo is None or getattr(_lodo, 'type', None) != 'MESH'
+                    or id(_lodo) in _present):
+                continue
+            _lodi = getattr(_lodo, 'inu', None)
+            if _lodi is None:
+                continue
+            if int(getattr(_lodi, 'model_id', 0) or 0) == 0:
+                _did = int(getattr(o.inu, 'model_id', 0) or 0)
+                if _did > 0:
+                    _lodi.model_id = _did + 1
+            _lod_extra.append(_lodo)
+            _present.add(id(_lodo))
+        objs += _lod_extra
         # #1/#5: block writing a model_id == 0 row (id 0 = player model →
         # corrupts the game); warn on a LOD borrowing an already-owned id+1.
         if _report_id_validation(self, objs):
@@ -403,11 +431,13 @@ class GTATOOLS_OT_upsert_ipl(bpy.types.Operator):
         if not groups:
             self.report({'ERROR'}, T("Укажите путь к IPL файлу"))
             return {'CANCELLED'}
-        total_u = total_a = 0
+        total_u = total_a = total_dff = total_lod = 0
         for _fp, _grp in groups.items():
-            u, a = self._upsert_into(context, _fp, _grp)
+            u, a, ndff, nlod = self._upsert_into(context, _fp, _grp)
             total_u += u
             total_a += a
+            total_dff += ndff
+            total_lod += nlod
         if redirected:
             self.report({'WARNING'},
                         T("{0} объектов были привязаны к другому IPL — записаны "
@@ -415,7 +445,8 @@ class GTATOOLS_OT_upsert_ipl(bpy.types.Operator):
                               redirected))
         # (model_id == 0 is now blocked up-front in execute() before any
         # write — see _report_id_validation.)
-        msg = f"IPL: {T('обновлено')} {total_u}, {T('добавлено')} {total_a}"
+        msg = (f"IPL: {T('обновлено')} {total_u}, {T('добавлено')} {total_a} "
+               f"(DFF {total_dff}, LOD {total_lod})")
         if len(groups) > 1:
             msg += " — " + T("записи разнесены по {0} IPL-файлам").format(len(groups))
         # Текст кладётся в класс: когда этот оператор вызывают через
@@ -602,6 +633,15 @@ class GTATOOLS_OT_upsert_ipl(bpy.types.Operator):
             e = _ipl_entry_from_obj(lod_obj)
             e.model_name = "LOD" + base
             e.lod_index = -1
+            # LOD-инстанс стоит В ТОЙ ЖЕ точке, что и основная модель: сам
+            # LOD-объект в сцене обычно лежит в 0,0,0 (его не размещают), поэтому
+            # берём позицию/поворот у DFF-сиблинга с тем же base.
+            _dff_sib = next((d for d, b in dff_objs if b == base), None)
+            if _dff_sib is not None:
+                _de = _ipl_entry_from_obj(_dff_sib)
+                e.pos_x, e.pos_y, e.pos_z = _de.pos_x, _de.pos_y, _de.pos_z
+                e.rot_x, e.rot_y, e.rot_z, e.rot_w = (
+                    _de.rot_x, _de.rot_y, _de.rot_z, _de.rot_w)
             # Auto-assign LOD model_id from first DFF sibling + 1.
             if e.model_id == 0:
                 for dff_obj, dff_base in dff_objs:
@@ -683,7 +723,9 @@ class GTATOOLS_OT_upsert_ipl(bpy.types.Operator):
         file_links.ipl_hash = iplinks.hash_ipl_file(filepath)
         iplinks.save_sidecar(blend_path, sidecar)
 
-        return updated, added
+        # updated/added — всего строк; n_dff/n_lod — сколько из них DFF и LOD
+        # (для детального отчёта в статус-баре).
+        return updated, added, len(dff_placed), len(lod_idx_per_base)
 
 
 class GTATOOLS_OT_pick_setting_path(bpy.types.Operator):

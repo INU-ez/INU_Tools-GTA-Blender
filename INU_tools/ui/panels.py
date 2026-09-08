@@ -3335,7 +3335,19 @@ class GTATOOLS_PT_object_inu_tools(bpy.types.Panel):
         # vanilla LOD names don't follow the lod* convention), but
         # the user can re-target it if naming heuristics get it wrong.
         # Map Export converts the pointer back into IPL lod_index.
-        col.prop(inu, "lod_object", text="LOD partner")
+        # LOD partner + короткая кнопка авто-поиска LOD в сцене по имени.
+        _lodrow = col.row(align=True)
+        _lodrow.prop(inu, "lod_object", text="LOD partner")
+        _lodbtn = _lodrow.row(align=True)
+        _lodbtn.ui_units_x = 4.5
+        _lodbtn.operator("gtatools.auto_find_lod", text=T("Поиск LOD"),
+                         **inu_icon(safe_icon('VIEWZOOM')))
+        # Model ID самого LOD-объекта — виден и правится тут же. По нему
+        # «Add в IPL» пишет LOD-инстанс (id=0 → авто DFF+1 при добавлении).
+        _lodo = getattr(inu, 'lod_object', None)
+        _lodinu = getattr(_lodo, 'inu', None) if _lodo is not None else None
+        if _lodinu is not None:
+            col.prop(_lodinu, "model_id", text="LOD ID")
 
         # Batch distance button
         n_sel = sum(1 for o in context.selected_objects if o.type == 'MESH')
