@@ -8,8 +8,10 @@ ANP3 (GTA SA):
   num_anims(uint32). Each animation: 36-byte header (name + bone_count +
   data_size + flag), followed by 36-byte bone headers (name + type +
   kf_count + bone_id), followed by per-keyframe int16 quat (×4096),
-  uint16 time as frame@30fps (×30 from seconds), and optional int16
-  translation (×1024).
+  16-bit time in 1/60 s units (×60 from seconds), and optional int16
+  translation (×1024). Note: 60 units per second, not frames@30fps —
+  vanilla SA anims are keyed at 30 fps, so their time values step by 2
+  (e.g. ped.ifp WALK_player: 37 keys, times 0, 2, ... 72 = 1.2 s).
 
 ANPK / ANP2 (GTA III, VC, SA-uncompressed):
   Chunked float32 format. Header is "ANPK" + size, then INFO chunk
@@ -20,7 +22,7 @@ ANPK / ANP2 (GTA III, VC, SA-uncompressed):
 
 Canonical in-memory unit for ``KeyFrame.time`` is **seconds**, regardless
 of which format the file was loaded from. The reader normalises ANP3's
-raw frame number by dividing by 30; the writer multiplies back. This
+raw time by dividing by 60; the writer multiplies back. This
 keeps preview / export math format-agnostic.
 
 No Blender dependency — pure Python.
@@ -108,7 +110,7 @@ def _read_anp3_animations(data: bytes, offset: int, num_anims: int) -> List[Anim
         type 4 (rot+trans):   4*int16 rot + 1*uint16 time + 3*int16 pos = 16 bytes per key
     Rotation: quaternion XYZW compressed as int16 / 4096.0
     Translation: XYZ compressed as int16 / 1024.0
-    Time: uint16 (frame number, convert with /30 for seconds)
+    Time: 16-bit, 1/60 s units (convert with /60 for seconds)
     """
     animations = []
 
@@ -145,11 +147,12 @@ def _read_anp3_animations(data: bytes, offset: int, num_anims: int) -> List[Anim
                     kf.rotation = (rx / 4096.0, ry / 4096.0, rz / 4096.0, rw / 4096.0)
                     offset += 8
 
-                    # Time: uint16 frame number at 30fps. Normalise to
-                    # seconds (canonical unit) so downstream code is
+                    # Time: 16-bit value in 1/60 s units (the game's
+                    # compressed keyframe stores DeltaTime * 60). Normalise
+                    # to seconds (canonical unit) so downstream code is
                     # format-agnostic.
                     t = struct.unpack_from('<H', data, offset)[0]
-                    kf.time = float(t) / 30.0
+                    kf.time = float(t) / _ANP3_TIME_UNITS_PER_SEC
                     offset += 2
 
                     if has_trans:
@@ -335,6 +338,11 @@ def read_ifp(filepath: str) -> IFPFile:
 
 
 _ANP3_TIME_CLAMP = 0xFFFF
+# ANP3 keyframe time unit: 1/60 s. The game reads it as a fixed-point
+# int16 with a 60.0 divisor (gta-reversed AnimSequenceFrames.h:
+# KeyFrameCompressed::DeltaTime = FixedFloat<int16, 60.f, true>).
+# Vanilla anims are sampled at 30 fps, i.e. their time values step by 2.
+_ANP3_TIME_UNITS_PER_SEC = 60.0
 _ANP3_ROT_SCALE = 4096.0
 _ANP3_TRANS_SCALE = 1024.0
 
@@ -468,7 +476,7 @@ def _build_anp3_anim(anim: Animation) -> bytes:
             bone header (36 bytes): name[24] + type + num_kf + bone_id
             per keyframe:
                 int16 × 4 rotation (qx, qy, qz, qw) × 4096
-                uint16 time as frame@30fps
+                16-bit time in 1/60 s units
                 [if rot+trans] int16 × 3 translation × 1024
     """
     out = bytearray()
@@ -508,8 +516,8 @@ def _build_anp3_anim(anim: Animation) -> bytes:
                 int(round(qz * _ANP3_ROT_SCALE)),
                 int(round(qw * _ANP3_ROT_SCALE))))
 
-            # Seconds → frame@30fps, clamped to uint16 range.
-            frame_num = int(round(kf.time * 30.0))
+            # Seconds → 1/60 s units, clamped to uint16 range.
+            frame_num = int(round(kf.time * _ANP3_TIME_UNITS_PER_SEC))
             if frame_num < 0:
                 frame_num = 0
             elif frame_num > _ANP3_TIME_CLAMP:
@@ -538,7 +546,7 @@ def write_anp3(filepath: str, ifp: IFPFile) -> int:
         per animation: flat 36-byte header + bones (no chunk wrappers)
 
     Rotations quantised to int16 with /4096 scale, translations to
-    int16 with /1024 scale, time stored as uint16 frame number at 30fps.
+    int16 with /1024 scale, time stored as 16-bit value in 1/60 s units.
     Use this for byte-faithful matching of vanilla peds.ifp.
     """
     body = bytearray()
