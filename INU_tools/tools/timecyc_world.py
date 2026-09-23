@@ -180,6 +180,8 @@ def _apply_world(world, values, opts):
     sky_top = _color(values, 'sky_top')
     sky_bot = _color(values, 'sky_bot')
     amb_key = 'amb_obj' if opts.get('ambient_from_objects') else 'amb'
+    if amb_key not in values:          # III: одного ambient на всё
+        amb_key = 'amb'
     amb = _color(values, amb_key)
 
     mix = compat.find_mix_rgba(nodes, _N_SKY_MIX)

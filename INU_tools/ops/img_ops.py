@@ -860,7 +860,7 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
         from ..core.ipl import read_ipl
         from .dff_import import import_dff as inu_import_dff
         from .txd_import import import_txd as inu_import_txd
-        from mathutils import Quaternion
+        from mathutils import Quaternion, Vector
 
         scene = context.scene
         img_path = bpy.path.abspath(scene.inu_settings.gtatools_img_path)
@@ -887,6 +887,9 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
         ide_source = {}   # model_id -> IDE-файл: для статуса «В IDE» и экспорта
                           # «каждая модель в свой IDE» (round-trip)
         instances = []
+        # idx → (text IPL path, index offset of that file in `instances`):
+        # imported models get linked to their row right away (map_link).
+        inst_src = {}
 
         def _load_ide_into(p):
             """Прочитать IDE `p` в ide_models и запомнить источник (model_id→p).
@@ -920,9 +923,16 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
                 if os.path.isfile(p):
                     try:
                         ipl = read_ipl(p)
-                        instances.extend(ipl.instances)
                     except Exception:
-                        pass
+                        continue
+                    # lod_index указывает В СВОЙ файл — сдвигаем на смещение.
+                    _base = len(instances)
+                    for _k, _inst in enumerate(ipl.instances):
+                        _li = getattr(_inst, 'lod_index', -1)
+                        if _li is not None and _li >= 0:
+                            _inst.lod_index = _li + _base
+                        inst_src[_base + _k] = (p, _base)
+                        instances.append(_inst)
 
             # Also read binary IPL from IMG (stream files)
             img_dir = read_directory(img_path)
@@ -967,6 +977,7 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
                             _inst.lod_index = _li + _base
                         except Exception:
                             pass
+                    inst_src[len(instances)] = (_ip, _base)
                     instances.append(_inst)
 
         # Подгрузить найденные «Найти IDE» — тогда txd_name/дальность/флаги
@@ -983,6 +994,7 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
         # моделей» работает и по IPL (с расстановкой), и по IDE (галерея).
         if not instances and ide_models:
             instances = _instances_from_ide(ide_models)
+            inst_src = {}
 
         if not instances:
             self._final = ('ERROR', T("Укажите IPL или IDE файл"))
@@ -1029,8 +1041,53 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
         from ..core.ipl import is_lod_name, lod_instance_indices
         lod_refs = lod_instance_indices(instances)
 
+        # ── Уже стоящие в сцене (повторный импорт того же IPL) ──
+        # Раньше каждый импорт ставил всё заново: дубли объектов на тех же
+        # координатах + повторная распаковка DFF/TXD. Теперь по inu.model_id:
+        #   • инстанс с той же позицией/поворотом уже в сцене → пропускаем;
+        #   • новый инстанс уже загруженной модели → linked-копия объекта
+        #     из сцены, без распаковки и без дублей материалов.
+        # scene_placed: model_id → [(loc, quat, [объекты инстанса])].
+        scene_placed = {}
+        for _o in context.scene.objects:
+            if _o.type != 'MESH' or not hasattr(_o, 'inu'):
+                continue
+            _mid = int(_o.inu.model_id)
+            if _mid <= 0:
+                continue
+            _loc, _q, _ = _o.matrix_world.decompose()
+            _groups = scene_placed.setdefault(_mid, [])
+            for _g in _groups:
+                # Тот же инстанс (мульти-атомик DFF = несколько мешей в
+                # одной точке) — добираем объект в его группу.
+                if (_g[0] - _loc).length < 1e-3:
+                    _g[2].append(_o)
+                    break
+            else:
+                _groups.append((_loc.copy(), _q.copy(), [_o]))
+
+        def _find_placed(model_id, pos, rot):
+            """Группа объектов инстанса model_id, уже стоящего в pos/rot."""
+            for _loc, _q, _objs in scene_placed.get(model_id, ()):
+                if (_loc - Vector(pos)).length > 1e-3:
+                    continue
+                # q и -q — один поворот.
+                if abs(_q.dot(rot)) < 0.9999:
+                    continue
+                return _objs
+            return None
+
+        skip_placed_count = 0   # уже стоят в сцене (тот же model_id+позиция)
+        reused_count = 0        # инстансов взято linked-копией из сцены
+
         with tempfile.TemporaryDirectory() as tmpdir:
             imported_models = {}
+            # TXD, уже импортированные в этом прогоне. Один общий архив
+            # (basement.txd, 276 текстур ≈ 4 с) на 5000 инстансов раньше
+            # декодировался ЗАНОВО на каждый — часы вместо минут. Картинки
+            # после первого импорта уже в bpy.data.images, и материалы
+            # следующих DFF цепляют их по имени при создании.
+            txd_imported = set()
             # Главный объект каждого инстанса — для LOD-привязки после цикла
             # (inu.lod_object из IPL lod_index).
             instance_to_obj = [None] * len(instances)
@@ -1049,22 +1106,53 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
 
                 target_collection = lod_collection if is_lod else dff_collection
 
+                pos = (inst.pos_x, inst.pos_y, inst.pos_z)
+                # GTA SA quaternion is stored conjugated
+                rot = Quaternion((inst.rot_w, inst.rot_x, inst.rot_y, inst.rot_z)).conjugated()
+
+                # Этот инстанс уже стоит в сцене → не дублируем. Главный меш
+                # всё равно запоминаем: LOD-привязка ниже должна сработать,
+                # даже если новая модель ссылается на уже стоящий LOD.
+                _placed = _find_placed(inst.model_id, pos, rot)
+                if _placed is not None:
+                    skipped_count += 1
+                    skip_placed_count += 1
+                    instance_to_obj[idx] = _placed[0]
+                    continue
+
                 dff_filename = model_name + '.dff'
 
-                if dff_filename.lower() not in img_index:
+                _scene_src = None
+                if model_name not in imported_models:
+                    _groups = scene_placed.get(inst.model_id)
+                    if _groups:
+                        _scene_src = _groups[0][2]
+
+                if _scene_src is None and dff_filename.lower() not in img_index:
                     skipped_count += 1
                     skip_noimg_count += 1
                     if len(_noimg_sample) < 5:
                         _noimg_sample.append(model_name)
                     continue
 
-                if model_name in imported_models:
+                if model_name in imported_models or _scene_src is not None:
+                    src_list = imported_models.get(model_name) or _scene_src
                     new_objects = []
-                    for src_obj in imported_models[model_name]:
+                    for src_obj in src_list:
                         new_obj = src_obj.copy()
                         new_obj.data = src_obj.data  # linked duplicate
                         target_collection.objects.link(new_obj)
                         new_objects.append(new_obj)
+                    if _scene_src is not None:
+                        reused_count += 1
+                        # Копия объекта из сцены тащит его IPL-метки; два
+                        # объекта с одним ipl_uuid ломают upsert в Add to IPL.
+                        for new_obj in new_objects:
+                            if hasattr(new_obj, 'inu'):
+                                new_obj.inu.ipl_uuid = ""
+                                new_obj.inu.ipl_target_file = ""
+                                new_obj.inu.ipl_last_model_id = 0
+                        imported_models[model_name] = new_objects
                 else:
                     _di = img_index[dff_filename.lower()]
                     dff_data = extract_file(_di[0], _di[1])
@@ -1088,8 +1176,10 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
                                 txd_name = ide_models[inst.model_id].txd_name
 
                             txd_filename = txd_name + '.txd'
-                            if txd_filename.lower() in img_index:
-                                _ti = img_index[txd_filename.lower()]
+                            _txd_key = txd_filename.lower()
+                            if _txd_key in img_index and _txd_key not in txd_imported:
+                                txd_imported.add(_txd_key)
+                                _ti = img_index[_txd_key]
                                 txd_data = extract_file(_ti[0], _ti[1])
                                 if txd_data:
                                     txd_path = os.path.join(tmpdir, txd_filename)
@@ -1189,10 +1279,6 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
                                     base = base[len(_pfx_dff):]
                                 obj.name = _pfx_dff + base
 
-                pos = (inst.pos_x, inst.pos_y, inst.pos_z)
-                # GTA SA quaternion is stored conjugated
-                rot = Quaternion((inst.rot_w, inst.rot_x, inst.rot_y, inst.rot_z)).conjugated()
-
                 for obj in new_objects:
                     if obj.type == 'MESH':
                         obj.location = pos
@@ -1227,6 +1313,7 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
                                     obj.inu.ide_last_txd_name = obj.inu.txd_name
                                     obj.inu.ide_last_flags = obj.inu.ide_flags
                                     obj.inu.ide_last_model_id = int(inst.model_id)
+                                    obj.inu.ide_last_name = ide_obj.model_name
                             elif not obj.inu.txd_name:
                                 # Нет записи в IDE — TXD носит имя модели (так он
                                 # и грузился из архива). Заполняем поле, иначе оно
@@ -1237,6 +1324,15 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
                 _main = next((o for o in new_objects if o.type == 'MESH'), None)
                 if _main is not None:
                     instance_to_obj[idx] = _main
+                    # Сразу привязать к строке своего IPL (Add/Del/Sync найдут
+                    # её по содержимому). LOD-строки — через lod_index модели.
+                    _src = inst_src.get(idx)
+                    if _src is not None and not is_lod and hasattr(_main, 'inu'):
+                        from .map_link import stamp_ipl, norm
+                        _li = getattr(inst, 'lod_index', -1)
+                        stamp_ipl(_main, norm(_src[0]), inst,
+                                  _li - _src[1] if _li is not None and _li >= 0
+                                  else -1, fresh=True)
                 imported_count += 1
 
             # ── Дотягивание текстур из IMG (по содержимому, без IDE) ──
@@ -1274,6 +1370,8 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
             msg += f", {T('пропущено:')} {skipped_count}"
             # Разбивка причин — чтобы не гадать, почему ничего не загрузилось.
             reasons = []
+            if skip_placed_count:
+                reasons.append(f"{skip_placed_count} {T('уже в сцене')}")
             if skip_lod_count:
                 reasons.append(f"{skip_lod_count} {T('LOD — снимите «Skip LOD»')}")
             if skip_noimg_count:
@@ -1590,8 +1688,10 @@ class GTATOOLS_OT_open_url(bpy.types.Operator):
 
 
 class GTATOOLS_OT_open_text_file(bpy.types.Operator):
-    """Открыть файл (IDE/IPL) во ВНЕШНЕМ текстовом редакторе ОС (как двойной
-    клик в проводнике — Блокнот и т.п.), не в редакторе Blender."""
+    """Открыть файл (IDE/IPL) в текстовом редакторе. По умолчанию — во ВНЕШНЕМ
+    редакторе ОС (как двойной клик в проводнике). Галочкой в настройках аддона
+    «Открывать IPL/IDE в редакторе Blender» можно переключить на встроенный
+    текст-редактор Blender (в новом окне)."""
     bl_idname = "gtatools.open_text_file"
     bl_label = "INU: Открыть в текст-редакторе"
     bl_options = {'REGISTER'}
@@ -1603,6 +1703,13 @@ class GTATOOLS_OT_open_text_file(bpy.types.Operator):
         if not path or not os.path.isfile(path):
             self.report({'ERROR'}, T("Файл не найден"))
             return {'CANCELLED'}
+        # Настройка аддона: внешний редактор ОС или встроенный в Blender.
+        addon_key = __package__.split('.')[0]
+        _addon = context.preferences.addons.get(addon_key)
+        use_blender = bool(getattr(getattr(_addon, 'preferences', None),
+                                   'open_text_in_blender', False))
+        if use_blender:
+            return self._open_in_blender(context, path)
         # Открыть внешним приложением ОС (ассоциация с текстовым редактором —
         # Блокнот и т.п.), как двойной клик в проводнике. Через блендеровский
         # wm.path_open — без subprocess, проходит store-compliance.
@@ -1610,6 +1717,36 @@ class GTATOOLS_OT_open_text_file(bpy.types.Operator):
             bpy.ops.wm.path_open(filepath=path)
         except Exception as e:                        # noqa: BLE001
             self.report({'ERROR'}, T("Не удалось открыть: {0}").format(e))
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+    def _open_in_blender(self, context, path):
+        """Загрузить файл во встроенный текст-редактор Blender и показать его —
+        в существующей области TEXT_EDITOR, иначе в новом окне."""
+        try:
+            _want = os.path.normcase(os.path.abspath(path))
+            text = None
+            for t in bpy.data.texts:
+                tp = bpy.path.abspath(t.filepath) if t.filepath else ''
+                if tp and os.path.normcase(os.path.abspath(tp)) == _want:
+                    text = t
+                    break
+            if text is None:
+                text = bpy.data.texts.load(path)
+            # Показать: сначала ищем уже открытый текст-редактор в этом окне.
+            for area in context.screen.areas:
+                if area.type == 'TEXT_EDITOR':
+                    area.spaces.active.text = text
+                    return {'FINISHED'}
+            # Нет открытого — новое окно, его большую область в TEXT_EDITOR.
+            bpy.ops.wm.window_new()
+            win = context.window_manager.windows[-1]
+            area = max(win.screen.areas, key=lambda a: a.width * a.height)
+            area.type = 'TEXT_EDITOR'
+            area.spaces.active.text = text
+        except Exception as e:                        # noqa: BLE001
+            self.report({'ERROR'},
+                        T("Не удалось открыть в Blender: {0}").format(e))
             return {'CANCELLED'}
         return {'FINISHED'}
 
@@ -1811,7 +1948,7 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
         from ..tools.model_utils import find_all_selected_model_groups
         from ..tools.txd_export import export_txd
         from .dff_export import build_dff_clump
-        from .col_export import build_col_model, export_col_library
+        from .col_export import build_col_model, export_col_library, audit_col
 
         img_path = self._target_img_path(context)
         if not img_path or not os.path.isfile(img_path):
@@ -1895,6 +2032,9 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
                     obj.inu.txd_name = new_txd
 
         results = []
+        # Счётчики для сводки в статус-баре: сколько DFF/LOD/COL/TXD реально
+        # записано в архив (успешные writer.add), помимо списка файлов.
+        n_dff = n_lod = n_col = n_txd = 0
 
         # Library COL bypasses the per-group COL loop: one multi-entry .col
         # is written once and stuffed into the archive under a shared name.
@@ -1916,6 +2056,12 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
         from .col_export import _resolve_col_version
         dff_rw_version = _resolve_export_version(context)
         col_version = _resolve_col_version(context)
+        # Surface-ID clamp in write_col is keyed on the game, not the COL
+        # version (SA ships COL2 archives with SA ids) — same target the
+        # standalone COL exporter resolves, so an id past the 179-row
+        # table never reaches the file (COL-18).
+        from ..core import game_versions as gv
+        col_target_game = gv.game_of_scene(context.scene)
         dff_target_platform = getattr(context.scene.inu_settings,
                                       'gtatools_platform', 'PC')
 
@@ -2048,7 +2194,15 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
                                 _vis = models['DFF'] or models['LOD']
                                 _bref = [_vis] if _vis else None
                             col_model = build_col_model(col_src, version=col_version, model_name=base_name, empty=is_empty, bounds_ref=_bref)
-                            encode_jobs.append((base_name + '.col', (lambda m=col_model: write_col([m])), f"{base_name}.col"))
+                            # Линт COL под целевую игру (clamp surface-id in-place)
+                            # + сбор проблем в отчёт (раньше молча терялись).
+                            _cfatal, _cwarn = audit_col(
+                                [col_model], target_game=col_target_game)
+                            for _w in _cwarn:
+                                results.append(f"{base_name}.col: {_w}")
+                            for _f in _cfatal:
+                                results.append(f"{base_name}.col: ⚠ {_f}")
+                            encode_jobs.append((base_name + '.col', (lambda m=col_model: write_col([m], target_game=col_target_game)), f"{base_name}.col"))
                         except Exception as e:
                             results.append(f"{base_name}.col error: {e}")
                             _tick(f"{base_name}.col")
@@ -2068,6 +2222,13 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
                                 data = fut.result()
                                 status = writer.add(filename, data)
                                 results.append(f"{filename} {status}")
+                                _low = filename.lower()
+                                if _low.endswith('.col'):
+                                    n_col += 1
+                                elif _low.endswith('.dff') and filename.startswith('LOD'):
+                                    n_lod += 1
+                                elif _low.endswith('.dff'):
+                                    n_dff += 1
                             except Exception as e:
                                 results.append(f"{filename} error: {e}")
                             _tick(label)
@@ -2089,6 +2250,7 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
                                 with open(txd_path, 'rb') as f:
                                     status = writer.add(txd_name + '.txd', f.read())
                                 results.append(f"{txd_name}.txd {status} ({len(sources)} models)")
+                                n_txd += 1
                             else:
                                 results.append(f"{txd_name}.txd: {msg}")
                         except Exception as e:
@@ -2113,6 +2275,7 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
                         with open(lib_path, 'rb') as f:
                             status = writer.add(lib_filename, f.read())
                         results.append(f"{lib_filename} {status} ({count} records)")
+                        n_col += count
                     except Exception as e:
                         results.append(f"{col_library_name}.col error: {e}")
                     finally:
@@ -2120,6 +2283,24 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
                             if obj.name in original_locations:
                                 obj.location = original_locations[obj.name]
                     _tick(lib_filename)
+
+                # Пулы движка: игра грузит ВСЕГО ≤255 отдельных .col-файлов и
+                # ≤10150 COL-моделей (CColModel). Аддон не знает всю игру, но
+                # предупреждает, если сам этот экспорт упирается в лимит —
+                # тогда стоит объединить коллизии в один library .col.
+                _n_col_files = sum(1 for _fn, _e, _l in encode_jobs
+                                   if _fn.lower().endswith('.col'))
+                if col_library and library_col_objects:
+                    _n_col_files += 1
+                if _n_col_files > 255:
+                    results.append(T(
+                        "⚠ .col-файлов за экспорт: {0} — движок грузит ≤255 "
+                        "всего. Объедини коллизии в один library .col.").format(
+                            _n_col_files))
+                if n_col > 10150:
+                    results.append(T(
+                        "⚠ COL-моделей: {0} — лимит движка 10150 (CColModel).")
+                        .format(n_col))
         except PermissionError:
             # .img заблокирован (чаще всего запущена игра, которая держит
             # архив открытым). Не роняем оператор трейсбеком — показываем
@@ -2152,9 +2333,19 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
         except Exception as e:
             self.report({'WARNING'}, f"{T('Не удалось записать отчёт:')} {e}")
         if results:
+            counts = []
+            if n_dff:
+                counts.append(f"DFF {n_dff}")
+            if n_col:
+                counts.append(f"COL {n_col}")
+            if n_lod:
+                counts.append(f"LOD {n_lod}")
+            if n_txd:
+                counts.append(f"TXD {n_txd}")
             preview = ', '.join(results[:6])
             more = f" (+{len(results) - 6})" if len(results) > 6 else ""
-            self.report({'INFO'}, f"IMG: {preview}{more}")
+            summary = (", ".join(counts) + " — ") if counts else ""
+            self.report({'INFO'}, f"IMG: {summary}{preview}{more}")
             # Common pitfall ("новый DFF не появляется в игре"): the
             # archive directory updates but external IMG editors / game
             # caches may keep showing the old entry until a Rebuild

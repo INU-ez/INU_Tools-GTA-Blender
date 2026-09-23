@@ -303,30 +303,43 @@ class GTATOOLS_OT_load_textures(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def find_texture_file(self, material_name, search_paths):
-        """Search for texture file with given material name in specified paths"""
-        extensions = ['.png', '.jpg', '.jpeg', '.tga', '.bmp', '.dds']
+        """Найти файл текстуры по имени материала в папках И их подпапках.
+
+        Сначала — быстрая прямая проверка в корне каждой папки (точное/нижний/
+        верхний регистр), затем — РЕКУРСИВНЫЙ обход подпапок (индекс строится
+        один раз и кэшируется на операторе). Форматы: png/jpg/jpeg/tga/bmp/dds."""
+        extensions = ('.png', '.jpg', '.jpeg', '.tga', '.bmp', '.dds')
 
         for search_path in search_paths:
             if not search_path or not os.path.isdir(search_path):
                 continue
-
             for ext in extensions:
-                # Try exact name
-                texture_path = os.path.join(search_path, material_name + ext)
-                if os.path.isfile(texture_path):
-                    return texture_path
+                for cand in (material_name, material_name.lower(),
+                             material_name.upper()):
+                    texture_path = os.path.join(search_path, cand + ext)
+                    if os.path.isfile(texture_path):
+                        return texture_path
 
-                # Try lowercase
-                texture_path = os.path.join(search_path, material_name.lower() + ext)
-                if os.path.isfile(texture_path):
-                    return texture_path
-
-                # Try uppercase
-                texture_path = os.path.join(search_path, material_name.upper() + ext)
-                if os.path.isfile(texture_path):
-                    return texture_path
-
-        return None
+        # Рекурсивный поиск по подпапкам (ленивый индекс stem.lower()->путь).
+        idx = getattr(self, '_loose_index', None)
+        if idx is None:
+            idx = {}
+            seen = 0
+            for search_path in search_paths:
+                if not search_path or not os.path.isdir(search_path):
+                    continue
+                for root, _dirs, files in os.walk(search_path):
+                    for f in files:
+                        stem, ext = os.path.splitext(f)
+                        if ext.lower() in extensions:
+                            idx.setdefault(stem.lower(), os.path.join(root, f))
+                        seen += 1
+                        if seen > 60000:
+                            break
+                    if seen > 60000:
+                        break
+            self._loose_index = idx
+        return idx.get(material_name.lower())
 
     def setup_material_texture(self, material, image):
         """Setup material nodes to use the loaded texture"""
@@ -954,6 +967,222 @@ class GTATOOLS_OT_reset_transform(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# ── LightMap на UV2 ────────────────────────────────────────────────
+# Ноды лайтмапа в материале: UV2 → картинка → Multiply поверх того, что шло
+# в цвет шейдера. Имена нод фиксированы — по ним работают показ/скрытие,
+# «убрать» и переключение день/ночь.
+LM_TEX_NODE = "LM_Texture"
+LM_MIX_NODE = "LM_Mix"
+LM_UV_NODE = "LM_UV"
+# Дневная/ночная картинка модели (имена datablock-ов) и текущий показ.
+LM_DAY_PROP = "inu_lm_day"
+LM_NIGHT_PROP = "inu_lm_night"
+LM_MODE_PROP = "inu_lm_mode"
+
+LM_IMAGE_EXT = ('.png', '.tga', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.dds')
+LM_DAY_SUFFIX = ('_d', '_day')
+LM_NIGHT_SUFFIX = ('_n', '_night')
+# Хвосты имени объекта, которых нет в имени файла лайтмапа.
+LM_NAME_TAIL = ('_lod_dff', '_dam_dff', '_ok_dff', '_dff', '.dff',
+                '_lod', '_dam', '_ok')
+
+
+def _lm_colour_input(mat):
+    """Вход цвета материала, поверх которого ложится лайтмап: Base Color у
+    Principled, Color у Emission/Diffuse — у шейдера, который реально
+    подключён к выходу материала. Возвращает (socket, node) или (None, None).
+
+    Раньше искался ТОЛЬКО Principled BSDF, и материалы с Emission (превью
+    запекания, импортированные «плоские» материалы) молча пропускались —
+    «не всегда накладывает LightMap»."""
+    nt = getattr(mat, 'node_tree', None)
+    if nt is None:
+        return None, None
+    out = None
+    for n in nt.nodes:
+        if n.type == 'OUTPUT_MATERIAL' and (out is None or n.is_active_output):
+            out = n
+    shader = None
+    if out is not None and out.inputs['Surface'].links:
+        shader = out.inputs['Surface'].links[0].from_node
+    if shader is None:
+        for n in nt.nodes:
+            if n.type == 'BSDF_PRINCIPLED':
+                shader = n
+                break
+    if shader is None:
+        return None, None
+    for name in ('Base Color', 'Color'):
+        sock = shader.inputs.get(name)
+        if sock is not None:
+            return sock, shader
+    return None, None
+
+
+def _lm_uv2_name(mesh):
+    """Имя второго UV-слоя (создаётся, если его нет)."""
+    if len(mesh.uv_layers) < 2:
+        mesh.uv_layers.new(name="UVMap.001")
+    return mesh.uv_layers[1].name
+
+
+def _lm_localize_materials(obj):
+    """Сделать материалы объекта личными копиями, если датаблок делят другие
+    объекты: нода лайтмапа живёт В МАТЕРИАЛЕ, поэтому на общем материале
+    вторая модель затирала лайтмап первой. Возвращает число копий."""
+    made = 0
+    for slot in obj.material_slots:
+        mat = slot.material
+        if mat is None:
+            continue
+        users = mat.users - (1 if mat.use_fake_user else 0)
+        if users > 1:
+            slot.material = mat.copy()
+            made += 1
+    return made
+
+
+def _lm_apply_material(mat, img, uv2_name):
+    """Наложить лайтмап `img` на материал через UV2 (Multiply). True, если
+    наложено. Повторный вызов меняет картинку И чинит потерянные связи.
+
+    Сокеты mix-ноды берутся через compat.mix_input_a/b/result: на 3.4+ у
+    ShaderNodeMix три пары A/B (Float/Vector/Color), и `inputs['B']` — это
+    FLOAT-вход. Цвет, подключённый туда, нодой не читается — лайтмап
+    «иногда не подключался»."""
+    if not compat.material_uses_nodes(mat):
+        return False
+    base_input, ref = _lm_colour_input(mat)
+    if base_input is None:
+        return False
+    nt = mat.node_tree
+    nodes, links = nt.nodes, nt.links
+
+    tex = nodes.get(LM_TEX_NODE)
+    if tex is None or tex.type != 'TEX_IMAGE':
+        tex = nodes.new('ShaderNodeTexImage')
+        tex.name = LM_TEX_NODE
+        tex.label = "LightMap"
+        tex.location = (ref.location.x - 500, ref.location.y - 300)
+    uv_node = nodes.get(LM_UV_NODE)
+    if uv_node is None or uv_node.type != 'UVMAP':
+        uv_node = nodes.new('ShaderNodeUVMap')
+        uv_node.name = LM_UV_NODE
+        uv_node.location = (ref.location.x - 700, ref.location.y - 300)
+    mix = nodes.get(LM_MIX_NODE)
+    if mix is None:
+        mix = nodes.new(compat.MIX_NODE_TYPE)
+        compat.setup_mix_rgba_node(mix, blend='MULTIPLY')
+        compat.mix_input_factor(mix).default_value = 1.0
+        mix.name = LM_MIX_NODE
+        mix.label = "LightMap Mix"
+        mix.location = (ref.location.x - 200, ref.location.y)
+
+    in_a = compat.mix_input_a(mix)
+    in_b = compat.mix_input_b(mix)
+    out_r = compat.mix_output_result(mix)
+    tex.image = img
+    uv_node.uv_map = uv2_name
+    mix.mute = False
+
+    if not tex.inputs['Vector'].links:
+        links.new(uv_node.outputs['UV'], tex.inputs['Vector'])
+    # Источник цвета в A — только если в цвет шейдера идёт ещё не наш mix.
+    if not (base_input.links and base_input.links[0].from_node is mix):
+        orig = base_input.links[0].from_socket if base_input.links else None
+        if orig is not None:
+            links.new(orig, in_a)
+        elif not in_a.links:
+            try:
+                in_a.default_value = (1.0, 1.0, 1.0, 1.0)
+            except (TypeError, ValueError):
+                pass
+    links.new(tex.outputs['Color'], in_b)
+    links.new(out_r, base_input)
+    return True
+
+
+def _lm_apply_object(obj, img, localize=True):
+    """Наложить лайтмап на все материалы объекта. Возвращает (наложено,
+    пропущено) — пропущены материалы без цветового входа (пустые слоты,
+    чисто-процедурные шейдеры)."""
+    if localize:
+        _lm_localize_materials(obj)
+    uv2 = _lm_uv2_name(obj.data)
+    applied = skipped = 0
+    for slot in obj.material_slots:
+        if _lm_apply_material(slot.material, img, uv2):
+            applied += 1
+        else:
+            skipped += 1
+    return applied, skipped
+
+
+def _lm_name_candidates(obj):
+    """Имена, под которыми у модели может лежать лайтмап: имя объекта и имя
+    меша, без blender-суффикса .001 и без хвостов _dff/_LOD/_dam/_ok."""
+    names = []
+    for raw in (obj.name, getattr(obj.data, 'name', '')):
+        if not raw:
+            continue
+        n = _re.sub(r'\.\d{3}$', '', raw)
+        for cand in (n, raw):
+            if cand and cand not in names:
+                names.append(cand)
+            low = cand.lower()
+            for tail in LM_NAME_TAIL:
+                if low.endswith(tail):
+                    cut = cand[:-len(tail)]
+                    if cut and cut not in names:
+                        names.append(cut)
+                    break
+    return names
+
+
+def _lm_scan_folder(folder):
+    """Файлы папки → {имя без суффикса: {'DAY': путь, 'NIGHT': путь}}.
+    Суффиксы _d/_day — день, _n/_night — ночь; регистр не важен."""
+    found = {}
+    try:
+        entries = os.listdir(folder)
+    except OSError:
+        return found
+    for fn in entries:
+        stem, ext = os.path.splitext(fn)
+        if ext.lower() not in LM_IMAGE_EXT:
+            continue
+        low = stem.lower()
+        for kind, suffixes in (('DAY', LM_DAY_SUFFIX), ('NIGHT', LM_NIGHT_SUFFIX)):
+            hit = next((x for x in suffixes if low.endswith(x)), None)
+            if hit is None:
+                continue
+            key = low[:-len(hit)]
+            found.setdefault(key, {})[kind] = os.path.join(folder, fn)
+            break
+    return found
+
+
+def _lm_set_mode(obj, mode):
+    """Показать на объекте дневной или ночной лайтмап (по записанным при
+    загрузке картинкам). True, если картинка нашлась и подставлена."""
+    name = obj.get(LM_DAY_PROP if mode == 'DAY' else LM_NIGHT_PROP, "")
+    img = bpy.data.images.get(name) if name else None
+    if img is None:
+        return False
+    changed = False
+    for slot in obj.material_slots:
+        mat = slot.material
+        if not compat.material_uses_nodes(mat):
+            continue
+        tex = mat.node_tree.nodes.get(LM_TEX_NODE)
+        if tex is not None:
+            tex.image = img
+            changed = True
+    if changed:
+        obj[LM_MODE_PROP] = mode
+    return changed
+
+
 class GTATOOLS_OT_apply_lightmap_uv2(bpy.types.Operator):
     """Применить текстуру LightMap на UV2 (Multiply) для выделенных объектов"""
     bl_idname = "gtatools.apply_lightmap_uv2"
@@ -983,83 +1212,133 @@ class GTATOOLS_OT_apply_lightmap_uv2(bpy.types.Operator):
             self.report({'ERROR'}, T("Выберите меш объект!"))
             return {'CANCELLED'}
 
-        applied = 0
+        applied = skipped = 0
         for obj in objects:
-            mesh = obj.data
-            # Ensure UV2 exists
-            if len(mesh.uv_layers) < 2:
-                mesh.uv_layers.new(name="UVMap.001")
-            uv2_name = mesh.uv_layers[1].name
+            a, sk = _lm_apply_object(obj, lm_image)
+            applied += a
+            skipped += sk
+            obj[LM_DAY_PROP] = lm_image.name
+            obj[LM_MODE_PROP] = 'DAY'
 
-            for mat_slot in obj.material_slots:
-                mat = mat_slot.material
-                if not mat or not mat.use_nodes:
+        msg = f"LightMap UV2: {applied} {T('материалов')}"
+        if skipped:
+            msg += f" | {T('пропущено (нет цветового входа):')} {skipped}"
+        self.report({'INFO'}, msg)
+        return {'FINISHED'}
+
+
+class GTATOOLS_OT_lightmap_folder(bpy.types.Operator):
+    """Загрузить LightMap для выделенных моделей из папки: файл <имя>_d —
+    дневная карта, <имя>_n — ночная (ищутся по имени объекта/меша)"""
+    bl_idname = "gtatools.lightmap_folder"
+    bl_label = "INU: LightMap из папки"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    directory: StringProperty(subtype='DIR_PATH')
+    filter_folder: BoolProperty(default=True, options={'HIDDEN'})
+    filter_image: BoolProperty(default=True, options={'HIDDEN'})
+    show: bpy.props.EnumProperty(
+        name=T("Показать"),
+        items=[('DAY', T("День"), T("Показать дневные карты")),
+               ('NIGHT', T("Ночь"), T("Показать ночные карты"))],
+        default='DAY')
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        folder = self.directory
+        if not folder or not os.path.isdir(folder):
+            self.report({'ERROR'}, T("Папка не найдена"))
+            return {'CANCELLED'}
+        objects = [o for o in context.selected_objects if o.type == 'MESH']
+        if not objects:
+            obj = context.active_object
+            if obj and obj.type == 'MESH':
+                objects = [obj]
+        if not objects:
+            self.report({'ERROR'}, T("Выберите меш объект!"))
+            return {'CANCELLED'}
+
+        found = _lm_scan_folder(folder)
+        if not found:
+            self.report({'ERROR'}, T("В папке нет карт с суффиксом _d / _n"))
+            return {'CANCELLED'}
+
+        n_day = n_night = n_obj = 0
+        missing = []
+        for obj in objects:
+            maps = None
+            for cand in _lm_name_candidates(obj):
+                maps = found.get(cand.lower())
+                if maps:
+                    break
+            if not maps:
+                missing.append(obj.name)
+                continue
+            images = {}
+            for kind, path in maps.items():
+                try:
+                    images[kind] = bpy.data.images.load(path, check_existing=True)
+                except RuntimeError:
                     continue
+            if not images:
+                missing.append(obj.name)
+                continue
+            if 'DAY' in images:
+                obj[LM_DAY_PROP] = images['DAY'].name
+                n_day += 1
+            if 'NIGHT' in images:
+                obj[LM_NIGHT_PROP] = images['NIGHT'].name
+                n_night += 1
+            # Показываем запрошенную карту; если её нет — ту, что есть.
+            want = self.show if self.show in images else next(iter(images))
+            _lm_apply_object(obj, images[want])
+            obj[LM_MODE_PROP] = want
+            n_obj += 1
 
-                nodes = mat.node_tree.nodes
-                links = mat.node_tree.links
+        if not n_obj:
+            self.report({'ERROR'},
+                        T("Для выделенных моделей карт в папке не нашлось"))
+            return {'CANCELLED'}
+        msg = (f"LightMap: {T('моделей')} {n_obj}, {T('день')} {n_day}, "
+               f"{T('ночь')} {n_night}")
+        if missing:
+            msg += f" | {T('без карт:')} " + ", ".join(missing[:5])
+            if len(missing) > 5:
+                msg += f" +{len(missing) - 5}"
+        self.report({'INFO'}, msg)
+        return {'FINISHED'}
 
-                # Find Principled BSDF
-                principled = None
-                for n in nodes:
-                    if n.type == 'BSDF_PRINCIPLED':
-                        principled = n
-                        break
-                if not principled:
-                    continue
 
-                # Skip if already has lightmap
-                if nodes.get("LM_Texture"):
-                    nodes.get("LM_Texture").image = lm_image
-                    applied += 1
-                    continue
+class GTATOOLS_OT_lightmap_daynight(bpy.types.Operator):
+    """Показать дневной или ночной LightMap на моделях (карты берутся
+    из загруженных «из папки»)"""
+    bl_idname = "gtatools.lightmap_daynight"
+    bl_label = "INU: LightMap день/ночь"
+    bl_options = {'REGISTER', 'UNDO'}
 
-                # Find what's connected to Base Color
-                base_input = principled.inputs['Base Color']
-                orig_socket = None
-                if base_input.links:
-                    orig_socket = base_input.links[0].from_socket
+    mode: bpy.props.EnumProperty(
+        items=[('DAY', "Day", ""), ('NIGHT', "Night", "")], default='DAY')
 
-                # UV Map node for UV2
-                uv_node = nodes.new('ShaderNodeUVMap')
-                uv_node.name = "LM_UV"
-                uv_node.uv_map = uv2_name
-
-                # Lightmap texture node
-                tex_node = nodes.new('ShaderNodeTexImage')
-                tex_node.name = "LM_Texture"
-                tex_node.label = "LightMap"
-                tex_node.image = lm_image
-
-                # Mix node (Multiply) — через compat (ShaderNodeMix на
-                # 3.4+ или ShaderNodeMixRGB на 2.80-3.3).
-                mix = nodes.new(compat.MIX_NODE_TYPE)
-                compat.setup_mix_rgba_node(mix, blend='MULTIPLY')
-                compat.mix_input_factor(mix).default_value = 1.0
-                in_a, in_b, out_r = (
-                    compat.MIX_INPUT_A, compat.MIX_INPUT_B, compat.MIX_OUTPUT_RESULT)
-                mix.name = "LM_Mix"
-                mix.label = "LightMap Mix"
-
-                # Position nodes
-                px = principled.location.x
-                py = principled.location.y
-                uv_node.location = (px - 700, py - 300)
-                tex_node.location = (px - 500, py - 300)
-                mix.location = (px - 200, py)
-
-                # Connect
-                links.new(uv_node.outputs['UV'], tex_node.inputs['Vector'])
-                if orig_socket:
-                    links.new(orig_socket, mix.inputs[in_a])
-                else:
-                    mix.inputs[in_a].default_value = (1, 1, 1, 1)
-                links.new(tex_node.outputs['Color'], mix.inputs[in_b])
-                links.new(mix.outputs[out_r], base_input)
-
-                applied += 1
-
-        self.report({'INFO'}, f"LightMap UV2: {applied} {T('материалов')}")
+    def execute(self, context):
+        objects = [o for o in context.selected_objects if o.type == 'MESH']
+        if not objects:
+            # Без выделения — вся сцена: день/ночь переключают для всей карты,
+            # а не для одной модели.
+            objects = [o for o in context.scene.objects
+                       if o.type == 'MESH' and o.get(LM_DAY_PROP, "")]
+        done = 0
+        for obj in objects:
+            if _lm_set_mode(obj, self.mode):
+                done += 1
+        if not done:
+            self.report({'WARNING'},
+                        T("Нет загруженных карт — «LightMap из папки…»"))
+            return {'CANCELLED'}
+        label = T("день") if self.mode == 'DAY' else T("ночь")
+        self.report({'INFO'}, f"LightMap: {label} ({done})")
         return {'FINISHED'}
 
 
@@ -1095,7 +1374,7 @@ class GTATOOLS_OT_remove_lightmap_uv2(bpy.types.Operator):
 
                 # Restore original connection: A input -> Base Color target
                 orig_socket = None
-                a_input = lm_mix.inputs.get('A') or lm_mix.inputs.get('Color1')
+                a_input = compat.mix_input_a(lm_mix)
                 if a_input and a_input.links:
                     orig_socket = a_input.links[0].from_socket
 
@@ -1145,18 +1424,12 @@ class GTATOOLS_OT_toggle_lightmap_uv2(bpy.types.Operator):
                 if not lm_mix:
                     continue
 
-                principled = None
-                for n in nodes:
-                    if n.type == 'BSDF_PRINCIPLED':
-                        principled = n
-                        break
-                if not principled:
+                base_input, _ref = _lm_colour_input(mat)
+                if base_input is None:
                     continue
 
-                base_input = principled.inputs['Base Color']
-                # Get A input of mix (original texture)
-                a_input = lm_mix.inputs.get('A') or lm_mix.inputs.get('Color1')
-                out_socket = lm_mix.outputs.get('Result') or lm_mix.outputs.get('Color') or lm_mix.outputs[0]
+                a_input = compat.mix_input_a(lm_mix)
+                out_socket = compat.mix_output_result(lm_mix)
                 orig_socket = a_input.links[0].from_socket if a_input and a_input.links else None
 
                 if self.enable:

@@ -357,7 +357,16 @@ def _layer_alpha_array(L, layer_pixels, fallback, w, h):
         a = (0.2126 * px[..., 0] + 0.7152 * px[..., 1]
              + 0.0722 * px[..., 2]).astype(np.float32)          # яркость
     elif ALPHA_MAP_ID in layer_pixels:
-        a = _resample_to(layer_pixels[ALPHA_MAP_ID], w, h)[..., 0].astype(np.float32)
+        px = _resample_to(layer_pixels[ALPHA_MAP_ID], w, h)
+        a = px[..., 0].astype(np.float32)
+        # Значение альфы обычно эмитится в RGB. Но в Hi→Low «покрытие» (где
+        # геометрия) пишется в АЛЬФА-канал карты, а RGB остаётся пустым —
+        # тогда берём альфа-канал (иначе читался бы чёрный R → всё прозрачно).
+        if px.shape[2] >= 4 and float(a.max()) < 1e-4:
+            a = px[..., 3].astype(np.float32)
+        # CUTOUT: маска покрытия, а не полупрозрачность. Порог 0.5 → есть
+        # геометрия → 1 (непрозрачно), дыра → 0. Стандарт GTA cutout.
+        a = (a >= 0.5).astype(np.float32)
     else:
         return np.clip(fallback, 0.0, 1.0).astype(np.float32)
     if decal:

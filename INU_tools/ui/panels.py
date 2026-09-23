@@ -134,8 +134,10 @@ def _draw_material_effects(layout, mat):
     col.prop(inu, "surf_specular", text=T("Зеркальное (specular)"))
     col.prop(inu, "surf_diffuse", text=T("Рассеянное (diffuse)"))
 
-    # Цвет материала + прозрачность (нативный Blender — экспорт берёт цвет из
-    # diffuse_color, а альфа из его 4-го канала). Свотч RGBA даёт и цвет, и альфу.
+    # Цвет материала + прозрачность. Свотч — это mat.diffuse_color (RGB + альфа
+    # в 4-м канале). Экспорт берёт его, если он изменён относительно
+    # импорт-штампа inu_dff_color; иначе — Base Color/Alpha ноды Principled
+    # (см. _read_base_color в dff_export).
     col = layout.column(align=True)
     col.label(text=T("Цвет / прозрачность:"), **inu_icon(safe_icon('COLOR')))
     col.prop(mat, "diffuse_color", text=T("Цвет (RGBA)"))
@@ -1133,7 +1135,11 @@ class GTATOOLS_PT_ide_ipl_export(bpy.types.Panel):
             else:
                 # Что именно разошлось с IDE — перечисляем в предупреждении.
                 _ide_diff = []
-                if abs(_iao.draw_distance - _iao.ide_last_draw_distance) > 1e-3:
+                from ..tools.model_utils import get_model_type_cached
+                _dd_cur = (_iao.lod_draw_distance
+                           if get_model_type_cached(ao)[0] == 'LOD'
+                           else _iao.draw_distance)
+                if abs(_dd_cur - _iao.ide_last_draw_distance) > 1e-3:
                     _ide_diff.append("DrawDist")
                 if (_iao.txd_name or '') != (_iao.ide_last_txd_name or ''):
                     _ide_diff.append("TXD")
@@ -1178,23 +1184,18 @@ class GTATOOLS_PT_ide_ipl_export(bpy.types.Panel):
             _sr2 = _inner.row(align=True)
             _sr2.scale_y = 0.85
             if not _iao.ipl_uuid:
-                _sr2.label(text=T("Не в IPL"),
-                           **inu_icon(safe_icon('RADIOBUT_OFF')))
+                # LOD своей привязки не имеет: его строка пишется и удаляется
+                # вместе с моделью (lod_index модели в файле).
+                from ..tools.model_utils import get_model_type_cached
+                if get_model_type_cached(ao)[0] == 'LOD':
+                    _sr2.label(text=T("LOD — пишется вместе с моделью"),
+                               **inu_icon(safe_icon('LINKED')))
+                else:
+                    _sr2.label(text=T("Не в IPL"),
+                               **inu_icon(safe_icon('RADIOBUT_OFF')))
             else:
-                _uuid = _iao.ipl_uuid
-                _sid = (getattr(ao, 'session_uid', None)
-                        or getattr(ao, 'session_uuid', 0) or 0)
-                _new_copy = False
-                for _o in bpy.data.objects:
-                    if _o is ao:
-                        continue
-                    if getattr(_o.inu, 'ipl_uuid', '') != _uuid:
-                        continue
-                    _os = (getattr(_o, 'session_uid', None)
-                           or getattr(_o, 'session_uuid', 0) or 0)
-                    if _os < _sid:
-                        _new_copy = True
-                        break
+                from ..ops.map_link import is_copy as _is_copy
+                _new_copy = _is_copy(ao, cached=False)
                 _cp = ao.matrix_world.translation
                 _lp = _iao.ipl_last_pos
                 _drift_ipl = (abs(_cp.x - _lp[0]) > 1e-4
@@ -1720,6 +1721,38 @@ class GTATOOLS_PT_export_panel(bpy.types.Panel):
 
 
 
+def _validate_wrap_label(layout, text, avail_px):
+    """Нарисовать text с РУЧНЫМ переносом по словам под ширину avail_px —
+    Blender label сам не переносит, и при узкой N-панели длинные описания
+    обрезаются. Ширина символа оценивается по ui_scale. Слишком длинное
+    слово режется жёстко."""
+    try:
+        ui = bpy.context.preferences.system.ui_scale or 1.0
+    except Exception:                                 # noqa: BLE001
+        ui = 1.0
+    max_chars = max(10, int(avail_px / (7.0 * ui)))
+    col = layout.column(align=True)
+    col.scale_y = 0.8
+    lines = []
+    for para in str(text).split('\n'):
+        line = ''
+        for word in para.split(' '):
+            while len(word) > max_chars:            # разрезать длинное слово
+                if line:
+                    lines.append(line)
+                    line = ''
+                lines.append(word[:max_chars])
+                word = word[max_chars:]
+            if line and len(line) + 1 + len(word) > max_chars:
+                lines.append(line)
+                line = word
+            else:
+                line = (line + ' ' + word) if line else word
+        lines.append(line)
+    for ln in lines:
+        col.label(text=ln)
+
+
 class GTATOOLS_PT_validate_scene(bpy.types.Panel):
     """Pre-export sweep: paintjob slots, quaternion normalisation,
     Modulate Color на прилайтах, парность _ok/_dam.
@@ -1755,6 +1788,9 @@ class GTATOOLS_PT_validate_scene(bpy.types.Panel):
         'SuffixMismatch': "Суффиксы / префиксы",
         'BadScale':       "Scale объектов",
         'LightBeamASI':   "Light Beam ASI",
+        'UntexturedModel': "Меш без текстур (COL)",
+        'NonAsciiName':   "Не-латинское имя",
+        'LooseGeometry':  "Висящая геометрия",
     }
 
     def draw_header(self, context):
@@ -1781,86 +1817,128 @@ class GTATOOLS_PT_validate_scene(bpy.types.Panel):
         box = layout.box()
         srow = box.row(align=True)
         if errors:
-            srow.label(text=f"{errors} ✗", **inu_icon(safe_icon('CANCEL')))
+            srow.label(text=f"{errors} {T('Ошибок')}",
+                       **inu_icon(safe_icon('CANCEL')))
         if warns:
-            srow.label(text=f"{warns} ⚠", **inu_icon(safe_icon('ERROR')))
+            srow.label(text=f"{warns} {T('Предупреждений')}",
+                       **inu_icon(safe_icon('ERROR')))
         if infos:
-            srow.label(text=f"{infos} i", **inu_icon(safe_icon('INFO')))
+            srow.label(text=f"{infos} {T('Инфо')}",
+                       **inu_icon(safe_icon('INFO')))
         if not (errors or warns or infos):
             srow.label(text=T("OK"), **inu_icon(compat.ICON_CHECK))
 
-        # ── Group issues by category, preserving first-seen order ──
-        # Each category becomes a collapsible-feeling section: a small
-        # header with severity colour + count, followed by per-issue
-        # rows. A flat list with 6 categories was hard to scan when
-        # one category had many entries.
-        grouped: "dict[str, list]" = {}
-        for issue in issues:
-            grouped.setdefault(issue.category, []).append(issue)
-
+        # ── Группировка по МОДЕЛИ: все проблемы одного объекта — вместе ──
+        # Ключ = (kind, target_name); проблемы без цели (сценовые) — в группу
+        # по категории. Так одна модель не дублируется в разных категориях
+        # (было: by-category → один объект повторялся в каждом разделе).
         import json as _json
-        for cat, group in grouped.items():
-            # Worst severity in the group drives the header icon.
-            worst = 'INFO'
-            for it in group:
-                if it.severity == 'ERROR':
-                    worst = 'ERROR'
-                    break
-                if it.severity == 'WARNING' and worst != 'ERROR':
-                    worst = 'WARNING'
-            cat_box = layout.box()
-            header = cat_box.row(align=True)
-            # Category label is stored as raw Russian in _CATEGORY_LABEL
-            # — wrap with T() so the active locale picks up its
-            # eng.py translation at draw time.
-            header.label(
-                text=f"{T(self._CATEGORY_LABEL.get(cat, cat))}  ({len(group)})",
-                **inu_icon(self._SEVERITY_ICON.get(worst, 'INFO')))
+        from collections import OrderedDict
+        from ..tools.model_utils import get_model_type_cached
+        groups = OrderedDict()
+        for issue in issues:
+            if issue.target_name:
+                key = (issue.target_kind, issue.target_name)
+                g = groups.get(key)
+                if g is None:
+                    g = {'title': issue.target_name, 'scene': False, 'items': [],
+                         'key': f"O:{issue.target_kind}:{issue.target_name}"}
+                    groups[key] = g
+            else:
+                key = ('CAT', issue.category)
+                g = groups.get(key)
+                if g is None:
+                    g = {'title': T(self._CATEGORY_LABEL.get(
+                             issue.category, issue.category)),
+                         'scene': True, 'items': [],
+                         'key': f"C:{issue.category}"}
+                    groups[key] = g
+            g['items'].append(issue)
 
-            for issue in group:
-                ibox = cat_box.box()
-                if issue.target_name:
-                    ibox.label(text=issue.target_name,
-                               **inu_icon(safe_icon('OBJECT_DATA') if issue.target_kind == 'OBJECT'
-                                    else 'MATERIAL' if issue.target_kind == 'MATERIAL'
-                                    else 'ACTION' if issue.target_kind == 'ACTION'
-                                    else 'BLANK1'))
-                # Render the message:
-                #   • If the check function emitted a translation
-                #     template + JSON args, look up the template's
-                #     localised form and format the args into it. That
-                #     way interpolated messages (e.g. «.DFF vs _DFF»)
-                #     follow the active locale.
-                #   • Otherwise the message is static — pass it
-                #     through T() directly.
-                shown = ""
-                if issue.message_template:
-                    template = T(issue.message_template)
-                    args = {}
-                    if issue.message_args:
-                        try:
-                            args = _json.loads(issue.message_args)
-                        except Exception:
-                            args = {}
+        # Доступная ширина для переноса длинных описаний (учёт вложенности).
+        try:
+            avail = max(80, int(context.region.width) - 55)
+        except Exception:                             # noqa: BLE001
+            avail = 240
+
+        def _fmt(issue):
+            # Шаблон + JSON-аргументы (локализуемый) или статичный message.
+            if issue.message_template:
+                template = T(issue.message_template)
+                args = {}
+                if issue.message_args:
                     try:
-                        shown = template.format(**args)
-                    except (KeyError, IndexError, ValueError):
-                        shown = T(issue.message)
-                else:
-                    shown = T(issue.message)
-                ibox.label(text=shown)
+                        args = _json.loads(issue.message_args)
+                    except Exception:                 # noqa: BLE001
+                        args = {}
+                try:
+                    return template.format(**args)
+                except (KeyError, IndexError, ValueError):
+                    return T(issue.message)
+            return T(issue.message)
 
-                actions = ibox.row(align=True)
-                if issue.target_name:
-                    op = actions.operator("gtatools.validate_goto",
-                                          text=T("Перейти"),
-                                          **inu_icon(safe_icon('RESTRICT_SELECT_OFF')))
-                    op.target_kind = issue.target_kind
-                    op.target_name = issue.target_name
+        # Какие группы развёрнуты (JSON-список ключей в scene). Пусто = всё
+        # свёрнуто: обзор списком моделей, клик по строке разворачивает
+        # проблемы этой модели.
+        try:
+            _open = set(_json.loads(
+                context.scene.inu_settings.inu_validate_expanded or "[]"))
+        except Exception:                             # noqa: BLE001
+            _open = set()
+
+        for g in groups.values():
+            is_open = g['key'] in _open
+            first = g['items'][0]
+            # Иконка ТИПА цели: материал / основная модель (куб) / COL (bbox —
+            # «прозрачный куб») / LOD / action / сцена — по типу первой
+            # проблемы группы (для OBJECT уточняем через get_model_type).
+            if g['scene']:
+                type_icon = safe_icon('SCENE_DATA')
+            elif first.target_kind == 'MATERIAL':
+                type_icon = safe_icon('MATERIAL')
+            elif first.target_kind == 'ACTION':
+                type_icon = safe_icon('ACTION')
+            else:
+                _o = bpy.data.objects.get(first.target_name)
+                _mt = get_model_type_cached(_o)[0] if _o is not None else None
+                if _mt == 'COL':
+                    type_icon = safe_icon('MOD_WIREFRAME')
+                elif _mt == 'LOD':
+                    type_icon = safe_icon('MOD_DECIM')
+                else:
+                    type_icon = safe_icon('MESH_CUBE')
+            gbox = layout.box()
+            header = gbox.row(align=True)
+            # Кликабельная строка-заголовок: треугольник разворота + имя
+            # модели + счётчик проблем.
+            op = header.operator(
+                "gtatools.validate_toggle_group",
+                text=f"{g['title']}  ({len(g['items'])})",
+                emboss=False,
+                **inu_icon(safe_icon('TRIA_DOWN' if is_open else 'TRIA_RIGHT')))
+            op.key = g['key']
+            # Иконка типа цели + «Перейти» на всю модель.
+            header.label(text="", **inu_icon(type_icon))
+            if not g['scene']:
+                gop = header.operator("gtatools.validate_goto", text="",
+                                      **inu_icon(safe_icon('RESTRICT_SELECT_OFF')))
+                gop.target_kind = first.target_kind
+                gop.target_name = first.target_name
+
+            if not is_open:
+                continue
+
+            for issue in g['items']:
+                ibox = gbox.box()
+                # Категория проблемы + иконка её severity (контекст, раз
+                # группируем по модели), затем описание с переносом слов.
+                ibox.label(
+                    text=T(self._CATEGORY_LABEL.get(issue.category, issue.category)),
+                    **inu_icon(self._SEVERITY_ICON.get(issue.severity, 'INFO')))
+                _validate_wrap_label(ibox, _fmt(issue), avail)
                 if issue.fix_op_id:
                     # Each fixer takes a single StringProperty arg.
-                    # Dispatch by idname so we pass the correct arg name
-                    # (action_name / object_name).
+                    actions = ibox.row(align=True)
                     if issue.fix_op_id == 'gtatools.validate_fix_quaternions':
                         fix = actions.operator(issue.fix_op_id,
                                                text=T("Нормализовать"),
@@ -1925,6 +2003,7 @@ class GTATOOLS_PT_check_panel(bpy.types.Panel):
         col.operator("gtatools.reset_transform", text=T("Сброс трансформ"), **inu_icon(safe_icon('EMPTY_AXIS')))
         col.operator("gtatools.snap_to_dff", text=T("LOD/COL → DFF"), **inu_icon(safe_icon('SNAP_ON')))
         col.operator("gtatools.fragment_mesh", text=T("Фрагментация меша"), **inu_icon(safe_icon('MOD_EXPLODE')))
+        col.operator("gtatools.chunk_map", text=T("Разделить на чанки"), **inu_icon(safe_icon('MESH_GRID')))
 
         # «Материалы» (Проверка/Очистка/Сортировка) переехали в
         # «Менеджер текстур» — там же где Find/Remove Unused и Find
@@ -3196,10 +3275,16 @@ class GTATOOLS_PT_object_ide_ipl_panel(bpy.types.Panel):
         inu = obj.inu
 
         col = layout.column(align=True)
-        col.prop(inu, "model_id", text="Model ID")
+        # COL по определению не имеет собственного model_id (коллизия
+        # привязывается к DFF по имени) — поле ID для COL не показываем.
+        _detected = get_model_type_cached(obj)[0]
+        if _detected == 'COL':
+            col.label(text=T("COL — без Model ID (привязка к DFF по имени)"),
+                      **inu_icon(safe_icon('INFO')))
+        else:
+            col.prop(inu, "model_id", text="Model ID")
         # Дистанции по смыслу: LOD-модель → только LOD Dist; основная модель →
         # Draw Dist, а LOD Dist — лишь если есть LOD-партнёр.
-        _detected = get_model_type_cached(obj)[0]
         _has_lod = bool(getattr(inu, 'lod_object', None))
         if _detected == 'LOD':
             col.prop(inu, "lod_draw_distance", text="LOD Dist")
@@ -3244,17 +3329,6 @@ class GTATOOLS_PT_object_ide_ipl_panel(bpy.types.Panel):
         box = layout.box()
         row = box.row(align=True)
         row.prop(inu, "breakable", text=T("Разрушаемый (Breakable)"))
-        if inu.breakable:
-            box.prop(inu, "breakable_force", text=T("Break Force"))
-            box.prop(inu, "breakable_offset", text=T("Смещение силы"))
-            box.prop(inu, "breakable_alloc_auto",
-                     text=T("Авто-буферы осколков"))
-            if not inu.breakable_alloc_auto:
-                col = box.column(align=True)
-                col.prop(inu, "breakable_verts_alloc", text=T("Вершины"))
-                col.prop(inu, "breakable_faces_alloc", text=T("Грани"))
-                col.prop(inu, "breakable_mats_alloc", text=T("Материалы"))
-                col.prop(inu, "breakable_uvs_alloc", text=T("UV"))
 
         # Check for ID conflicts — ignore Blender duplicate suffixes (.001,
         # .002, ...). Multiple placements of the same model legitimately
@@ -3296,8 +3370,12 @@ class GTATOOLS_PT_object_inu_tools(bpy.types.Panel):
         obj = context.active_object
         inu = obj.inu
 
+        # Секции вплотную друг к другу — один align-столбец (зазор 1px)
+        # вместо стандартного отступа между самостоятельными боксами.
+        sec = layout.column(align=True)
+
         # ── Тип (по имени + manual) ──
-        box = layout.box()
+        box = sec.box()
         box.label(text=T("Тип:"), **inu_icon(safe_icon('OBJECT_DATA')))
         detected, _ = get_model_type_cached(obj)   # draw hot path — кэш
         name_row = box.row(align=True)
@@ -3315,10 +3393,15 @@ class GTATOOLS_PT_object_inu_tools(bpy.types.Panel):
                        **inu_icon(safe_icon('INFO')))
 
         # ── IDE / Placement ──
-        box = layout.box()
+        box = sec.box()
         box.label(text="IDE / Placement", **inu_icon(safe_icon('COPY_ID')))
         col = box.column(align=True)
-        col.prop(inu, "model_id", text="Model ID")
+        # COL не имеет собственного model_id (привязка к DFF по имени).
+        if detected == 'COL':
+            col.label(text=T("COL — без Model ID (привязка к DFF по имени)"),
+                      **inu_icon(safe_icon('INFO')))
+        else:
+            col.prop(inu, "model_id", text="Model ID")
         col.prop(inu, "txd_name", text="TXD")
         # Дистанции по смыслу: LOD-модель → только LOD Dist; основная модель →
         # Draw Dist, а LOD Dist — лишь если есть LOD-партнёр (`detected` выше).
@@ -3348,11 +3431,18 @@ class GTATOOLS_PT_object_inu_tools(bpy.types.Panel):
         _lodinu = getattr(_lodo, 'inu', None) if _lodo is not None else None
         if _lodinu is not None:
             col.prop(_lodinu, "model_id", text="LOD ID")
+        elif getattr(inu, 'lod_ide_name', ''):
+            # LOD-меша в сцене нет, но его строка найдена в IDE — IPL «Add»
+            # поставит эту LOD-модель вместе с моделью.
+            _lr = col.row(align=True)
+            _lr.label(text=T("LOD из IDE: {0} (ID {1})").format(
+                inu.lod_ide_name, inu.lod_ide_id),
+                **inu_icon(safe_icon('LINKED')))
 
         # Batch distance button
         n_sel = sum(1 for o in context.selected_objects if o.type == 'MESH')
         if n_sel > 1:
-            box.operator(
+            col.operator(
                 "gtatools.batch_set_distance",
                 text=f"{T('Применить к выделенным')} ({n_sel})",
                 **inu_icon(safe_icon('STICKY_UVS_LOC')),
@@ -3361,7 +3451,7 @@ class GTATOOLS_PT_object_inu_tools(bpy.types.Panel):
         # Clear Model ID on selection — quick path to re-run Auto Assign
         # on objects that already have IDs (duplicated with Shift+D,
         # imported from map, etc. — their inu.model_id carries over).
-        clear_row = box.row(align=True)
+        clear_row = col.row(align=True)
         clear_row.operator(
             "gtatools.id_manager_clear_selected",
             text=f"{T('Очистить ID выделенных')} ({n_sel})" if n_sel > 1
@@ -3370,7 +3460,7 @@ class GTATOOLS_PT_object_inu_tools(bpy.types.Panel):
         )
 
         # IDE Flags (collapsible)
-        row = box.row(align=True)
+        row = col.row(align=True)
         row.prop(inu, "ide_flags", text="IDE Flags")
         row.prop(scn.inu_settings, "gtatools_show_ide_flags",
                  **inu_icon(safe_icon('TRIA_DOWN') if scn.inu_settings.gtatools_show_ide_flags else 'TRIA_RIGHT'),
@@ -3387,9 +3477,19 @@ class GTATOOLS_PT_object_inu_tools(bpy.types.Panel):
             for prop in flag_props_for_game(_game):
                 fc.prop(inu, prop)
 
+        # ── Pipeline ──
+        if obj.type == 'MESH':
+            box = sec.box()
+            # Подписи нет намеренно: слово «Pipeline» Blender переводит своим
+            # словарём («Производственный маршрут»). Вместо неё — ряд кнопок
+            # Нет / Vehicle / Day/Night / …, как в панели экспорта.
+            box.row(align=True).prop(inu, "pipeline", expand=True)
+            if inu.pipeline == 'CUSTOM':
+                box.prop(inu, "custom_pipeline", text="")
+
         # ── DFF Flags (collapsible, only for mesh) ──
         if obj.type == 'MESH':
-            box = layout.box()
+            box = sec.box()
             row = box.row(align=True)
             row.prop(scn.inu_settings, "gtatools_show_dff_flags",
                      **inu_icon(safe_icon('TRIA_DOWN') if scn.inu_settings.gtatools_show_dff_flags else 'TRIA_RIGHT'),
@@ -3472,24 +3572,14 @@ class GTATOOLS_PT_object_inu_tools(bpy.types.Panel):
                         warn.label(text=T("Сними Night (ночные vcol) на UV-аним модели"),
                                    **inu_icon(safe_icon('BLANK1')))
 
-        # ── Pipeline ──
-        if obj.type == 'MESH':
-            box = layout.box()
-            box.label(text="Pipeline", **inu_icon(safe_icon('NODETREE')))
-            box.prop(inu, "pipeline", text="")
-            if inu.pipeline == 'CUSTOM':
-                box.prop(inu, "custom_pipeline", text="")
-
         # ── Breakable ──
         if obj.type == 'MESH':
-            box = layout.box()
+            box = sec.box()
             box.prop(inu, "breakable", text=T("Разрушаемый (Breakable)"))
-            if inu.breakable:
-                box.prop(inu, "breakable_force", text=T("Break Force"))
 
         # ── 2DFX (only for EMPTY with type='2DFX') ──
         if obj.type == 'EMPTY' and inu.type == '2DFX':
-            box = layout.box()
+            box = sec.box()
             box.label(text="2DFX", **inu_icon(safe_icon('LIGHT')))
             box.prop(inu, "effect_2dfx", text=T("Тип эффекта"))
             if inu.effect_2dfx == 'LIGHT':
@@ -3763,11 +3853,20 @@ class GTATOOLS_PT_prelight_panel(bpy.types.Panel):
             body = box.row(align=True)
             preview_col = body.column(align=True)
             preview_col.ui_units_x = 1.4
-            preview_col.scale_y = 2.0
-            op_pv = preview_col.operator("gtatools.prelight_preview",
-                                         text="", **inu_icon(_pv_icon),
-                                         depress=_preview_on)
+            # Кнопка превью прилайта — высокая (scale_y=2) в СВОЕЙ строке,
+            # чтобы под ней в этом же левом столбце поместилась кнопка
+            # копирования альфы обычной высоты (ровно под строкой «Альфа
+            # вершины (сцена)» справа).
+            _pvr = preview_col.row(align=True)
+            _pvr.scale_y = 2.0
+            op_pv = _pvr.operator("gtatools.prelight_preview",
+                                  text="", **inu_icon(_pv_icon),
+                                  depress=_preview_on)
             op_pv.enable = not _preview_on
+            # Под превью прилайта — копирование альфы вершин в НЕактивный
+            # атрибут (Day↔Night; RGB приёмника сохраняется).
+            preview_col.operator("gtatools.copy_vertex_alpha", text="",
+                                 **inu_icon(safe_icon('COPYDOWN')))
             box_col = body.column(align=True)
 
             # Day / Night rows: [select btn][V offset prop][— remove].
@@ -3853,8 +3952,11 @@ class GTATOOLS_PT_prelight_panel(bpy.types.Panel):
             # место и иконка схлопывается в 0 (её не видно и не нажать).
             a_btns = arow.row(align=True)
             a_btns.ui_units_x = 0.9
-            a_btns.operator("gtatools.copy_vertex_alpha", text="",
-                            **inu_icon(safe_icon('COPYDOWN')))
+            # Справа под столбцом «—» строк Day/Night — корзина: убрать альфу
+            # из активного атрибута (залить в 1.0, RGB сохранить).
+            # Копирование альфы — слева, под кнопкой превью прилайта.
+            a_btns.operator("gtatools.clear_vertex_alpha", text="",
+                            **inu_icon(safe_icon('TRASH')))
 
             # Визуальная коррекция превью (яркость/контраст/гамма/насыщенность)
             # СПРЯТАНА из UI по просьбе. Значения живут в свойствах сцены и
@@ -3947,6 +4049,20 @@ class GTATOOLS_PT_prelight_panel(bpy.types.Panel):
                 row.label(text="", **inu_icon(safe_icon('HIDE_ON')))
             row.operator("gtatools.apply_lightmap_uv2", text=T("Добавить LightMap"))
             row.operator("gtatools.remove_lightmap_uv2", text="", **inu_icon(safe_icon('REMOVE')))
+
+            # Папка с картами <имя>_d / <имя>_n + переключение день/ночь.
+            # Каждая модель получает СВОЮ карту (материалы, общие с другими
+            # объектами, при этом копируются — иначе лайтмап был бы один на всех).
+            row = obj_col.row(align=True)
+            row.operator("gtatools.lightmap_folder",
+                         text=T("LightMap из папки…"))
+            _lm_mode = obj.get("inu_lm_mode", "") if _has_mesh else ""
+            op_d = row.operator("gtatools.lightmap_daynight", text=T("День"),
+                                depress=(_lm_mode == 'DAY'))
+            op_d.mode = 'DAY'
+            op_n = row.operator("gtatools.lightmap_daynight", text=T("Ночь"),
+                                depress=(_lm_mode == 'NIGHT'))
+            op_n.mode = 'NIGHT'
 
             # ─── Коррекция превью прилайта ─────────────────────────────
             # Только вьюпорт: ноды коррекции — постоянная часть графа
@@ -4792,7 +4908,7 @@ class GTATOOLS_PT_timecyc_panel(bpy.types.Panel):
 
         time_box = layout.box().column(align=True)
         time_box.prop(props, "hour", text=T("Время"), slider=True)
-        time_box.label(text=_timecyc_between_label(props.hour))
+        time_box.label(text=_timecyc_between_label(props.hour, tco.get_cyc(context)))
         # «Живое превью», «Применить», «Показать в вьюпорте» убраны: превью
         # всегда живое пока цикл включён, а вьюпорт переводится в Material
         # Preview автоматически (show_in_viewport при импорте/включении).
@@ -4866,21 +4982,21 @@ def _timecyc_night_balance(props):
         dawn_start=props.dn_dawn_start, dawn_end=props.dn_dawn_end)
 
 
-def _timecyc_between_label(hour):
+def _timecyc_between_label(hour, cyc=None):
     """Подпись «между какими срезами сейчас интерполяция» — иначе
-    непонятно, какой из восьми срезов правится под текущий час."""
-    from ..core import timecyc as _tc
+    непонятно, какой из срезов правится под текущий час."""
+    from ..ops import timecyc_ops as tco
+    hours = tco.slot_hours(cyc)
     hour = float(hour) % 24.0
-    lo = len(_tc.SLOT_HOURS) - 1
-    for i, h in enumerate(_tc.SLOT_HOURS):
+    lo = len(hours) - 1
+    for i, h in enumerate(hours):
         if hour < h:
             lo = i - 1
             break
     if lo < 0:
-        lo = len(_tc.SLOT_HOURS) - 1
-    hi = (lo + 1) % len(_tc.SLOT_HOURS)
-    return "%s %02d:00 → %02d:00" % (T("Между срезами"),
-                                     _tc.SLOT_HOURS[lo], _tc.SLOT_HOURS[hi])
+        lo = len(hours) - 1
+    hi = (lo + 1) % len(hours)
+    return "%s %02d:00 → %02d:00" % (T("Между срезами"), hours[lo], hours[hi])
 
 
 class GTATOOLS_PT_timecyc_edit(bpy.types.Panel):
@@ -4906,10 +5022,12 @@ class GTATOOLS_PT_timecyc_edit(bpy.types.Panel):
         cyc = tco.get_cyc(context)
         slot = tco.current_slot(context, cyc)
 
-        layout.prop(props, "slot", text=T("Срез"))
+        layout.prop(props, tco.slot_prop_name(cyc), text=T("Срез"))
         if slot is None:
             layout.label(text=T("Срез недоступен"), **inu_icon(safe_icon('ERROR')))
             return
+        has = cyc.has_field
+        is_iii = cyc.game == 'III'
 
         if slot.width != _tc.schema_width(cyc.fields):
             note = layout.box().column(align=True)
@@ -4929,15 +5047,22 @@ class GTATOOLS_PT_timecyc_edit(bpy.types.Panel):
         light = layout.box().column(align=True)
         light.label(text=T("Свет и тени:"), **inu_icon(safe_icon('OUTLINER_OB_LIGHT')))
         light.prop(props, "f_amb", text=T("Ambient мира"))
-        light.prop(props, "f_amb_obj", text=T("Ambient объектов"))
-        if cyc.has_field('dir'):
+        if has('amb_obj'):
+            light.prop(props, "f_amb_obj", text=T("Ambient объектов"))
+        if has('amb_bl'):                                  # VC: при Trails
+            light.prop(props, "f_amb_bl", text=T("Ambient мира (Trails)"))
+            light.prop(props, "f_amb_obj_bl", text=T("Ambient объектов (Trails)"))
+        if has('dir'):
             light.prop(props, "f_dir", text=T("Directional"))
+        if has('dir_mult'):
             light.prop(props, "f_dir_mult", text=T("Множитель dir"))
         light.prop(props, "f_light_on_ground", text=T("Свет на земле"))
         light.prop(props, "f_shadow", text=T("Тени"))
         light.prop(props, "f_light_shad", text=T("Тени от света"))
-        light.prop(props, "f_pole_shad", text=T("Тени столбов"))
-        light.prop(props, "f_highlight_min", text=T("Мин. блики"))
+        light.prop(props, "f_pole_shad",
+                   text=T("Тени деревьев") if is_iii else T("Тени столбов"))
+        if has('highlight_min'):
+            light.prop(props, "f_highlight_min", text=T("Мин. блики"))
 
         fog = layout.box().column(align=True)
         fog.label(text=T("Туман и дальность:"), **inu_icon(safe_icon('MOD_FLUIDSIM')))
@@ -4947,23 +5072,38 @@ class GTATOOLS_PT_timecyc_edit(bpy.types.Panel):
         clouds = layout.box().column(align=True)
         clouds.label(text=T("Облака:"), **inu_icon(safe_icon('OUTLINER_OB_VOLUME')))
         clouds.prop(props, "f_low_clouds", text=T("Нижние"))
+        if has('top_clouds'):
+            clouds.prop(props, "f_top_clouds", text=T("Верхние"))
         clouds.prop(props, "f_bottom_clouds", text=T("У горизонта"))
-        clouds.prop(props, "f_cloud_alpha", text=T("Прозрачность"))
+        if has('cloud_alpha'):
+            clouds.prop(props, "f_cloud_alpha", text=T("Прозрачность"))
 
-        water = layout.box().column(align=True)
-        water.label(text=T("Вода:"), **inu_icon(safe_icon('MATFLUID')))
-        water.prop(props, "f_water", text=T("Цвет"))
-        water.prop(props, "f_water_a", text=T("Альфа"))
-        water.prop(props, "f_water_fog", text=T("Туман под водой"))
+        if has('water'):
+            water = layout.box().column(align=True)
+            water.label(text=T("Вода:"), **inu_icon(safe_icon('MATFLUID')))
+            water.prop(props, "f_water", text=T("Цвет"))
+            water.prop(props, "f_water_a", text=T("Альфа"))
+            if has('water_fog'):
+                water.prop(props, "f_water_fog", text=T("Туман под водой"))
 
-        post = layout.box().column(align=True)
-        post.label(text=T("PostFX:"), **inu_icon(safe_icon('SEQ_PREVIEW')))
-        post.prop(props, "f_postfx1", text=T("Слой 1"))
-        post.prop(props, "f_postfx1_a", text=T("Альфа 1"))
-        post.prop(props, "f_postfx2", text=T("Слой 2"))
-        post.prop(props, "f_postfx2_a", text=T("Альфа 2"))
-        post.label(text=T("В вьюпорте не показывается"),
-                   **inu_icon(safe_icon('INFO')))
+        if has('blur'):                                    # III / VC
+            post = layout.box().column(align=True)
+            post.label(text=T("Trails (blur):"), **inu_icon(safe_icon('SEQ_PREVIEW')))
+            post.prop(props, "f_blur", text=T("Цвет"))
+            if is_iii:
+                post.prop(props, "f_blur_a", text=T("Альфа"))
+            post.label(text=T("В вьюпорте не показывается"),
+                       **inu_icon(safe_icon('INFO')))
+
+        if has('postfx1'):
+            post = layout.box().column(align=True)
+            post.label(text=T("PostFX:"), **inu_icon(safe_icon('SEQ_PREVIEW')))
+            post.prop(props, "f_postfx1", text=T("Слой 1"))
+            post.prop(props, "f_postfx1_a", text=T("Альфа 1"))
+            post.prop(props, "f_postfx2", text=T("Слой 2"))
+            post.prop(props, "f_postfx2_a", text=T("Альфа 2"))
+            post.label(text=T("В вьюпорте не показывается"),
+                       **inu_icon(safe_icon('INFO')))
 
         tools = layout.column(align=True)
         tools.operator("gtatools.timecyc_revert_slot",
@@ -6268,6 +6408,15 @@ class GTATOOLS_PT_bake_panel(bpy.types.Panel):
                     det.prop(L, "opacity", slider=True)
                     det.prop(L, "contrast")
                     det.prop(L, "gamma")
+                    # «Рисовать» — правка карты кистью (Texture Paint, WYSIWYG).
+                    # Доступно если карта запечена или это слой «Рисование».
+                    _pr = det.row(align=True)
+                    _pr.enabled = (img is not None) or (L.map_id == 'PAINT')
+                    _pop = _pr.operator("gtatools.bake_paint_layer",
+                                        text=T("Рисовать"),
+                                        **inu_icon(safe_icon('BRUSH_DATA')))
+                    _pop.uid = getattr(L, 'uid', '') or L.map_id
+                    _pop.map_id = L.map_id
                     # «Обесцветить» — только для Normal Map (убирает синий
                     # tangent-space оттенок при сведении).
                     if L.map_id == 'NORMAL':

@@ -37,6 +37,9 @@ from ..core.validate import (
     check_materials_without_texture,
     check_uv_anim_night_vcols,
     check_suffix_consistency,
+    check_non_ascii_names,
+    check_extra_color_attrs,
+    check_loose_geom,
     check_object_scale,
     check_light_beam_asi,
 )
@@ -222,9 +225,37 @@ def _gather_2dfx_empties():
     return out
 
 
-def _gather_objects_with_model_id():
+def _gather_loose_geometry():
+    """Висящие вершины/рёбра по каждому мешу (та же логика, что у кнопки
+    «Проверка вершин»). Возвращает только объекты, где что-то нашлось."""
+    from ..tools.model_utils import check_loose_geometry
     out = []
     for obj in _scene_objects({'MESH'}):
+        try:
+            lv, le, err = check_loose_geometry(obj)
+        except Exception:                             # noqa: BLE001
+            continue
+        if err:
+            continue
+        if lv or le:
+            out.append(dict(name=obj.name,
+                            n_verts=len(lv), n_edges=len(le)))
+    return out
+
+
+def _gather_objects_with_model_id():
+    # COL-меши по определению не имеют собственного model_id (коллизия
+    # привязывается к DFF по имени), поэтому их ID в проверку дубликатов НЕ
+    # берём — иначе COL с тем же ID, что у его DFF, даёт ложный «дубликат».
+    from ..tools.model_utils import get_model_type
+    out = []
+    for obj in _scene_objects({'MESH'}):
+        try:
+            mtype, _ = get_model_type(obj)
+        except Exception:                             # noqa: BLE001
+            mtype = None
+        if mtype == 'COL':
+            continue
         inu = getattr(obj, 'inu', None)
         mid = getattr(inu, 'model_id', 0) if inu else 0
         out.append(dict(name=obj.name, model_id=int(mid)))
@@ -315,6 +346,20 @@ def _gather_mesh_vert_counts():
         me = obj.data
         n = len(me.vertices) if me is not None else 0
         out.append(dict(name=obj.name, vert_count=n))
+    return out
+
+
+def _gather_mesh_color_attrs():
+    """Per-mesh: имена цветовых атрибутов, которые НЕ являются канон.
+    prelit-слоями Day/Night. Feeds check_extra_color_attrs."""
+    allowed = {'day', 'night'}
+    out = []
+    for obj in _scene_objects({'MESH'}):
+        me = obj.data
+        attrs = getattr(me, 'color_attributes', None) or []
+        extra = [a.name for a in attrs if a.name.lower() not in allowed]
+        if extra:
+            out.append(dict(name=obj.name, extra=extra))
     return out
 
 
@@ -454,6 +499,9 @@ def collect_all_issues():
     mesh_names = [m['name'] for m in mesh_verts]
     issues.extend(check_suffix_consistency(
         mesh_names, _gather_configured_suffixes()))
+    issues.extend(check_non_ascii_names(mesh_names))
+    issues.extend(check_extra_color_attrs(_gather_mesh_color_attrs()))
+    issues.extend(check_loose_geom(_gather_loose_geometry()))
     issues.extend(check_object_scale(_gather_object_scales()))
     issues.extend(check_light_beam_asi(
         _gather_light_beam_meshes(), _sa_light_asi_present()))
@@ -537,6 +585,32 @@ class GTATOOLS_OT_validate_clear(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class GTATOOLS_OT_validate_toggle_group(bpy.types.Operator):
+    """Свернуть/развернуть группу проблем модели в панели «Проверка».
+    Ключ группы хранится в JSON-списке inu_validate_expanded."""
+    bl_idname = "gtatools.validate_toggle_group"
+    bl_label = "INU: Toggle validation group"
+    bl_options = {'REGISTER', 'INTERNAL'}
+
+    key: StringProperty()
+
+    def execute(self, context):
+        import json
+        s = context.scene.inu_settings
+        try:
+            cur = json.loads(s.inu_validate_expanded) if s.inu_validate_expanded else []
+            if not isinstance(cur, list):
+                cur = []
+        except Exception:                             # noqa: BLE001
+            cur = []
+        if self.key in cur:
+            cur.remove(self.key)
+        else:
+            cur.append(self.key)
+        s.inu_validate_expanded = json.dumps(cur, ensure_ascii=False)
+        return {'FINISHED'}
+
+
 class GTATOOLS_OT_validate_goto(bpy.types.Operator):
     """Сделать активным объект/материал из строки результата."""
     bl_idname = "gtatools.validate_goto"
@@ -545,6 +619,24 @@ class GTATOOLS_OT_validate_goto(bpy.types.Operator):
 
     target_kind: StringProperty()
     target_name: StringProperty()
+
+    def _reveal_active_in_outliner(self, context):
+        """Раскрыть дерево коллекций в Outliner до активного объекта и
+        прокрутить к нему — иначе объект выделен, но спрятан в свёрнутой
+        коллекции. Делаем во всех открытых Outliner-областях."""
+        try:
+            screen = getattr(context, 'screen', None)
+            for area in getattr(screen, 'areas', []) or []:
+                if area.type != 'OUTLINER':
+                    continue
+                region = next((r for r in area.regions
+                               if r.type == 'WINDOW'), None)
+                if region is None:
+                    continue
+                with context.temp_override(area=area, region=region):
+                    bpy.ops.outliner.show_active()
+        except Exception:                             # noqa: BLE001
+            pass
 
     def execute(self, context):
         if self.target_kind == 'OBJECT':
@@ -596,6 +688,7 @@ class GTATOOLS_OT_validate_goto(bpy.types.Operator):
                             obj.active_material_index = i
                             break
                     self.report({'INFO'}, f"→ {mat.name} @ {obj.name}")
+                    self._reveal_active_in_outliner(context)
                     return {'FINISHED'}
             self.report({'INFO'},
                         f"{T('Материал без носителя')}: {mat.name}")
@@ -613,6 +706,7 @@ class GTATOOLS_OT_validate_goto(bpy.types.Operator):
             else:
                 self.report({'INFO'},
                             f"Action: {act.name} ({T('выбери armature и повтори')})")
+        self._reveal_active_in_outliner(context)
         return {'FINISHED'}
 
 

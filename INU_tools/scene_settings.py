@@ -15,6 +15,7 @@ import bpy
 from bpy.props import (
     StringProperty, BoolProperty, IntProperty, FloatProperty,
     EnumProperty, FloatVectorProperty, CollectionProperty,
+    BoolVectorProperty,
     PointerProperty,
 )
 # T() = locale lookup (Russian source → active language). Safe to import
@@ -981,6 +982,11 @@ _TC_SLOT_ITEMS = [
     ('7', "22:00", T("Ночь")),
 ]
 
+# III / VC: почасовые срезы (24 строки на погоду). Отдельное статичное
+# свойство, а не динамический enum — см. комментарий к weathers ниже:
+# какой из двух показывать, решает панель по игре загруженного файла.
+_TC_SLOT24_ITEMS = [(str(h), "%02d:00" % h, "") for h in range(24)]
+
 
 def _tc_color(name, default=(0.0, 0.0, 0.0)):
     return FloatVectorProperty(
@@ -1011,6 +1017,9 @@ class INUTimecycProps(bpy.types.PropertyGroup):
         name=T("Погода"), default="", update=_tc_weather_changed)
     slot: EnumProperty(
         name=T("Срез"), items=_TC_SLOT_ITEMS, default='4',
+        update=_tc_slot_changed)
+    slot_hourly: EnumProperty(
+        name=T("Срез"), items=_TC_SLOT24_ITEMS, default='12',
         update=_tc_slot_changed)
     hour: FloatProperty(
         name=T("Время суток"), min=0.0, max=24.0, default=12.0, step=25,
@@ -1133,19 +1142,27 @@ class INUTimecycProps(bpy.types.PropertyGroup):
     # ── Значения среза: цвета ───────────────────────────────────
     f_amb: _tc_color(T("Ambient (мир)"))
     f_amb_obj: _tc_color(T("Ambient (объекты)"))
+    # VC: ambient при включённых Trails (CMBlur::BlurOn).
+    f_amb_bl: _tc_color(T("Ambient (мир, Trails)"))
+    f_amb_obj_bl: _tc_color(T("Ambient (объекты, Trails)"))
     f_dir: _tc_color(T("Directional"), (1.0, 1.0, 1.0))
     f_sky_top: _tc_color(T("Небо: зенит"))
     f_sky_bot: _tc_color(T("Небо: горизонт"))
     f_sun_core: _tc_color(T("Солнце: ядро"))
     f_sun_corona: _tc_color(T("Солнце: корона"))
     f_low_clouds: _tc_color(T("Нижние облака"))
+    f_top_clouds: _tc_color(T("Верхние облака"))          # III / VC
     f_bottom_clouds: _tc_color(T("Облака у горизонта"))
+    f_blur: _tc_color(T("Trails / blur"))                  # III / VC
     f_water: _tc_color(T("Вода"))
     f_postfx1: _tc_color(T("PostFX 1"))
     f_postfx2: _tc_color(T("PostFX 2"))
 
     f_water_a: FloatProperty(
         name=T("Вода: альфа"), min=0.0, max=1.0, default=0.94,
+        update=_tc_field_changed)
+    f_blur_a: FloatProperty(                               # III (RGBA)
+        name=T("Trails: альфа"), min=0.0, max=1.0, default=0.3,
         update=_tc_field_changed)
     f_postfx1_a: FloatProperty(
         name=T("PostFX 1: альфа"), min=0.0, max=1.0, default=1.0,
@@ -1405,7 +1422,7 @@ class INUSceneSettings(bpy.types.PropertyGroup):
         description=T("Целевая игра для экспорта / валидации. Импорт авто-детектит игру по RW-версии"),
         items=[
             ('SA',  "SA",  "GTA: San Andreas (RW 3.6, COL3, IMG VER2)"),
-            ('VC',  "VC",  "GTA: Vice City (RW 3.5, COL2, IMG VER1)"),
+            ('VC',  "VC",  "GTA: Vice City (RW 3.4, COL1, IMG VER1)"),
             ('III', "III", "GTA III (RW 3.3, COL1, IMG VER1)"),
         ],
         default='SA',
@@ -1572,6 +1589,19 @@ class INUSceneSettings(bpy.types.PropertyGroup):
         name=T("База ID и сервис"),
         description=T("Управление пресетом ID: sync, из игры, GC, лимит FLA"),
         default=False)
+
+    # ── GTA Geo: здания ─────────────────────────────────────────
+    # Генерацию домов делает Auto-Building; нам нужен только путь к его
+    # папке assets, откуда берётся заготовка.
+    # Раскрытые блоки настроек Auto-Building. Вектором, а не россыпью
+    # булевых свойств: блоков два десятка, и каждому своё поле — это
+    # двадцать записей в PropertyGroup ради галочки «развернуть».
+    gtatools_ab_wall_open: BoolVectorProperty(size=8, default=[False] * 8)
+    gtatools_ab_open: BoolVectorProperty(size=16, default=[False] * 16)
+    gtatools_building_assets: StringProperty(
+        name=T("Папка Auto-Building"), default="", subtype='DIR_PATH',
+        description=T("Папка assets аддона Auto-Building — в ней лежит "
+                      "Auto-Building_1.2.6_Start.blend с заготовкой"))
 
     # ── Grass / plants.dat ──────────────────────────────────────
     # Editable working set of procedural-grass definitions. Imported
@@ -3004,6 +3034,11 @@ class INUSceneSettings(bpy.types.PropertyGroup):
     # Вложенная группа, а не плоские gtatools_* поля: их там под сорок,
     # и все живут одним экраном панели.
     gtatools_timecyc: PointerProperty(type=INUTimecycProps)
+
+    # Развёрнутые группы в панели «Проверка перед экспортом» — JSON-список
+    # ключей групп (модель/категория). Список сворачиваемый: пусто = всё
+    # свёрнуто (обзор), клик по строке разворачивает проблемы модели.
+    inu_validate_expanded: StringProperty(default="", options={'HIDDEN'})
 
     # ── CollectionProperty fields with custom item types ──────
     inu_validate_issues: CollectionProperty(type=INUValidateIssue)

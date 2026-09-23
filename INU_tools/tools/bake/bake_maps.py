@@ -238,6 +238,216 @@ def _prepare_bevel(obj, params):
     return teardown_appended
 
 
+# ── Процедурные EMIT-маски по геометрии (грязь/износ/кривизна/высота/
+#    толщина/грандж). Все — light-free: подменяем материалы объекта на
+#    построенный EMIT-материал и печём как EMIT (как Bevel). ──────────
+DIRT_MAT_NAME = 'INU_Dirt_Mat'
+EDGEWEAR_MAT_NAME = 'INU_EdgeWear_Mat'
+CURVATURE_MAT_NAME = 'INU_Curvature_Mat'
+HEIGHT_MAT_NAME = 'INU_Height_Mat'
+THICKNESS_MAT_NAME = 'INU_Thickness_Mat'
+GRUNGE_MAT_NAME = 'INU_Grunge_Mat'
+
+
+def _swap_materials(obj, mat):
+    """Подменить все материалы объекта на `mat`, вернуть teardown-замыкание
+    (восстанавливает оригиналы и удаляет временный материал, если он остался
+    без пользователей). Тот же приём, что у Bevel/Alpha."""
+    slots = obj.material_slots
+    if len(slots) > 0:
+        original = [s.material for s in slots]
+        for s in slots:
+            s.material = mat
+
+        def teardown():
+            for s, m in zip(obj.material_slots, original):
+                s.material = m
+            if mat.users == 0:
+                try:
+                    bpy.data.materials.remove(mat)
+                except Exception:
+                    pass
+        return teardown
+
+    obj.data.materials.append(mat)
+
+    def teardown_appended():
+        try:
+            obj.data.materials.pop()
+        except Exception:
+            pass
+        if mat.users == 0:
+            try:
+                bpy.data.materials.remove(mat)
+            except Exception:
+                pass
+    return teardown_appended
+
+
+def _new_emit_mat(name):
+    """Свежий EMIT-материал (переиспользуемый по имени): чистим ноды, ставим
+    Emission→Output. Возвращает (mat, node_tree, emission_node)."""
+    mat = bpy.data.materials.get(name)
+    if mat is None:
+        mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new('ShaderNodeOutputMaterial')
+    emit = nt.nodes.new('ShaderNodeEmission')
+    nt.links.new(emit.outputs['Emission'], out.inputs['Surface'])
+    mat.use_fake_user = False
+    return mat, nt, emit
+
+
+def _math_node(nt, op, a=None, b=None, clamp=False):
+    """ShaderNodeMath с необязательными константами на входах (простые float
+    сокеты — без ловушки дублированных сокетов Map Range)."""
+    n = nt.nodes.new('ShaderNodeMath')
+    n.operation = op
+    n.use_clamp = clamp
+    if a is not None:
+        n.inputs[0].default_value = a
+    if b is not None:
+        n.inputs[1].default_value = b
+    return n
+
+
+# Pointiness ноды Geometry: 0.5 = плоскость, <0.5 вогнутость, >0.5 выпуклость.
+def build_dirt_material(params):
+    """Грязь во впадинах: маска ТЁМНАЯ во впадинах (blend MULTIPLY затемняет).
+    val = clamp(1 − (0.5 − pointiness)·k)."""
+    mat, nt, emit = _new_emit_mat(DIRT_MAT_NAME)
+    geo = nt.nodes.new('ShaderNodeNewGeometry')
+    k = float(params.get('cavity_gain', 4.0))
+    conc = _math_node(nt, 'SUBTRACT', a=0.5)            # 0.5 − point
+    nt.links.new(geo.outputs['Pointiness'], conc.inputs[1])
+    mul = _math_node(nt, 'MULTIPLY', b=k)
+    nt.links.new(conc.outputs['Value'], mul.inputs[0])
+    inv = _math_node(nt, 'SUBTRACT', a=1.0, clamp=True)  # 1 − x
+    nt.links.new(mul.outputs['Value'], inv.inputs[1])
+    nt.links.new(inv.outputs['Value'], emit.inputs['Color'])
+    return mat
+
+
+def build_edgewear_material(params):
+    """Износ кромок: выпуклости СВЕТЛЫЕ (blend ADD подсвечивает углы).
+    val = clamp((pointiness − 0.5)·k)."""
+    mat, nt, emit = _new_emit_mat(EDGEWEAR_MAT_NAME)
+    geo = nt.nodes.new('ShaderNodeNewGeometry')
+    k = float(params.get('cavity_gain', 4.0))
+    conv = _math_node(nt, 'SUBTRACT', b=0.5)            # point − 0.5
+    nt.links.new(geo.outputs['Pointiness'], conv.inputs[0])
+    mul = _math_node(nt, 'MULTIPLY', b=k, clamp=True)
+    nt.links.new(conv.outputs['Value'], mul.inputs[0])
+    nt.links.new(mul.outputs['Value'], emit.inputs['Color'])
+    return mat
+
+
+def build_curvature_material(params):
+    """Кривизна: серая карта, 0.5 = плоскость, впадины темнее, выступы светлее.
+    val = clamp(0.5 + (pointiness − 0.5)·k)."""
+    mat, nt, emit = _new_emit_mat(CURVATURE_MAT_NAME)
+    geo = nt.nodes.new('ShaderNodeNewGeometry')
+    k = float(params.get('curvature_gain', 3.0))
+    sub = _math_node(nt, 'SUBTRACT', b=0.5)
+    nt.links.new(geo.outputs['Pointiness'], sub.inputs[0])
+    mul = _math_node(nt, 'MULTIPLY', b=k)
+    nt.links.new(sub.outputs['Value'], mul.inputs[0])
+    add = _math_node(nt, 'ADD', b=0.5, clamp=True)
+    nt.links.new(mul.outputs['Value'], add.inputs[0])
+    nt.links.new(add.outputs['Value'], emit.inputs['Color'])
+    return mat
+
+
+def build_height_material(params):
+    """Высотный градиент: СНИЗУ светлое (маска грязи/влаги у земли).
+    val = clamp(1 − (Zmir − Zmin)/(Zmax − Zmin)). Границы — мировой bbox."""
+    mat, nt, emit = _new_emit_mat(HEIGHT_MAT_NAME)
+    geo = nt.nodes.new('ShaderNodeNewGeometry')
+    sep = nt.nodes.new('ShaderNodeSeparateXYZ')
+    nt.links.new(geo.outputs['Position'], sep.inputs['Vector'])
+    zmin = float(params.get('z_min', 0.0))
+    zmax = float(params.get('z_max', 1.0))
+    denom = max(zmax - zmin, 1e-6)
+    sub = _math_node(nt, 'SUBTRACT', b=zmin)            # z − zmin
+    nt.links.new(sep.outputs['Z'], sub.inputs[0])
+    div = _math_node(nt, 'DIVIDE', b=denom)            # /(zmax−zmin) → 0..1
+    nt.links.new(sub.outputs['Value'], div.inputs[0])
+    inv = _math_node(nt, 'SUBTRACT', a=1.0, clamp=True)  # снизу 1, сверху 0
+    nt.links.new(div.outputs['Value'], inv.inputs[1])
+    nt.links.new(inv.outputs['Value'], emit.inputs['Color'])
+    return mat
+
+
+def build_thickness_material(params):
+    """Толщина/просвет: inside-AO. Толстое тёмное, тонкое светлое (просвечивает)
+    — стандартная thickness-маска. val = clamp(1 − AO_inside)."""
+    mat, nt, emit = _new_emit_mat(THICKNESS_MAT_NAME)
+    ao = nt.nodes.new('ShaderNodeAmbientOcclusion')
+    try:
+        ao.inside = True
+        ao.only_local = True
+        ao.samples = max(1, int(params.get('bevel_samples', 16)))
+    except Exception:
+        pass
+    dist = ao.inputs.get('Distance')
+    if dist is not None:
+        dist.default_value = float(params.get('thickness_dist', 0.2))
+    inv = _math_node(nt, 'SUBTRACT', a=1.0, clamp=True)  # 1 − AO
+    nt.links.new(ao.outputs['AO'], inv.inputs[1])
+    nt.links.new(inv.outputs['Value'], emit.inputs['Color'])
+    return mat
+
+
+def build_grunge_material(params):
+    """Процедурный грандж: 3D-шум по object-координатам (бесшовный по
+    поверхности). blend MULTIPLY — грязь-пятна затемняют."""
+    mat, nt, emit = _new_emit_mat(GRUNGE_MAT_NAME)
+    tc = nt.nodes.new('ShaderNodeTexCoord')
+    noise = nt.nodes.new('ShaderNodeTexNoise')
+    sc = noise.inputs.get('Scale')
+    if sc is not None:
+        sc.default_value = float(params.get('grunge_scale', 8.0))
+    nt.links.new(tc.outputs['Object'], noise.inputs['Vector'])
+    nt.links.new(noise.outputs['Fac'], emit.inputs['Color'])
+    return mat
+
+
+def _prepare_dirt(obj, params):
+    return _swap_materials(obj, build_dirt_material(params))
+
+
+def _prepare_edgewear(obj, params):
+    return _swap_materials(obj, build_edgewear_material(params))
+
+
+def _prepare_curvature(obj, params):
+    return _swap_materials(obj, build_curvature_material(params))
+
+
+def _prepare_thickness(obj, params):
+    return _swap_materials(obj, build_thickness_material(params))
+
+
+def _prepare_grunge(obj, params):
+    return _swap_materials(obj, build_grunge_material(params))
+
+
+def _prepare_height(obj, params):
+    """Height: вычисляем мировой bbox по Z и кладём границы в params."""
+    from mathutils import Vector
+    p = dict(params)
+    try:
+        mw = obj.matrix_world
+        zs = [(mw @ Vector(c)).z for c in obj.bound_box]
+        p['z_min'], p['z_max'] = min(zs), max(zs)
+    except Exception:
+        p.setdefault('z_min', 0.0)
+        p.setdefault('z_max', 1.0)
+    return _swap_materials(obj, build_height_material(p))
+
+
 # ── Alpha material (прозрачность материала → серая эмиссия) ──────────
 # Cycles не умеет печь «альфу» нативным пассом, поэтому подменяем материалы
 # на эмиссию альфа-канала (как Bevel подменяет на эмиссию маски кромок) и
@@ -650,6 +860,54 @@ BAKE_MAPS = OrderedDict([
         needs_light=False, rig_kind='NONE',
         node_group_builder=_prepare_bevel,
         samples=4, default_blend='ADD', default_opacity=1.0,
+        default_contrast=1.0, default_gamma=1.0)),
+    # Процедурные маски по геометрии (light-free EMIT). Детерминированные
+    # (Dirt/EdgeWear/Curvature/Height/Grunge) — samples=1, сглаживает AA;
+    # Thickness — inside-AO, шумная (сэмплы+денойз в bake_ops).
+    ('DIRT', BakeMapDef(
+        id='DIRT', label_key='Dirt (Cavity)', bake_type='EMIT',
+        needs_light=False, rig_kind='NONE',
+        node_group_builder=_prepare_dirt,
+        samples=1, default_blend='MULTIPLY', default_opacity=1.0,
+        default_contrast=1.0, default_gamma=1.0)),
+    ('EDGEWEAR', BakeMapDef(
+        id='EDGEWEAR', label_key='Edge Wear', bake_type='EMIT',
+        needs_light=False, rig_kind='NONE',
+        node_group_builder=_prepare_edgewear,
+        samples=1, default_blend='ADD', default_opacity=1.0,
+        default_contrast=1.0, default_gamma=1.0)),
+    ('CURVATURE', BakeMapDef(
+        id='CURVATURE', label_key='Curvature', bake_type='EMIT',
+        needs_light=False, rig_kind='NONE',
+        node_group_builder=_prepare_curvature,
+        samples=1, default_blend='NORMAL', default_opacity=1.0,
+        default_contrast=1.0, default_gamma=1.0)),
+    ('HEIGHT', BakeMapDef(
+        id='HEIGHT', label_key='Height', bake_type='EMIT',
+        needs_light=False, rig_kind='NONE',
+        node_group_builder=_prepare_height,
+        samples=1, default_blend='NORMAL', default_opacity=1.0,
+        default_contrast=1.0, default_gamma=1.0)),
+    ('THICKNESS', BakeMapDef(
+        id='THICKNESS', label_key='Thickness', bake_type='EMIT',
+        needs_light=False, rig_kind='NONE',
+        node_group_builder=_prepare_thickness,
+        samples=16, default_blend='NORMAL', default_opacity=1.0,
+        default_contrast=1.0, default_gamma=1.0)),
+    ('GRUNGE', BakeMapDef(
+        id='GRUNGE', label_key='Grunge', bake_type='EMIT',
+        needs_light=False, rig_kind='NONE',
+        node_group_builder=_prepare_grunge,
+        samples=1, default_blend='MULTIPLY', default_opacity=1.0,
+        default_contrast=1.0, default_gamma=1.0)),
+    # «Рисование» — НЕ печётся: пустой (белый) слой под ручную роспись кистью
+    # (Texture Paint). blend MULTIPLY → белый пустой не влияет, рисуешь тёмным
+    # → грязь/затемнение. bake_ops пропускает его в цикле и лишь создаёт
+    # картинку; редактируется кнопкой «Рисовать».
+    ('PAINT', BakeMapDef(
+        id='PAINT', label_key='Paint', bake_type='EMIT',
+        needs_light=False, rig_kind='NONE', node_group_builder=None,
+        samples=1, default_blend='MULTIPLY', default_opacity=1.0,
         default_contrast=1.0, default_gamma=1.0)),
     # Альфа/прозрачность материала → серая маска (EMIT). В стеке НЕ
     # смешивается в RGB — задаёт альфа-канал итоговой текстуры (при

@@ -8,8 +8,10 @@ ANP3 (GTA SA):
   num_anims(uint32). Each animation: 36-byte header (name + bone_count +
   data_size + flag), followed by 36-byte bone headers (name + type +
   kf_count + bone_id), followed by per-keyframe int16 quat (×4096),
-  uint16 time as frame@30fps (×30 from seconds), and optional int16
-  translation (×1024).
+  16-bit time in 1/60 s units (×60 from seconds), and optional int16
+  translation (×1024). Note: 60 units per second, not frames@30fps —
+  vanilla SA anims are keyed at 30 fps, so their time values step by 2
+  (e.g. ped.ifp WALK_player: 37 keys, times 0, 2, ... 72 = 1.2 s).
 
 ANPK / ANP2 (GTA III, VC, SA-uncompressed):
   Chunked float32 format. Header is "ANPK" + size, then INFO chunk
@@ -20,7 +22,7 @@ ANPK / ANP2 (GTA III, VC, SA-uncompressed):
 
 Canonical in-memory unit for ``KeyFrame.time`` is **seconds**, regardless
 of which format the file was loaded from. The reader normalises ANP3's
-raw frame number by dividing by 30; the writer multiplies back. This
+raw time by dividing by 60; the writer multiplies back. This
 keeps preview / export math format-agnostic.
 
 No Blender dependency — pure Python.
@@ -108,7 +110,7 @@ def _read_anp3_animations(data: bytes, offset: int, num_anims: int) -> List[Anim
         type 4 (rot+trans):   4*int16 rot + 1*uint16 time + 3*int16 pos = 16 bytes per key
     Rotation: quaternion XYZW compressed as int16 / 4096.0
     Translation: XYZ compressed as int16 / 1024.0
-    Time: uint16 (frame number, convert with /30 for seconds)
+    Time: 16-bit, 1/60 s units (convert with /60 for seconds)
     """
     animations = []
 
@@ -145,11 +147,12 @@ def _read_anp3_animations(data: bytes, offset: int, num_anims: int) -> List[Anim
                     kf.rotation = (rx / 4096.0, ry / 4096.0, rz / 4096.0, rw / 4096.0)
                     offset += 8
 
-                    # Time: uint16 frame number at 30fps. Normalise to
-                    # seconds (canonical unit) so downstream code is
+                    # Time: 16-bit value in 1/60 s units (the game's
+                    # compressed keyframe stores DeltaTime * 60). Normalise
+                    # to seconds (canonical unit) so downstream code is
                     # format-agnostic.
                     t = struct.unpack_from('<H', data, offset)[0]
-                    kf.time = float(t) / 30.0
+                    kf.time = float(t) / _ANP3_TIME_UNITS_PER_SEC
                     offset += 2
 
                     if has_trans:
@@ -334,23 +337,63 @@ def read_ifp(filepath: str) -> IFPFile:
     return result
 
 
-_ANP3_TIME_CLAMP = 0xFFFF
+# ANP3 keyframe time unit: 1/60 s. The game reads it as a fixed-point
+# int16 with a 60.0 divisor (gta-reversed AnimSequenceFrames.h:
+# KeyFrameCompressed::DeltaTime = FixedFloat<int16, 60.f, true>) and
+# CAnimBlendHierarchy::CalcTotalTime takes the LAST key's time as the
+# duration (times are absolute on disk, converted to deltas after load).
+# Vanilla anims are sampled at 30 fps, i.e. their time values step by 2.
+_ANP3_TIME_UNITS_PER_SEC = 60.0
+_INT16_MAX = 32767
+# The field is int16 in the engine (FixedFloat<int16>): 0x8000..0xFFFF read
+# back negative, so the writable ceiling is 32767 ticks = 546.1 s.
+_ANP3_TIME_CLAMP = _INT16_MAX
 _ANP3_ROT_SCALE = 4096.0
 _ANP3_TRANS_SCALE = 1024.0
 
+# ANPK ``ANIM`` chunk body size per target game. GTA III's loader reads a
+# 48-byte body; VC/SA read the bone id ONLY from a 44-byte body
+# (``if (chunkSize == 0x2C) SetBoneTag(body+40)``) — with 48 bytes the id
+# is ignored and sequences fall back to name matching, which drops the
+# root track ("Normal" in the IFP vs "Root" in the DFF).
+_ANPK_ANIM_CHUNK_SIZE = {'III': 48, 'VC': 44, 'SA': 44}
 
-def _build_anpk_cpan(bone: AnimBone) -> bytes:
+
+def _t(s: str) -> str:
+    """Lazy translation for user-facing error text in this otherwise
+    Blender-free core module. Falls back to the raw Russian string when
+    bpy/T isn't available (standalone unit tests)."""
+    try:
+        from .. import T
+        return T(s)
+    except Exception:
+        return s
+
+
+class IfpLimitError(ValueError):
+    """Raised when a value does not fit the on-disk int16 quantisation of
+    ANP3 (translation ±32 units, quaternion ±8, time ≤ 65535 ticks).
+
+    Wraps the cryptic ``struct.error`` with a message naming the animation,
+    bone and keyframe that broke the limit.
+    """
+    pass
+
+
+def _build_anpk_cpan(bone: AnimBone, target: str = 'SA') -> bytes:
     """Serialise one bone as a CPAN chunk body (ANIM + key data)."""
     cpan_body = bytearray()
 
-    # ANIM sub-chunk: 48-byte body (name[24], unused[4], num_kf,
-    # unused[8], bone_id, -1 marker).
-    anim_data = bytearray(48)
+    # ANIM sub-chunk: name[24], unused[4], num_kf, unused[8], bone_id
+    # (+ a -1 marker in the 48-byte GTA III layout only).
+    anim_size = _ANPK_ANIM_CHUNK_SIZE.get(target, 44)
+    anim_data = bytearray(anim_size)
     bone_name = bone.name.encode('ascii', errors='replace')[:23]
     anim_data[:len(bone_name)] = bone_name
     struct.pack_into('<I', anim_data, 28, len(bone.keyframes))
     struct.pack_into('<i', anim_data, 40, bone.bone_id)
-    struct.pack_into('<i', anim_data, 44, -1)
+    if anim_size >= 48:
+        struct.pack_into('<i', anim_data, 44, -1)
 
     cpan_body.extend(b'ANIM')
     cpan_body.extend(struct.pack('<I', len(anim_data)))
@@ -388,7 +431,7 @@ def _build_anpk_cpan(bone: AnimBone) -> bytes:
     return bytes(cpan_body)
 
 
-def _build_anpk_anim(anim: Animation) -> bytes:
+def _build_anpk_anim(anim: Animation, target: str = 'SA') -> bytes:
     """Serialise one animation as NAME + DGAN chunks (concatenated)."""
     out = bytearray()
 
@@ -408,7 +451,7 @@ def _build_anpk_anim(anim: Animation) -> bytes:
     dgan_body.extend(info_body)
 
     for bone in anim.bones:
-        cpan_body = _build_anpk_cpan(bone)
+        cpan_body = _build_anpk_cpan(bone, target)
         dgan_body.extend(b'CPAN')
         dgan_body.extend(struct.pack('<I', len(cpan_body)))
         dgan_body.extend(cpan_body)
@@ -419,8 +462,12 @@ def _build_anpk_anim(anim: Animation) -> bytes:
     return bytes(out)
 
 
-def write_anpk(filepath: str, ifp: IFPFile) -> int:
+def write_anpk(filepath: str, ifp: IFPFile, target: str = 'SA') -> int:
     """Write a chunked ANPK IFP file (GTA III, VC, SA-uncompressed).
+
+    ``target`` ('III' / 'VC' / 'SA') selects the ``ANIM`` chunk layout:
+    48 bytes for GTA III, 44 bytes for VC/SA (the only size those two
+    engines read the bone id from).
 
     Layout:
         ANPK + size
@@ -447,7 +494,7 @@ def write_anpk(filepath: str, ifp: IFPFile) -> int:
     content.extend(info_body)
 
     for anim in ifp.animations:
-        content.extend(_build_anpk_anim(anim))
+        content.extend(_build_anpk_anim(anim, target))
 
     buf = bytearray()
     buf.extend(b'ANPK')
@@ -468,7 +515,7 @@ def _build_anp3_anim(anim: Animation) -> bytes:
             bone header (36 bytes): name[24] + type + num_kf + bone_id
             per keyframe:
                 int16 × 4 rotation (qx, qy, qz, qw) × 4096
-                uint16 time as frame@30fps
+                16-bit time in 1/60 s units
                 [if rot+trans] int16 × 3 translation × 1024
     """
     out = bytearray()
@@ -480,10 +527,17 @@ def _build_anp3_anim(anim: Animation) -> bytes:
     out.extend(name_data)
     out.extend(struct.pack('<I', len(anim.bones)))
     data_size_offset = len(out)
-    out.extend(struct.pack('<I', 0))      # placeholder
-    out.extend(struct.pack('<I', 0))      # flag
+    out.extend(struct.pack('<I', 0))      # placeholder: keyframe bytes
+    # flag bit 0 = compressed keyframes. Vanilla writes 1 on every ANP3
+    # animation; retail gta_sa.exe re-derives it from the first sequence,
+    # but engines that trust the header would walk int16 data with float
+    # strides and corrupt it if this were 0.
+    out.extend(struct.pack('<I', 1))      # flag
 
-    bones_start = len(out)
+    # data_size counts KEYFRAME bytes only (vanilla), not the 36-byte
+    # bone headers — the loader mallocs exactly this many bytes and
+    # copies kf_size × count per sequence into it.
+    keyframe_bytes = 0
 
     for bone in anim.bones:
         bone_name_data = bytearray(24)
@@ -499,38 +553,44 @@ def _build_anp3_anim(anim: Animation) -> bytes:
         out.extend(struct.pack('<I', len(bone.keyframes)))
         out.extend(struct.pack('<i', bone.bone_id))
 
-        for kf in bone.keyframes:
-            qx, qy, qz, qw = kf.rotation
-            out.extend(struct.pack(
-                '<4h',
-                int(round(qx * _ANP3_ROT_SCALE)),
-                int(round(qy * _ANP3_ROT_SCALE)),
-                int(round(qz * _ANP3_ROT_SCALE)),
-                int(round(qw * _ANP3_ROT_SCALE))))
+        keyframe_bytes += len(bone.keyframes) * (16 if has_trans else 10)
 
-            # Seconds → frame@30fps, clamped to uint16 range.
-            frame_num = int(round(kf.time * 30.0))
+        for ki, kf in enumerate(bone.keyframes):
+            q = [int(round(c * _ANP3_ROT_SCALE)) for c in kf.rotation]
+            if any(abs(c) > _INT16_MAX for c in q):
+                raise IfpLimitError(_t(
+                    "{0} / {1}, ключ {2}: компонент кватерниона {3} не влезает в int16 (|c| < 8.0). Нормализуй поворот."
+                ).format(anim.name, bone.name, ki, kf.rotation))
+            out.extend(struct.pack('<4h', *q))
+
+            # Seconds → 1/60 s units. Negative times clamp to 0; anything
+            # past the int16 field is an error, not a silent clamp.
+            frame_num = int(round(kf.time * _ANP3_TIME_UNITS_PER_SEC))
             if frame_num < 0:
                 frame_num = 0
             elif frame_num > _ANP3_TIME_CLAMP:
-                frame_num = _ANP3_TIME_CLAMP
+                raise IfpLimitError(_t(
+                    "{0} / {1}, ключ {2}: время {3:.2f} с = {4} тиков — больше {5} (int16). Укороти анимацию."
+                ).format(anim.name, bone.name, ki, kf.time, frame_num,
+                         _ANP3_TIME_CLAMP))
             out.extend(struct.pack('<H', frame_num))
 
             if has_trans:
-                tx, ty, tz = kf.translation
-                out.extend(struct.pack(
-                    '<3h',
-                    int(round(tx * _ANP3_TRANS_SCALE)),
-                    int(round(ty * _ANP3_TRANS_SCALE)),
-                    int(round(tz * _ANP3_TRANS_SCALE))))
+                t = [int(round(c * _ANP3_TRANS_SCALE)) for c in kf.translation]
+                if any(abs(c) > _INT16_MAX for c in t):
+                    raise IfpLimitError(_t(
+                        "{0} / {1}, ключ {2}: смещение {3} не влезает в int16 (|v| < 32.0 единиц). Кость уехала слишком далеко."
+                    ).format(anim.name, bone.name, ki, kf.translation))
+                out.extend(struct.pack('<3h', *t))
 
-    struct.pack_into('<I', out, data_size_offset,
-                     len(out) - bones_start)
+    struct.pack_into('<I', out, data_size_offset, keyframe_bytes)
     return bytes(out)
 
 
-def write_anp3(filepath: str, ifp: IFPFile) -> int:
+def write_anp3(filepath: str, ifp: IFPFile, target: str = 'SA') -> int:
     """Write a flat int16-compressed ANP3 IFP file (GTA SA native).
+
+    ``target`` is accepted for a uniform writer signature; ANP3 is SA-only.
 
     Layout:
         ANP3 + size
@@ -538,7 +598,7 @@ def write_anp3(filepath: str, ifp: IFPFile) -> int:
         per animation: flat 36-byte header + bones (no chunk wrappers)
 
     Rotations quantised to int16 with /4096 scale, translations to
-    int16 with /1024 scale, time stored as uint16 frame number at 30fps.
+    int16 with /1024 scale, time stored as 16-bit value in 1/60 s units.
     Use this for byte-faithful matching of vanilla peds.ifp.
     """
     body = bytearray()
@@ -574,7 +634,8 @@ _FORMAT_DISPATCH = {
 }
 
 
-def write_ifp(filepath: str, ifp: IFPFile, format: str = "") -> int:
+def write_ifp(filepath: str, ifp: IFPFile, format: str = "",
+              target: str = 'SA') -> int:
     """Write *ifp* to *filepath* in the requested format.
 
     ``format`` selects the on-disk encoding:
@@ -584,13 +645,16 @@ def write_ifp(filepath: str, ifp: IFPFile, format: str = "") -> int:
           set by the reader, otherwise 'ANPK' (round-trips cleanly,
           loadable in all three games).
 
+    ``target`` ('III' / 'VC' / 'SA') picks the ANPK ``ANIM`` chunk size
+    (48 bytes for III, 44 for VC/SA — see ``_ANPK_ANIM_CHUNK_SIZE``).
+
     Returns the number of animations written.
     """
     fmt = (format or ifp.source_format or 'ANPK').upper()
     writer = _FORMAT_DISPATCH.get(fmt)
     if writer is None:
         raise ValueError(f"Unsupported IFP format: {format!r}")
-    return writer(filepath, ifp)
+    return writer(filepath, ifp, target)
 
 
 def _sample_linear_kf(kf_a: KeyFrame, kf_b: KeyFrame, t: float):
@@ -820,7 +884,8 @@ def roundtrip_test(filepath: str) -> dict:
 
 def merge_ifp(filepath: str, new_animations: List[Animation],
               package_name: str = None,
-              format: str = "") -> Tuple[int, int]:
+              format: str = "",
+              target: str = 'SA') -> Tuple[int, int]:
     """Merge ``new_animations`` into an existing IFP file at ``filepath``.
 
     Reads the existing pack, replaces animations whose name matches
@@ -873,7 +938,7 @@ def merge_ifp(filepath: str, new_animations: List[Animation],
             by_name[key] = len(existing.animations) - 1
             added += 1
 
-    write_ifp(filepath, existing, format=format)
+    write_ifp(filepath, existing, format=format, target=target)
     return replaced, added
 
 

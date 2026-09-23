@@ -8,7 +8,7 @@
 
 <p>
   <img src="https://img.shields.io/badge/Blender-2.83%E2%80%935.1-orange?logo=blender" alt="Blender">
-  <img src="https://img.shields.io/badge/Version-2.3.3-green" alt="Version">
+  <img src="https://img.shields.io/badge/Version-2.4.0-green" alt="Version">
   <img src="https://img.shields.io/badge/License-GPL--3.0-blue" alt="License">
 </p>
 
@@ -27,8 +27,10 @@
 - **Live Ariane bridge** — two-way, real-time editing with the Ariane map editor: import on click, send models / positions / instances back.
 - **Native parsers** DFF / COL / TXD / IDE / IPL / IMG / IFP / FXP — zero external dependencies.
 - **Full map round-trip** — IMG → Blender → edit DFF + COL + TXD → IMG.
-- **Time-cycle editor** (`timecyc.dat`) — preview any weather + hour as real Blender lighting, edit slots, fog and PostFX.
-- **Texture & prelight baking** — AO / Diffuse / Shadow / Alpha, shadow decals, prelight from all light types + HDRI, LightMap.
+- **Export checked against the engine** — every writer is audited against what `gta_sa.exe` actually reads; anything the game would crash on is named before the file is written.
+- **Reliable IDE / IPL sync** — rows are found by their content, not by line numbers: copies keep their own placement and LOD, other people's rows are never overwritten, files are written atomically with a backup.
+- **Time-cycle editor** (`timecyc.dat`) — preview any weather + hour as real Blender lighting, edit slots, fog and PostFX; reads SA, Vice City and III files.
+- **Texture & prelight baking** — AO / Diffuse / Shadow / Alpha, procedural dirt / edge wear / curvature / thickness / grunge masks, hand-painting on any layer, prelight from all light types + HDRI, LightMap.
 - **Skinned DFF + IFP** — peds with 294+ vanilla animations, IK rig, frame-hierarchy editor.
 - **`effects.fxp` editor** — 82 particle systems with live viewport simulation.
 - **ID Manager** — multi-preset, scene sync, FLA range extension, conflict detection.
@@ -88,7 +90,9 @@ Details in the **[documentation](docs/DOCS.md)**.
 Set the target game from the **GTA Tools** N-sidebar header dropdown (SA / VC / III); every exporter routes through the right format dispatch.
 
 - **DFF/COL/TXD/IDE/IPL/IMG/IFP** read and write for all three games (COLL/COL2/COL3, VER1/VER2, ANPK/ANP3, etc.).
-- SA-only features (Night vcols, Pipeline chunk, UV anim, multi-mesh LOD, SunGlare) are dropped with a warning when writing to III/VC.
+- SA-only features (Pipeline chunk, UV anim, multi-mesh LOD, SunGlare) are dropped with a warning when writing to III/VC; the formats follow each game's engine (VC PC is RW 3.4.0.3 with `COLL` collisions and D3D8 textures, not RW 3.5).
+- The time-cycle editor reads III and VC `timecyc.dat` too — 24 hourly slots and each game's own fields (Trails colour, top clouds, the VC ambient pairs).
+- The Ariane bridge exports for the scene's game and warns when the ariane install next to it is a different one.
 - Full map round-trip is SA-only for now; for III/VC — import assets and export individual DFF/COL/TXD.
 - Cross-game COL export collapses some of SA's 179 surfaces (`GRASS_SHORT` ↔ `GRASS_LONG`, etc.).
 
@@ -107,7 +111,8 @@ The full per-game format table is in the **[documentation](docs/DOCS.md)**.
 - **[RenderWare](https://en.wikipedia.org/wiki/RenderWare)** — GTA SA engine, format documentation.
 - **[Ariane](https://github.com/Dryxio/ariane)** (Dryxio) — map editor for III / VC / SA (librw / euryopa) that the live bridge talks to.
 - **[Itera Tools 3](https://itera.gumroad.com/l/IteraTools3)** — vertex lighting; the addon has a sub-panel to apply its presets.
+- **[ChunkTools](https://github.com/milevskiy27/ChunkTools)** by **[milevskiy](https://github.com/milevskiy27)** (Apache-2.0) — the "Split into chunks" tool is adapted from it.
 
-**Author:** INU (Discord `1.n.u` · [server](https://discord.gg/sqtGAVTGdy)) · animation mirroring — **yeezyk**
+**Author:** INU (Discord `1.n.u` · [server](https://discord.gg/sqtGAVTGdy)) · animation mirroring — **yeezyk** · map chunking — **[milevskiy](https://github.com/milevskiy27)**
 
 **License:** [GPL-3.0](LICENSE)

@@ -69,7 +69,13 @@ class GTATOOLS_OT_export_txd(bpy.types.Operator, ExportHelper):
         # mesh (suffix-stripped), all written to the chosen directory.
         # Mirrors the per-model TXD layout the full Export pipeline
         # produces, instead of bundling everything into one file.
-        if self.selected_only and not self.shared_txd:
+        #
+        # НО: если включено «Дописать в существующий», пользователь ЯВНО
+        # выбрал ОДИН конкретный файл и хочет писать в него — per-mesh-ветку
+        # пропускаем, иначе она наплодит отдельные .txd по именам мешей и
+        # проигнорирует выбранный файл. Все выделенные текстуры сольются в
+        # выбранный TXD (single-file путь ниже → _write_txd → update_txd).
+        if self.selected_only and not self.shared_txd and not self.merge_existing:
             selected_meshes = [o for o in context.selected_objects
                                if o.type == 'MESH']
             if len(selected_meshes) > 1:
@@ -85,6 +91,11 @@ class GTATOOLS_OT_export_txd(bpy.types.Operator, ExportHelper):
             target = os.path.join(os.path.dirname(target), name)
 
         result, message, _ = self._write_txd(target, context, sel_only, backend)
+        # В отчёт — имя ФАЙЛА: при «Дописать в существующий» с несколькими
+        # выделенными моделями все текстуры идут в ОДИН выбранный TXD — видно,
+        # куда именно записано.
+        if result == {'FINISHED'}:
+            message = f"{message} → {os.path.basename(target)}"
         # Mobile target: we still write a PC-format TXD (PVRTC/ETC1
         # codecs aren't shipped). Surface a WARNING so the user knows
         # to run TxdGen for PC → mobile conversion.
@@ -102,8 +113,39 @@ class GTATOOLS_OT_export_txd(bpy.types.Operator, ExportHelper):
         import os
         if self.merge_existing and os.path.isfile(target):
             from ..tools.txd_export import update_txd
-            return update_txd(target, context, sel_only, backend=backend)
-        return export_txd(target, context, sel_only, backend=backend)
+            out = update_txd(target, context, sel_only, backend=backend)
+        else:
+            out = export_txd(target, context, sel_only, backend=backend)
+        if out[0] == {'FINISHED'}:
+            self._audit_txd(target, context)
+        return out
+
+    def _audit_txd(self, target, context):
+        """Check the written file against what the engine's TXD reader
+        dereferences (``core.txd_lint.check_txd``): a wrong platform id,
+        a mip level larger than its surface, a level count past the D3D
+        chain, a name the DFF can never match, trailing bytes after the
+        last level — the whole dictionary then fails to load (every model
+        using it stays invisible) or the game crashes. Warnings as
+        WARNING, engine failures as ERROR, all printed to the console."""
+        from ..core.txd_lint import check_txd
+        from ..core import game_versions
+        try:
+            with open(target, 'rb') as f:
+                data = f.read()
+        except OSError:
+            return
+        try:
+            game = game_versions.game_of_scene(context.scene)
+        except Exception:
+            game = 'SA'
+        fatal, warnings = check_txd(data, target=game, file_name=target)
+        for item in warnings:
+            print(f"[TXD Export] {item}")
+            self.report({'WARNING'}, item)
+        for item in fatal:
+            print(f"[TXD Export] ИГРА УПАДЁТ / TXD не загрузится: {item}")
+            self.report({'ERROR'}, f"{T('Игра упадёт')}: {item}")
 
     def _export_per_mesh(self, context, selected_meshes, backend, is_mobile):
         """Write one .txd per selected mesh, named after the mesh with

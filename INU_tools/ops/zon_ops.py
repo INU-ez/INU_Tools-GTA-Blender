@@ -346,6 +346,14 @@ class GTATOOLS_OT_export_zon(bpy.types.Operator):
             return {'CANCELLED'}
 
         context.scene.inu_settings.gtatools_zon_path = self.filepath
+        # DAT-27: exactly 10 fields, names ≤ 7, types 0/1/3, 380/39 tables.
+        try:
+            from ..core.textdata_lint import check_zones
+            from .textdata_audit import report_lint
+            report_lint(self, os.path.basename(self.filepath),
+                        *check_zones(zf.zones))
+        except Exception as e:                       # noqa: BLE001
+            print(f"[INU lint] zon audit failed: {e}")
         # No reversed-bbox check here: a box always has a normalised bbox,
         # so only the import (which reads the raw lines) can spot those.
         if duplicates:

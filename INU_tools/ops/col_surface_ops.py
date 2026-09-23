@@ -337,7 +337,8 @@ class GTATOOLS_OT_auto_find_lod(bpy.types.Operator):
             mt, base = get_model_type(o)
             if mt == 'LOD' and base:
                 lod_by_base.setdefault(base.rstrip('_'), o)
-        found = missing = 0
+        found = missing = in_ide = 0
+        ide_lods = None
         for obj in sel:
             inu = getattr(obj, 'inu', None)
             if inu is None:
@@ -349,21 +350,35 @@ class GTATOOLS_OT_auto_find_lod(bpy.types.Operator):
             if lod is not None and lod is not obj:
                 inu.lod_object = lod
                 found += 1
+                continue
+            # Меша LOD в сцене нет → ищем его строку в IDE (привязанный IDE
+            # модели, выбранный в панели, список «IDE для экспорта»).
+            if ide_lods is None:
+                from .map_link import IdeLods
+                ide_lods = IdeLods(context)
+            hit = ide_lods.find(obj, base)
+            if hit is not None and int(hit[0]) != int(inu.model_id or 0):
+                from .map_link import stamp_lod_ide
+                stamp_lod_ide(obj, hit)
+                in_ide += 1
             else:
                 missing += 1
-        self.report({'INFO'},
-                    T("LOD найден: {0}, не найдено: {1}").format(found, missing))
+        msg = T("LOD найден: {0}, не найдено: {1}").format(found, missing)
+        if in_ide:
+            msg += " · " + T("в IDE: {0}").format(in_ide)
+        self.report({'INFO'}, msg)
         return {'FINISHED'}
 
 
 class GTATOOLS_OT_batch_set_distance(bpy.types.Operator):
-    """Задать Draw Distance и/или LOD Distance всем выделенным MESH-объектам.
+    """Задать IDE-свойства (дистанции, Model ID, TXD, Interior, флаги,
+    COL Library) всем выделенным MESH-объектам.
 
     По умолчанию поля заполняются значениями активного объекта — можно
     изменить и применить к выделению одним действием. Галочки слева
     выбирают какие именно поля переписывать (удобно менять только одно)"""
     bl_idname = "gtatools.batch_set_distance"
-    bl_label = "INU: Apply distances to Selected"
+    bl_label = "INU: Apply properties to Selected"
     bl_options = {'REGISTER', 'UNDO'}
 
     apply_draw: BoolProperty(
@@ -382,49 +397,134 @@ class GTATOOLS_OT_batch_set_distance(bpy.types.Operator):
         name="LOD Dist",
         default=999.0, min=0.0, max=10000.0,
     )
+    apply_model_id: BoolProperty(
+        name=T("Применить Model ID"),
+        default=False,
+    )
+    model_id: IntProperty(
+        name="Model ID",
+        default=0, min=0,
+    )
+    model_id_sequential: BoolProperty(
+        name=T("По порядку (+1)"),
+        description=T("Первому объекту — указанный ID, каждому следующему +1 "
+                      "(объекты идут по имени). Снято — один и тот же ID всем"),
+        default=True,
+    )
+    apply_txd: BoolProperty(
+        name=T("Применить TXD"),
+        default=False,
+    )
+    txd_name: StringProperty(
+        name="TXD",
+        default="",
+    )
+    apply_interior: BoolProperty(
+        name=T("Применить Interior"),
+        default=False,
+    )
+    interior_id: IntProperty(
+        name="Interior",
+        default=0, min=0,
+    )
+    apply_flags: BoolProperty(
+        name=T("Применить IDE Flags"),
+        default=False,
+    )
+    ide_flags: IntProperty(
+        name="IDE Flags",
+        default=0, min=0,
+    )
+    apply_col_name: BoolProperty(
+        name=T("Применить COL Library"),
+        default=False,
+    )
+    col_name: StringProperty(
+        name="COL Library",
+        default="",
+    )
 
     @classmethod
     def poll(cls, context):
         return any(o.type == 'MESH' for o in context.selected_objects)
 
+    def _targets(self, context):
+        """Выделенные MESH-объекты с inu-свойствами. Порядок по имени —
+        чтобы «ID по порядку» раздавал номера предсказуемо (порядок
+        selected_objects зависит от внутреннего порядка сцены)."""
+        objs = [o for o in context.selected_objects
+                if o.type == 'MESH' and hasattr(o, 'inu')]
+        objs.sort(key=lambda o: o.name)
+        return objs
+
     def invoke(self, context, event):
         # Prefill from the active object so user can tweak from a known state.
         obj = context.active_object
         if obj and obj.type == 'MESH' and hasattr(obj, 'inu'):
-            self.draw_distance = obj.inu.draw_distance
-            self.lod_draw_distance = obj.inu.lod_draw_distance
-        return context.window_manager.invoke_props_dialog(self, width=280)
+            inu = obj.inu
+            self.draw_distance = inu.draw_distance
+            self.lod_draw_distance = inu.lod_draw_distance
+            self.model_id = inu.model_id
+            self.txd_name = inu.txd_name
+            self.interior_id = inu.interior_id
+            self.ide_flags = inu.ide_flags
+            self.col_name = inu.col_name
+        return context.window_manager.invoke_props_dialog(self, width=300)
+
+    def _row(self, layout, toggle, prop):
+        """Строка «галочка + поле»: поле серое пока галочка снята."""
+        row = layout.row(align=True)
+        row.prop(self, toggle, text="")
+        sub = row.row(align=True)
+        sub.active = getattr(self, toggle)
+        sub.prop(self, prop)
+        return sub
 
     def draw(self, context):
         layout = self.layout
-        row = layout.row(align=True)
-        row.prop(self, "apply_draw", text="")
-        sub = row.row(align=True)
-        sub.active = self.apply_draw
-        sub.prop(self, "draw_distance")
+        self._row(layout, "apply_draw", "draw_distance")
+        self._row(layout, "apply_lod", "lod_draw_distance")
+        self._row(layout, "apply_model_id", "model_id")
+        # Инкремент относится только к Model ID — прячем под его строкой.
+        seq = layout.row(align=True)
+        seq.active = self.apply_model_id
+        seq.separator(factor=2.0)
+        seq.prop(self, "model_id_sequential")
+        self._row(layout, "apply_txd", "txd_name")
+        self._row(layout, "apply_interior", "interior_id")
+        self._row(layout, "apply_flags", "ide_flags")
+        self._row(layout, "apply_col_name", "col_name")
 
-        row = layout.row(align=True)
-        row.prop(self, "apply_lod", text="")
-        sub = row.row(align=True)
-        sub.active = self.apply_lod
-        sub.prop(self, "lod_draw_distance")
-
-        n = sum(1 for o in context.selected_objects if o.type == 'MESH')
+        n = len(self._targets(context))
         layout.label(text=f"{n} {T('объектов будет изменено')}", **inu_icon(safe_icon('INFO')))
+        if self.apply_model_id and self.model_id_sequential and n > 1:
+            layout.label(text=f"ID: {self.model_id} … {self.model_id + n - 1}",
+                         **inu_icon(safe_icon('COPY_ID')))
 
     def execute(self, context):
-        if not self.apply_draw and not self.apply_lod:
+        if not any((self.apply_draw, self.apply_lod, self.apply_model_id,
+                    self.apply_txd, self.apply_interior, self.apply_flags,
+                    self.apply_col_name)):
             self.report({'WARNING'}, T("Включите хотя бы одну галочку"))
             return {'CANCELLED'}
         count = 0
-        for obj in context.selected_objects:
-            if obj.type != 'MESH' or not hasattr(obj, 'inu'):
-                continue
+        for obj in self._targets(context):
+            inu = obj.inu
             if self.apply_draw:
-                obj.inu.draw_distance = self.draw_distance
+                inu.draw_distance = self.draw_distance
             if self.apply_lod:
-                obj.inu.lod_draw_distance = self.lod_draw_distance
+                inu.lod_draw_distance = self.lod_draw_distance
+            if self.apply_model_id:
+                inu.model_id = (self.model_id + count
+                                if self.model_id_sequential else self.model_id)
+            if self.apply_txd:
+                inu.txd_name = self.txd_name
+            if self.apply_interior:
+                inu.interior_id = self.interior_id
+            if self.apply_flags:
+                inu.ide_flags = self.ide_flags
+            if self.apply_col_name:
+                inu.col_name = self.col_name
             count += 1
         self.report({'INFO'}, f"{T('Изменено:')} {count}")
         return {'FINISHED'}
-

@@ -60,6 +60,10 @@ class GTATOOLS_OT_export_water(bpy.types.Operator):
                 if col:
                     objects = [o for o in col.objects if o.type == 'MESH']
             count = export_water(filepath=self.filepath, objects=objects)
+            # DAT-43..45 audit of what landed on disk (counts 301/6/1021,
+            # ±3000, flow range, axis-aligned quads, 500-block grid).
+            from .textdata_audit import audit_water_file
+            audit_water_file(self, self.filepath)
             self.report({'INFO'}, f"Water: {count} polygons exported")
             return {'FINISHED'}
         except Exception as e:

@@ -174,8 +174,20 @@ class GTATOOLS_OT_export_ifp(bpy.types.Operator):
                     T("ANP3 не поддерживается в {0} — переключаюсь на ANPK").format(_scene_game))
                 _fmt = 'ANPK'
 
-            count = write_ifp(self.filepath, ifp, format=_fmt)
+            # Audit before writing, surface after — same flow as the DFF
+            # vehicle audit: warnings are cosmetic, fatals name what the
+            # engine will crash on.
+            from .ifp_export import audit_ifp
+            ifp_fatal, ifp_warn = audit_ifp(
+                ifp, self.filepath, fmt=_fmt, target=_scene_game)
 
+            count = write_ifp(self.filepath, ifp, format=_fmt,
+                              target=_scene_game)
+
+            for w in ifp_warn:
+                self.report({'WARNING'}, w)
+            for item in ifp_fatal:
+                self.report({'ERROR'}, f"{T('Игра упадёт — IFP')}: {item}")
             if self.decimate and total_before:
                 pct = (removed / total_before * 100.0)
                 self.report({'INFO'},
@@ -377,10 +389,22 @@ class GTATOOLS_OT_merge_ifp(bpy.types.Operator):
                 removed, _ = decimate_ifp(
                     ifp, self.decimate_tol_rot, self.decimate_tol_trans)
 
+            from .ifp_export import audit_ifp
+            from ..core import game_versions as gv
+            _scene_game = gv.game_of_scene(context.scene)
+            ifp_fatal, ifp_warn = audit_ifp(
+                ifp, self.filepath, target=_scene_game,
+                check_stem=bool(self.package_name))
+
             replaced, added = merge_ifp(
                 self.filepath, ifp.animations,
-                package_name=self.package_name or None)
+                package_name=self.package_name or None,
+                target=_scene_game)
 
+            for w in ifp_warn:
+                self.report({'WARNING'}, w)
+            for item in ifp_fatal:
+                self.report({'ERROR'}, f"{T('Игра упадёт — IFP')}: {item}")
             if self.decimate and total_before:
                 pct = (removed / total_before * 100.0)
                 self.report({'INFO'},

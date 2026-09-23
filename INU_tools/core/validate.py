@@ -377,6 +377,77 @@ def check_materials_without_texture(materials):
     return out
 
 
+def check_loose_geom(meshes):
+    """Висящие вершины/рёбра (как кнопка «Проверка вершин»). При экспорте
+    такая геометрия даёт мусор/пропадает — GTA-модель должна быть чистой.
+
+    Args:
+        meshes: iterable of dicts with keys name (str), n_verts (int),
+            n_edges (int) — счётчики висящих вершин/рёбер объекта.
+    """
+    out = []
+    for m in meshes:
+        nv = int(m.get('n_verts', 0) or 0)
+        ne = int(m.get('n_edges', 0) or 0)
+        if not (nv or ne):
+            continue
+        out.append(_issue(
+            'WARNING', 'LooseGeometry',
+            'Висящая геометрия: вершин {v}, рёбер {e} — почисти меш '
+            '(«Проверка вершин» их выделит)',
+            'OBJECT', m['name'], args={'v': nv, 'e': ne}))
+    return out
+
+
+def check_non_ascii_names(names):
+    """Имена с не-ASCII символами (кириллица и т.п.). GTA SA принимает в
+    именах моделей (DFF/IDE/IPL/TXD) только латиницу/цифры/подчёркивание —
+    русское имя не запишется корректно и модель не найдётся в игре.
+
+    Args:
+        names: iterable of object names (str).
+    """
+    out = []
+    for name in names:
+        try:
+            name.encode('ascii')
+            continue
+        except (UnicodeEncodeError, AttributeError):
+            pass
+        out.append(_issue(
+            'WARNING', 'NonAsciiName',
+            'Имя содержит не-латинские символы (напр. кириллицу) — GTA SA '
+            'не примет. Переименуй латиницей (a-z, 0-9, _)',
+            'OBJECT', name))
+    return out
+
+
+def check_extra_color_attrs(meshes):
+    """Лишние цветовые атрибуты (не Day/Night) на мешах.
+
+    GTA использует только два prelit-слоя вершинного цвета — Day и Night.
+    Любой другой цветовой атрибут (col1, Attribute, Col и т.п.) в игру не
+    идёт, зато сбивает превью альфы вершин (оно ищет альфу < 255 в ЛЮБОМ
+    цветовом атрибуте) и путает экспорт. Такие атрибуты стоит удалить.
+
+    Args:
+        meshes: iterable of dict(name, extra=[имена лишних цв. атрибутов]).
+    """
+    out = []
+    for m in meshes:
+        extra = m.get('extra') or []
+        if not extra:
+            continue
+        out.append(_issue(
+            'WARNING', 'ExtraColorAttr',
+            'Лишние цветовые атрибуты: {extra}. GTA использует только Day и '
+            'Night — остальные не экспортируются и сбивают превью альфы '
+            'вершин. Удали лишние цветовые атрибуты.',
+            'OBJECT', m['name'],
+            args={'extra': ', '.join(extra)}))
+    return out
+
+
 def check_suffix_consistency(names, configured_suffixes):
     """Detect names that look like they're trying to be a typed model
     (DFF/LOD/COL) but use a different separator than scene config, or
@@ -613,11 +684,12 @@ def check_cross_game_compat(scene_game, model_data):
                 f'Multi-mesh LOD это SA-only — в {scene_game} останется только первый draw_distance',
                 'OBJECT', name))
 
-        # UV animation materials (RW 3.5+, so OK for VC; III only).
-        if scene_game == 'III' and m.get('has_uv_anim_material'):
+        # UV animation materials: the UV Anim Dict / PLG are RW 3.5+, so
+        # only SA (3.6.0.3) gets them — VC PC is 3.4.0.3, III 3.3.0.2.
+        if scene_game in ('III', 'VC') and m.get('has_uv_anim_material'):
             out.append(_issue(
                 'WARNING', 'CrossGame',
-                'UV anim material требует RW 3.5+ (VC/SA) — III не загрузит',
+                'UV anim material требует RW 3.5+ (SA) — в III/VC не запишется',
                 'OBJECT', name))
 
         # 2DFX types — types beyond III/VC's allowlist are silently

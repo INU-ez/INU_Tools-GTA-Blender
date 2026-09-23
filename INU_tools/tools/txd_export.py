@@ -37,7 +37,10 @@ def _cache_key(name, image, use_alpha, backend):
         uid = image.session_uid
     except AttributeError:
         return None  # Pre-4.0 Blender — no stable per-datablock UID
-    return (uid, name, image.size[0], image.size[1], bool(use_alpha), backend)
+    # lib_id / platform are baked into the cached bytes — a game switch
+    # (SA→VC) must not hand back a D3D9 native written for SA.
+    return (uid, name, image.size[0], image.size[1], bool(use_alpha), backend,
+            _active_lib_id, _active_platform)
 
 
 def _cache_get(key):
@@ -75,7 +78,9 @@ RW_EXTENSION = 0x03
 # any external callers; new code reads ``_active_lib_id`` instead.
 RW_VERSION = 0x1803FFFF
 _active_lib_id = RW_VERSION   # mutated transiently by export_txd
-PLATFORM_D3D9 = 9
+PLATFORM_D3D8 = 8             # III / VC PC (RW 3.3–3.5: no D3D9 driver)
+PLATFORM_D3D9 = 9             # SA
+_active_platform = PLATFORM_D3D9   # mutated transiently by export_txd
 RASTER_565 = 0x0200
 RASTER_4444 = 0x0300
 RASTER_8888 = 0x0500
@@ -95,6 +100,17 @@ def _resolve_lib_id_for_scene(scene) -> int:
         return make_library_id(gv.rw_version_for_game(game))
     except Exception:
         return RW_VERSION
+
+
+def _resolve_platform_for_scene(scene) -> int:
+    """Texture-native platform id for the scene's game: III/VC read only
+    the D3D8 native (their RW has no D3D9 driver — `_rwD3D8NativeTextureRead`
+    is the only registered reader), SA reads both but is written as D3D9."""
+    try:
+        from ..core import game_versions as gv
+        return PLATFORM_D3D9 if gv.game_of_scene(scene) == gv.GAME_SA else PLATFORM_D3D8
+    except Exception:
+        return PLATFORM_D3D9
 
 
 def make_filter_flags(mip_count=1):
@@ -216,8 +232,9 @@ def collect_textures(selected_only=False):
                 # Имя текстуры в TXD — из НОДЫ (label), иначе из картинки.
                 # Должно совпадать с тем, что пишет DFF-экспорт (_read_texture),
                 # иначе игра не свяжет текстуру с моделью.
-                name = os.path.splitext((node.label or "").strip()
-                                        or img.name)[0]
+                from ..core.tex_name import clean_texture_name
+                name = clean_texture_name((node.label or "").strip()
+                                          or img.name)
                 alpha_connected = is_texture_connected_to_alpha(node)
                 has_transparent = check_image_has_transparent_pixels(img)
                 if has_transparent:
@@ -555,19 +572,31 @@ def _build_tex_native_from_pixels(texture_data, cmp_dxt1, cmp_dxt3):
     tex_name = name[:31].encode('ascii', errors='replace').ljust(32, b'\x00')
     mip_count = len(mip_levels)
 
+    platform = _active_platform
     struct_data = bytearray()
-    struct_data.extend(struct.pack('<II', PLATFORM_D3D9,
+    struct_data.extend(struct.pack('<II', platform,
                                    make_filter_flags(mip_count)))
     struct_data.extend(tex_name)
     struct_data.extend(b'\x00' * 32)
     struct_data.extend(struct.pack('<I', raster_format))
-    struct_data.extend(fourcc)
+    if platform == PLATFORM_D3D8:
+        # D3D8 native (III/VC): the word after rasterFormat is ``hasAlpha``
+        # (no D3DFORMAT fourcc), and the trailing byte is the DXT number
+        # (0 = uncompressed, 1 = DXT1, 3 = DXT3) instead of a flags byte.
+        # Both engines support DXTn via the D3D8 driver (III just never
+        # shipped compressed textures).
+        struct_data.extend(struct.pack('<I', 1 if use_alpha else 0))
+    else:
+        struct_data.extend(fourcc)
     struct_data.extend(struct.pack('<HH', width, height))
     struct_data.extend(struct.pack('<B', depth))
     struct_data.extend(struct.pack('<B', mip_count))
     struct_data.extend(struct.pack('<B', 4))  # raster type
-    # D3D format flag: 0x08 for DXT1, 0x09 for DXT3 (with alpha)
-    struct_data.extend(struct.pack('<B', 0x09 if use_alpha else 0x08))
+    if platform == PLATFORM_D3D8:
+        struct_data.extend(struct.pack('<B', 3 if use_alpha else 1))
+    else:
+        # D3D format flag: 0x08 for DXT1, 0x09 for DXT3 (with alpha)
+        struct_data.extend(struct.pack('<B', 0x09 if use_alpha else 0x08))
 
     for mip_data in mip_levels:
         struct_data.extend(struct.pack('<I', len(mip_data)))
@@ -785,9 +814,11 @@ def export_txd(filepath, context, selected_only=False, backend=None, **_legacy):
     # Resolve TXD lib-ID from scene's gtatools_game and stash it on the
     # module-level slot read by write_rw_section_header. Restored in
     # `finally` below so nested / concurrent exports don't leak state.
-    global _active_lib_id
+    global _active_lib_id, _active_platform
     _saved_lib_id = _active_lib_id
+    _saved_platform = _active_platform
     _active_lib_id = _resolve_lib_id_for_scene(scene)
+    _active_platform = _resolve_platform_for_scene(scene)
 
     if backend is None:
         backend = getattr(scene.inu_settings, 'gtatools_dxt_backend', 'numpy')
@@ -925,6 +956,7 @@ def export_txd(filepath, context, selected_only=False, backend=None, **_legacy):
 
     if not tex_natives:
         _active_lib_id = _saved_lib_id  # restore before bailing
+        _active_platform = _saved_platform
         return {'CANCELLED'}, "No textures could be processed", []
 
     tex_natives_data = bytearray()
@@ -953,6 +985,7 @@ def export_txd(filepath, context, selected_only=False, backend=None, **_legacy):
     # this run's value bleed into theirs. Done after the file is closed
     # so any tail logic in write_rw_section_header has already finished.
     _active_lib_id = _saved_lib_id
+    _active_platform = _saved_platform
 
     msg = f"Exported {len(tex_natives)} textures ({mode_name})"
     if skipped_textures:

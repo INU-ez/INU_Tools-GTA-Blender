@@ -28,7 +28,7 @@
 bl_info = {
     "name": "INU_tools(gta_sa)",
     "author": "INU",
-    "version": (2, 3, 3),
+    "version": (2, 4, 0),
     # Минимум 2.83 LTS — поддержка через tools/compat.py:
     # • bake / preview / DFF I/O работают через legacy mesh.vertex_colors
     # • prelight preview shader использует ShaderNodeMixRGB на ≤3.3
@@ -438,6 +438,28 @@ from .tools.vc_layers import (
 # top-level (T is referenced in class bodies for bl_label etc., evaluated
 # at class-definition time so it can't be deferred).
 from .ui.library_panel import GTATOOLS_PT_library_panel
+# Вкладка «GTA Geo» (тротуар/бордюр на гео-нодах, здания на базе
+# Auto-Building) УБРАНА ИЗ UI: функции экспериментальные и не готовы к
+# публикации на extensions.blender.org — здания зависят от стороннего
+# аддона Auto-Building и его .blend с заготовками, нод-группа тротуара
+# ещё в работе. Код остаётся в ui/geo_panels.py, ops/geo_curb_ops.py,
+# ops/geo_building_ops.py, data/autobuilding_ui.py — чтобы вернуть
+# вкладку, раскомментируй импорты здесь, ниже (ops), блок в `classes` и
+# load_post-обработчик _curb_autoupgrade в register()/unregister().
+# Эти же четыре файла исключены из публикуемого zip через
+# `paths_exclude_pattern` в blender_manifest.toml — при возврате вкладки
+# убери их и оттуда, иначе в сборке не окажется импортируемых модулей.
+# from .ui.geo_panels import (
+#     GTATOOLS_PT_geo_panel,
+#     GTATOOLS_PT_geo_curb_panel,
+#     GTATOOLS_PT_geo_curb_help,
+#     GTATOOLS_PT_geo_building_panel,
+#     GTATOOLS_PT_ab_walls,
+#     GTATOOLS_PT_ab_roof,
+#     GTATOOLS_PT_ab_creases,
+#     GTATOOLS_PT_ab_extra,
+#     GTATOOLS_PT_ab_config,
+# )
 from .ui.panels import (  # noqa: E501
     GTATOOLS_PT_material_panel,
     GTATOOLS_UL_txd_export_plan,
@@ -511,10 +533,25 @@ from .ops.plants_ops import (
     GTATOOLS_OT_grass_generate_geometry,
     GTATOOLS_OT_grass_geometry_clear,
 )
+# Вкладка «GTA Geo» — убрана из UI (экспериментально, см. комментарий у
+# импорта ui.geo_panels выше). Операторы не регистрируем, чтобы они не
+# всплывали в поиске F3 без панели.
+# from .ops.geo_curb_ops import (
+#     GTATOOLS_OT_geo_curb_apply,
+#     GTATOOLS_OT_geo_curb_remove,
+#     curb_autoupgrade as _curb_autoupgrade,
+# )
+# from .ops.geo_building_ops import (
+#     GTATOOLS_OT_building_new,
+#     GTATOOLS_OT_building_example,
+#     GTATOOLS_OT_building_base,
+#     GTATOOLS_OT_building_to_mesh,
+# )
 # Material context-menu hook — register/unregister append/remove it.
 from .ui.panels import _draw_sort_materials_menu
 from .ops.bake_ops import (
     GTATOOLS_OT_bake_run,
+    GTATOOLS_OT_bake_paint_layer,
     GTATOOLS_OT_bake_select_layer,
     GTATOOLS_OT_bake_layer_add,
     GTATOOLS_OT_bake_layer_remove,
@@ -565,6 +602,7 @@ from .ops.onboarding_ops import (
 from .ops.validate_scene import (
     GTATOOLS_OT_validate_run,
     GTATOOLS_OT_validate_clear,
+    GTATOOLS_OT_validate_toggle_group,
     GTATOOLS_OT_validate_goto,
     GTATOOLS_OT_validate_fix_quaternions,
     GTATOOLS_OT_validate_fix_suffix,
@@ -1856,7 +1894,7 @@ class INUObjectProps(bpy.types.PropertyGroup):
              T("Pipeline здания с day/night vertex colors (RSPIPE_PC_CustomBuildingDN). Движок плавно смешивает дневной и ночной слои vertex colors по игровому времени. Требует ДВА Color Attribute слоя (Day + Night) на меше. Mesh-флаги Day/Night здесь не нужны — переход делает pipeline через VC")),
             ('0x53F2009C', 'Building',
              T("Простой pipeline здания (RSPIPE_PC_CustomBuilding). Статическое освещение через один слой vertex colors. Работает быстрее чем Day/Night, но нет смены по времени суток")),
-            ('CUSTOM', 'Custom Pipeline',
+            ('CUSTOM', 'Custom',
              T("Указать произвольное значение pipeline ID через поле Custom Pipeline")),
         ],
         name="Pipeline",
@@ -1996,6 +2034,15 @@ class INUObjectProps(bpy.types.PropertyGroup):
         name="LOD partner",
         description=T("LOD-модель этой DFF — заполняется автоматически при Map Import из IPL lod_index. При Map Export пересчитывается в lod_index = позицию LOD-инстанса в выходном IPL. Пусто = модель не имеет LOD"),
     )
+    lod_ide_name : StringProperty(
+        name="LOD from IDE",
+        default="",
+        description=T("LOD этой модели, найденный в IDE (меша LOD в сцене нет). "
+                      "«Add» в IPL ставит его строку вместе с моделью"),
+    )
+    lod_ide_id : IntProperty(name="LOD ID from IDE", default=0, min=0)
+    lod_ide_file : StringProperty(name="LOD IDE file", default="",
+                                  subtype='FILE_PATH')
     real_interior : IntProperty(
         name="Real Interior (FLA)",
         default=0,
@@ -2022,43 +2069,14 @@ class INUObjectProps(bpy.types.PropertyGroup):
         description=T("Флаги объекта в IDE"),
     )
 
-    # Breakable object extension (chunk 0x253F2FD)
+    # Breakable object extension (chunk 0x253F2FD). The chunk is a copy
+    # of the mesh built by BreakableData.from_geometry (W1) — there are
+    # no force / offset / buffer fields in it, so the toggle is all the
+    # exporter reads.
     breakable : BoolProperty(
         name="Breakable Object",
         description=T("Пометить геометрию как разрушаемую (пишет чанк 0x253F2FD в DFF)"),
         default=False,
-    )
-    breakable_force : FloatProperty(
-        name="Break Force",
-        description=T("Сила, нужная чтобы сломать объект (умолчание 1.0)"),
-        default=1.0, min=0.0,
-    )
-    breakable_offset : FloatVectorProperty(
-        name="Break Offset",
-        description=T("Смещение точки приложения силы разлома (по умолчанию 0,0,0)"),
-        size=3, default=(0.0, 0.0, 0.0), subtype='TRANSLATION',
-    )
-    breakable_alloc_auto : BoolProperty(
-        name="Auto Buffers",
-        description=T("Авто-размер буферов сломанной копии по текущей геометрии. "
-                      "Выключи только если движку не хватает места под осколки"),
-        default=True,
-    )
-    breakable_verts_alloc : IntProperty(
-        name="Verts", description=T("Резерв вершин под сломанную копию"),
-        default=100, min=1,
-    )
-    breakable_faces_alloc : IntProperty(
-        name="Faces", description=T("Резерв граней под сломанную копию"),
-        default=200, min=1,
-    )
-    breakable_mats_alloc : IntProperty(
-        name="Materials", description=T("Резерв материалов под сломанную копию"),
-        default=1, min=1,
-    )
-    breakable_uvs_alloc : IntProperty(
-        name="UVs", description=T("Резерв UV под сломанную копию"),
-        default=100, min=1,
     )
 
     # IDE flag checkboxes with auto-sync to ide_flags.
@@ -2145,16 +2163,12 @@ class INUObjectProps(bpy.types.PropertyGroup):
     )
 
     # ── IPL link tracking ──
-    # Per-object persistent identity for IPL upsert.  When an object is
-    # first added to an IPL we mint a UUID and stash the exported
-    # transform (last_pos / last_rot).  On the next ``Add to IPL`` we
-    # compare the current world transform with ``ipl_last_pos``: if it
-    # drifted, the existing IPL line is overwritten instead of a new
-    # row being appended (avoids duplicate placements when iterating).
-    # The sidecar (``<blend>/.inu_cache/ipl_links.json``) holds the
-    # uuid → ``line_idx`` map plus a hash of the IPL file for external-
-    # edit detection.  Fields are kept compact (no PointerProperty) so
-    # an entire rig of duplicates costs ~80 bytes / obj.
+    # What this object last wrote to / read from its IPL row (ops/map_link,
+    # core/mapsync): target file + model id / name / position / rotation.
+    # Before every write the row is found again BY THAT CONTENT — no line
+    # numbers are stored anywhere. ``ipl_uuid`` only groups an object with
+    # its Shift+D copies; ``ipl_owner`` (the name at write time) tells the
+    # original from the copies.
     ipl_uuid : StringProperty(
         name="IPL UUID",
         description=T("Стабильный ID этой расстановки в IPL. Пустой = объект ещё не экспортировался в IPL. Авто-генерируется при первом «Add to IPL»"),
@@ -2189,7 +2203,19 @@ class INUObjectProps(bpy.types.PropertyGroup):
     ipl_last_model_id : IntProperty(
         name="IPL Last Model ID",
         default=0,
-        description=T("Model ID на момент последнего экспорта в IPL (для content-match при рассинхроне sidecar'а)"),
+        description=T("Model ID на момент последней записи/чтения строки IPL (по нему строка находится снова)"),
+    )
+    ipl_last_name : StringProperty(
+        name="IPL Last Name",
+        default="",
+        description=T("Имя модели в строке IPL на момент последней записи/чтения"),
+    )
+    ipl_owner : StringProperty(
+        name="IPL Owner",
+        default="",
+        description=T("Имя объекта, который записал строку IPL. У копии (Shift+D) "
+                      "имя другое — она добавится новой расстановкой, а не "
+                      "перезапишет строку оригинала"),
     )
 
     # ── IDE link tracking ──
@@ -2219,6 +2245,11 @@ class INUObjectProps(bpy.types.PropertyGroup):
         name="IDE Last Flags",
         default=0,
         description=T("Object flags на момент последнего Add to IDE"),
+    )
+    ide_last_name : StringProperty(
+        name="IDE Last Name",
+        default="",
+        description=T("Имя модели в строке IDE на момент последней записи/чтения"),
     )
     ide_last_model_id : IntProperty(
         name="IDE Last Model ID",
@@ -2926,6 +2957,7 @@ from .ops.light_ops import (
     GTATOOLS_OT_prelight_split_paint,
     GTATOOLS_OT_copy_color_attr,
     GTATOOLS_OT_copy_vertex_alpha,
+    GTATOOLS_OT_clear_vertex_alpha,
     GTATOOLS_OT_prelight_preview,
     GTATOOLS_OT_alpha_preview,
     GTATOOLS_OT_alpha_cleanup,
@@ -2969,6 +3001,8 @@ from .ops.texture_ops import (
     GTATOOLS_OT_apply_lightmap_uv2,
     GTATOOLS_OT_remove_lightmap_uv2,
     GTATOOLS_OT_toggle_lightmap_uv2,
+    GTATOOLS_OT_lightmap_folder,
+    GTATOOLS_OT_lightmap_daynight,
 )
 if hasattr(bpy.types, 'FileHandler'):
     from .ops.texture_ops import (
@@ -3474,6 +3508,9 @@ from .ops.camera_io import (
 from .ops.fragment_ops import (
     GTATOOLS_OT_fragment_mesh,
 )
+from .ops.chunk_ops import (
+    GTATOOLS_OT_chunk_map,
+)
 from .ops.ik_rig import (
     GTATOOLS_OT_add_ik_rig,
     GTATOOLS_OT_bake_ik_rig,
@@ -3548,6 +3585,16 @@ class INUAddonPreferences(bpy.types.AddonPreferences):
                       "двусторонние заборы"),
         default=False)
 
+    # Чем открывать IDE/IPL по кнопке 📄: внешний редактор ОС (по умолчанию)
+    # или встроенный текстовый редактор Blender (в новом окне).
+    open_text_in_blender: bpy.props.BoolProperty(
+        name=T("Открывать IPL/IDE в редакторе Blender"),
+        description=T("ВКЛ — открывать файлы IDE/IPL во встроенном текстовом "
+                      "редакторе Blender (в новом окне). ВЫКЛ — во внешнем "
+                      "редакторе ОС (Блокнот и т.п.), как двойной клик в "
+                      "проводнике"),
+        default=False)
+
     def draw(self, context):
         layout = self.layout
         col = layout.column()
@@ -3557,6 +3604,13 @@ class INUAddonPreferences(bpy.types.AddonPreferences):
         box.label(
             text=T("Запоминается для всех импортов (меню, отдельный Import DFF, "
                    "перетаскивание .dff)"),
+            icon='INFO')
+        col.separator()
+        col.label(text=T("Открытие IPL / IDE"))
+        box = col.box()
+        box.prop(self, "open_text_in_blender")
+        box.label(
+            text=T("ВЫКЛ — внешний редактор ОС · ВКЛ — текст-редактор Blender"),
             icon='INFO')
         col.separator()
         col.label(text=T("Совместимость со старыми версиями"))
@@ -3593,6 +3647,8 @@ classes = (
     GTATOOLS_PathItem,
     GTATOOLS_TextureBrowserItem,
     INUGrassEntry,
+    # Ряд модульного дома — CollectionProperty внутри INUSceneSettings,
+    # поэтому регистрируется до неё (INUSceneSettings идёт отдельно ниже).
     GTATOOLS_TxdExportEntry,
     GTATOOLS_UL_txd_export_plan,
     GTATOOLS_UL_img_files,
@@ -3614,6 +3670,7 @@ classes = (
     GTATOOLS_OT_export_txd,
     GTATOOLS_OT_copy_color_attr,
     GTATOOLS_OT_copy_vertex_alpha,
+    GTATOOLS_OT_clear_vertex_alpha,
     GTATOOLS_OT_export_dff,
     GTATOOLS_OT_export_col,
     GTATOOLS_OT_auto_col,
@@ -3690,6 +3747,8 @@ classes = (
     GTATOOLS_OT_apply_lightmap_uv2,
     GTATOOLS_OT_remove_lightmap_uv2,
     GTATOOLS_OT_toggle_lightmap_uv2,
+    GTATOOLS_OT_lightmap_folder,
+    GTATOOLS_OT_lightmap_daynight,
     GTATOOLS_OT_id_manager_open_file,
     GTATOOLS_OT_id_manager_release,
     GTATOOLS_OT_id_manager_auto_assign,
@@ -3718,6 +3777,25 @@ classes = (
     GTATOOLS_OT_uv_anim_clear_keys,
     GTATOOLS_PT_main_panel,
     GTATOOLS_PT_library_panel,
+    # Вкладка «GTA Geo» — убрана из UI (экспериментально, не для
+    # extensions.blender.org; см. комментарий у импорта ui.geo_panels).
+    # Порядок при возврате: корень, потом подпанели — Blender требует,
+    # чтобы родитель был зарегистрирован раньше ребёнка.
+    # GTATOOLS_PT_geo_panel,
+    # GTATOOLS_PT_geo_curb_panel,
+    # GTATOOLS_PT_geo_curb_help,
+    # GTATOOLS_OT_geo_curb_apply,
+    # GTATOOLS_OT_geo_curb_remove,
+    # GTATOOLS_PT_geo_building_panel,
+    # GTATOOLS_PT_ab_walls,
+    # GTATOOLS_PT_ab_roof,
+    # GTATOOLS_PT_ab_creases,
+    # GTATOOLS_PT_ab_extra,
+    # GTATOOLS_PT_ab_config,
+    # GTATOOLS_OT_building_new,
+    # GTATOOLS_OT_building_example,
+    # GTATOOLS_OT_building_base,
+    # GTATOOLS_OT_building_to_mesh,
     GTATOOLS_OT_import_dff,
     GTATOOLS_OT_drop_dff,
     GTATOOLS_OT_import_col,
@@ -3793,6 +3871,7 @@ classes = (
     GTATOOLS_OT_import_camera_dat,
     GTATOOLS_OT_export_camera_dat,
     GTATOOLS_OT_fragment_mesh,
+    GTATOOLS_OT_chunk_map,
     GTATOOLS_OT_add_ik_rig,
     GTATOOLS_OT_bake_ik_rig,
     GTATOOLS_OT_add_ground_plane,
@@ -3892,6 +3971,7 @@ classes = (
     # Phase 2: light_master must register before its 5 child light panels
     # so Blender can resolve their bl_parent_id at register time.
     GTATOOLS_OT_bake_run,
+    GTATOOLS_OT_bake_paint_layer,
     GTATOOLS_OT_bake_select_layer,
     GTATOOLS_OT_bake_layer_add,
     GTATOOLS_OT_bake_layer_remove,
@@ -3999,6 +4079,7 @@ classes = (
     INUTimecycProps,
     GTATOOLS_OT_validate_run,
     GTATOOLS_OT_validate_clear,
+    GTATOOLS_OT_validate_toggle_group,
     GTATOOLS_OT_validate_goto,
     GTATOOLS_OT_validate_fix_quaternions,
     GTATOOLS_OT_validate_fix_suffix,
@@ -4773,11 +4854,22 @@ def register():
     # Keep every 2DFX Empty's preview rig in sync after duplicate/copy/append
     # (persistent timer — survives file loads, no restart needed).
     start_preview_autobuild()
+    # IDE/IPL link status follows the files: a row deleted on disk drops the
+    # model's «В IPL/IDE» mark (read-only watcher, ops/map_watch).
+    from .ops import map_watch
+    map_watch.start()
     # Single consolidated load_post handler — see _on_file_load. Legacy
     # data migrations are NOT auto-run on file load anymore; they're a
     # manual operator in the addon preferences
     # (gtatools.run_legacy_migrations).
     bpy.app.handlers.load_post.append(_on_file_load)
+
+    # GTA Geo убрана из UI (экспериментально) — автообновление нод-группы
+    # тротуара при открытии файла отключено вместе с ней. При возврате
+    # вкладки: нод-группа живёт в .blend пользователя, и после обновления
+    # аддона там остаётся старая сборка — обработчик (@persistent) догоняет
+    # версию; файлы без тротуара покидает на первой проверке.
+    # bpy.app.handlers.load_post.append(_curb_autoupgrade)
 
     # Drop the UI model-type cache on any depsgraph change (rename / retag /
     # material edit) so panel draw() reads stay correct while idle redraws
@@ -5099,6 +5191,13 @@ def _on_file_load_restart_timer(dummy):
 
 
 @persistent
+def _on_file_load_map_watch(dummy):
+    """New .blend → re-check every IDE/IPL link against its file."""
+    from .ops import map_watch
+    map_watch.reset()
+
+
+@persistent
 def _on_file_load_floater(dummy):
     """Re-invoke the viewport floater modal if the saved scene had it on.
 
@@ -5131,6 +5230,7 @@ def _on_file_load(dummy):
                _on_file_load_sync_pipeline_prev,
                _on_file_load_restart_timer,
                _on_file_load_floater,
+               _on_file_load_map_watch,
                _ik_on_file_load):
         try:
             fn(dummy)
@@ -5154,6 +5254,12 @@ def _bake_defensive_sweep():
 
 
 def unregister():
+
+    try:
+        from .ops import map_watch
+        map_watch.stop()
+    except Exception:
+        pass
 
     # Stop the Ariane watcher timer so it doesn't outlive the addon reload.
     try:
@@ -5216,6 +5322,9 @@ def unregister():
     # Consolidated load_post handler (replaces the former nine).
     if _on_file_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_on_file_load)
+    # GTA Geo убрана из UI — обработчик не регистрируется (см. register()).
+    # if _curb_autoupgrade in bpy.app.handlers.load_post:
+    #     bpy.app.handlers.load_post.remove(_curb_autoupgrade)
 
     # UI model-type cache invalidator.
     try:

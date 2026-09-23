@@ -869,7 +869,7 @@ def lint_dff(path: str, profile: str = lint_profile.STANDARD) -> List[LintIssue]
     # ── RW version sanity (clump-level) ─────────────────────────
     # SA standard is 0x36003. Other RW3 versions might load but vehicle
     # code paths assume specific extensions.
-    if clump.version not in (0x36003, 0x35000, 0x34000, 0x33002):
+    if clump.version not in (0x36003, 0x35000, 0x34003, 0x34000, 0x33002):
         issues.append(LintIssue('WARN', 'DFF_RW_VERSION_NOT_SA',
             path, '',
             f"RW version 0x{clump.version:X} — vanilla SA writes 0x36003. "

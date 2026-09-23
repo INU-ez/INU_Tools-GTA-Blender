@@ -175,6 +175,13 @@ class DffTexture:
             print(f"[INU] WARN: texture name '{self.name}' has a non-ASCII "
                   f"character — it will be written as '?' and won't link "
                   f"in-game. Rename it to ASCII (a-z, 0-9, _) before export.")
+        # W8: RwTextureSetName keeps 31 chars, so the TXD side is always cut
+        # to 31 while the DFF would carry the full name — the two can never
+        # match and the material renders untextured (DFF-19). Refuse.
+        if len(self.name.encode('ascii', errors='replace')) > TEXTURE_NAME_MAX:
+            raise DffLimitError(_t(
+                "имя текстуры «{0}» длиннее {1} символов — TXD хранит 31 символ, материал не найдёт свою текстуру. Переименуй текстуру."
+            ).format(self.name, TEXTURE_NAME_MAX))
         # Write the FULL 32-bit filter/addressing word. The low 16 bits are
         # filter + U/V addressing; the high 16 bits are flags some textures set
         # (e.g. 0x0001) — writing them as `2x` padding dropped them, so a
@@ -564,10 +571,11 @@ class DffMaterial:
             spec_data += spec_name + b'\x00' * (24 - len(spec_name))
             ext_data += _chunk(CHUNK_SPECULAR_MAT, spec_data, lib_id)
 
-        if self.reflection:
-            r = self.reflection
-            refl_data = pack('<5f4x', r.scale_x, r.scale_y, r.offset_x, r.offset_y, r.intensity)
-            ext_data += _chunk(CHUNK_REFLECTION_MAT, refl_data, lib_id)
+        # W7: Reflection Material (CHUNK 0x0253F2FC) — остаток 3ds Max-экспортёра.
+        # Ваниль SA его НЕ пишет, движку он не нужен: env-map машин идёт через
+        # MatFX (_matfx_bytes выше). Поэтому не сериализуем — так DFF совпадает
+        # с ванильным. Данные (self.reflection) сохраняются в объекте на случай
+        # анализа, но в файл не попадают.
 
         if self.user_data and self.user_data.sections:
             ext_data += self.user_data.to_bytes(lib_id)
@@ -655,25 +663,127 @@ class ExtraVertColors:
 
 @dataclass
 class BreakableData:
-    """Breakable Objects extension (chunk 0x253F2FD) — marks a mesh as
-    destructible by the physics engine. The numbers are pre-allocated
-    buffers used by the game to hold the broken copy; the defaults
-    mirror what Kam's `brakableobjects.ms` writes.
+    """Breakable Objects extension (chunk 0x253F2FD) — the copy of the
+    mesh the engine spawns as the broken pieces.
+
+    Layout as ``BreakableStreamRead`` @ 0x59CEC0 parses it (verified on the
+    vanilla ``bd_window`` / ``bussign1`` / ``barrierm`` chunks):
+        u32 magic (0 = "not breakable", nothing follows; ≠ 0 = data)
+        52-byte header: i32 posn_rule, u16 num_vertices, pad, 3 ptrs,
+            u16 num_triangles, pad, 2 ptrs, u16 num_materials, pad, 4 ptrs
+        num_vertices × {f32 x, y, z}, num_vertices × {f32 u, v},
+        num_vertices × RGBA, num_triangles × {u16 a, b, c},
+        num_triangles × u16 material, num_materials × char[32] texture,
+        num_materials × char[32] mask, num_materials × {f32 r, g, b}
+    The pointer words are heap garbage in vanilla; the engine overwrites
+    them, so they are written as 0. Every material group is one piece;
+    vanilla splits pieces by duplicating the material (same texture).
     """
-    vertices_alloc: int = 100
-    faces_alloc: int = 200
-    materials_alloc: int = 1
-    uvs_alloc: int = 100
-    offset: tuple = (0.0, 0.0, 0.0)   # break-force offset
-    force: float = 1.0                # break-force magnitude
+    posn_rule: int = 1
+    vertices: list = field(default_factory=list)       # list[(x, y, z)]
+    uvs: list = field(default_factory=list)            # list[(u, v)]
+    colors: list = field(default_factory=list)         # list[RGBA]
+    triangles: list = field(default_factory=list)      # list[(a, b, c)]
+    tri_materials: list = field(default_factory=list)  # list[int]
+    tex_names: list = field(default_factory=list)      # list[str]
+    mask_names: list = field(default_factory=list)     # list[str]
+    ambient: list = field(default_factory=list)        # list[(r, g, b)]
+
+    @classmethod
+    def from_geometry(cls, geom: 'DffGeometry') -> 'BreakableData':
+        """Build the break copy from the geometry itself (what Blender can
+        supply): UV set 0 (or zeros), prelight (or white), the triangle
+        list and one break material per DFF material."""
+        nv = len(geom.vertices)
+        uv0 = geom.uv_layers[0] if geom.uv_layers else []
+        uvs = [(uv0[i].u, uv0[i].v) if i < len(uv0) else (0.0, 0.0)
+               for i in range(nv)]
+        cols = [geom.prelit_colors[i] if i < len(geom.prelit_colors)
+                else RGBA() for i in range(nv)]
+        tex, mask, amb = [], [], []
+        for m in geom.materials:
+            tex.append(m.texture.name if m.texture else '')
+            mask.append(m.texture.mask if m.texture else '')
+            amb.append((1.0, 1.0, 1.0))
+        return cls(
+            vertices=[tuple(v[:3]) for v in geom.vertices],
+            uvs=uvs, colors=cols,
+            triangles=[(t.a, t.b, t.c) for t in geom.triangles],
+            tri_materials=[t.material for t in geom.triangles],
+            tex_names=tex, mask_names=mask, ambient=amb,
+        )
 
     def to_bytes(self, lib_id: int) -> bytes:
-        data = pack('<4I', self.vertices_alloc, self.faces_alloc,
-                          self.materials_alloc, self.uvs_alloc)
-        data += pack('<3ff',
-                     self.offset[0], self.offset[1], self.offset[2],
-                     self.force)
-        return _chunk(CHUNK_BREAKABLE, data, lib_id)
+        nv, nt, nm = len(self.vertices), len(self.triangles), len(self.tex_names)
+        data = bytearray(pack('<I', 1))  # magic ≠ 0: data follows
+        data += pack('<iHH3IHH2IHH4I', self.posn_rule,
+                     nv, 0, 0, 0, 0, nt, 0, 0, 0, nm, 0, 0, 0, 0, 0)
+        for v in self.vertices:
+            data += pack('<3f', v[0], v[1], v[2])
+        for i in range(nv):
+            u, v = self.uvs[i] if i < len(self.uvs) else (0.0, 0.0)
+            data += pack('<2f', u, v)
+        for i in range(nv):
+            c = self.colors[i] if i < len(self.colors) else RGBA()
+            data += pack('<4B', c.r, c.g, c.b, c.a)
+        for t in self.triangles:
+            data += pack('<3H', t[0], t[1], t[2])
+        for i in range(nt):
+            data += pack('<H', self.tri_materials[i] if i < len(self.tri_materials) else 0)
+        for name in self.tex_names:
+            data += _fixed_cstr(name, 32)
+        for i in range(nm):
+            data += _fixed_cstr(self.mask_names[i] if i < len(self.mask_names) else '', 32)
+        for i in range(nm):
+            a = self.ambient[i] if i < len(self.ambient) else (1.0, 1.0, 1.0)
+            data += pack('<3f', a[0], a[1], a[2])
+        return _chunk(CHUNK_BREAKABLE, bytes(data), lib_id)
+
+
+def _fixed_cstr(s: str, size: int) -> bytes:
+    """ASCII string in a fixed slot: at most ``size - 1`` chars + NUL,
+    zero-padded — the engine reads these fields as C strings."""
+    raw = s.encode('ascii', errors='replace')[:size - 1]
+    return raw + b'\x00' * (size - len(raw))
+
+
+def _read_breakable_plugin(r: BinaryReader, size: int) -> Optional[BreakableData]:
+    """Decode the Breakable chunk the way the engine does. ``None`` for the
+    4-byte "not breakable" marker (magic 0) — same state as no chunk."""
+    end = r.pos + size
+    magic = r.read_one('<I')
+    if magic == 0 or size < 4 + 52:
+        return None
+    (posn_rule, nv, _p, _, _, _, nt, _p2, _, _, nm, _p3,
+     _, _, _, _) = r.read('<iHH3IHH2IHH4I')
+    need = nv * 24 + nt * 8 + nm * 76
+    if r.pos + need > end:
+        return None
+    b = BreakableData(posn_rule=posn_rule)
+    if nv:
+        arr = np.frombuffer(r.data, dtype='<f4', count=nv * 3, offset=r.pos).reshape(nv, 3)
+        r.skip(nv * 12)
+        b.vertices = [tuple(v) for v in arr.tolist()]
+        arr = np.frombuffer(r.data, dtype='<f4', count=nv * 2, offset=r.pos).reshape(nv, 2)
+        r.skip(nv * 8)
+        b.uvs = [tuple(v) for v in arr.tolist()]
+        arr = np.frombuffer(r.data, dtype=np.uint8, count=nv * 4, offset=r.pos).reshape(nv, 4)
+        r.skip(nv * 4)
+        b.colors = [RGBA(*c) for c in arr.tolist()]
+    if nt:
+        arr = np.frombuffer(r.data, dtype='<u2', count=nt * 3, offset=r.pos).reshape(nt, 3)
+        r.skip(nt * 6)
+        b.triangles = [tuple(t) for t in arr.tolist()]
+        arr = np.frombuffer(r.data, dtype='<u2', count=nt, offset=r.pos)
+        r.skip(nt * 2)
+        b.tri_materials = arr.tolist()
+    for _ in range(nm):
+        b.tex_names.append(r.read_str(32))
+    for _ in range(nm):
+        b.mask_names.append(r.read_str(32))
+    for _ in range(nm):
+        b.ambient.append(tuple(r.read('<3f')))
+    return b
 
 
 # ── 2DFX Effect structures ──────────────────────────────────────
@@ -711,8 +821,11 @@ class BreakableData:
 # Source: gtamods.com/wiki/2DFX (verified 2026-05).
 _2DFX_ALLOWLIST_BY_RW_VERSION = {
     0x33000: frozenset({0, 1, 2}),          # III: + Strobe
-    0x35000: frozenset({0, 1, 2, 3, 4}),    # VC:  + Strobe + PedAttractor + SunGlare
-    0x36000: frozenset({0, 1, 3, 4, 6, 7, 10}),  # SA:  + Enter/Exit, RoadSign, Escalator
+    0x34000: frozenset({0, 1, 2, 3, 4}),    # VC (RW 3.4.0.3 on PC): + PedAttractor + SunGlare
+    # SA: + PedAttractor, SunGlare, Enter/Exit, RoadSign, Trigger point (8),
+    # Cover point (9), Escalator — the exact handler set of the SA 2dfx
+    # reader @ 0x6F9FD0; 2 (III/VC strobe), 5 and ≥ 11 fall through unread.
+    0x36000: frozenset({0, 1, 3, 4, 6, 7, 8, 9, 10}),
 }
 
 
@@ -761,13 +874,21 @@ class Particle2dfx:
 
 @dataclass
 class PedAttractor2dfx:
-    """Ped attractor (ATM, bench, bus stop, etc.)."""
+    """Ped attractor (ATM, bench, bus stop, etc.).
+
+    Payload = exactly 56 bytes — the SA reader (0x6F9FD0, type 3) skips
+    any other size (W2): u32 type, 9f (queue / use / forward dirs),
+    char[8] script, u32 probability, then ``flags`` (u8 @52, u8 pad,
+    u8 @54, u8 pad) — vanilla carries 0x23 in byte 52 on 18 entries.
+    """
     effect_id: int = 3
     loc: tuple = (0.0, 0.0, 0.0)
     attractor_type: int = 0
     rotation_matrix: tuple = (1,0,0, 0,1,0, 0,0,1)  # 3x3 as 9 floats
     external_script: str = ""
     ped_existing_probability: int = 0
+    flags: int = 0          # byte 52 (→ C2dEffect +0x36)
+    unknown: int = 0        # byte 54 (→ C2dEffect +0x37)
 
 
 @dataclass
@@ -863,10 +984,20 @@ class Extension2dfx:
             return b''
 
         allowed = _allowed_2dfx_ids(rw_version)
-        # RawUnknown entries are verbatim passthrough of already-valid bytes —
-        # keep them regardless of the typed allowlist so nothing is dropped.
-        kept = [e for e in self.entries
-                if isinstance(e, RawUnknown2dfx) or e.effect_id in allowed]
+        # W12: an entry of a type the target engine has no handler for is
+        # neither read nor skipped by the SA reader (0x6F9FD0) — the stream
+        # desyncs and the model never loads. Drop it and say so. Raw
+        # passthrough entries of a KNOWN type (8 trigger, 9 cover) stay.
+        kept = []
+        for e in self.entries:
+            if e.effect_id in allowed:
+                kept.append(e)
+                continue
+            _w = _t(
+                "2DFX: эффект типа {0} неизвестен целевой игре — движок не умеет его пропустить, запись убрана из экспорта."
+            ).format(e.effect_id)
+            DFF_EXPORT_WARNINGS.append(_w)
+            print(f"[DFF Export WARNING] {_w}")
         if not kept:
             return b''
 
@@ -893,13 +1024,22 @@ class SkinData:
     bone_weights: list = field(default_factory=list)    # per-vertex: list[(w0,w1,w2,w3)]
     bone_matrices: list = field(default_factory=list)   # per-bone: list[4x4 floats]
 
-    def to_bytes(self, lib_id: int) -> bytes:
-        oldver = (self.num_used == 0)
-        data = pack('<3Bx', self.num_bones, self.num_used, self.max_weights)
-
-        # bones_used array
-        for bu in self.bones_used:
-            data += pack('<B', bu)
+    def to_bytes(self, lib_id: int, rw_version: int = GTA_SA_VERSION) -> bytes:
+        # Layout is keyed on the RW version, NOT on num_used: the SA engine
+        # picks the pre-3.5 layout only when the maxWeights byte is 0, and
+        # vanilla SA never ships num_used == 0. Keying on num_used wrote a
+        # RW 3.4 skin (4-byte pad before every matrix, no 12-byte trailer)
+        # into a RW 3.6 file whenever a mesh was weighted to bone 0 only.
+        oldver = rw_version < 0x35000
+        if oldver:
+            # RW < 3.5 (III/VC): a plain u32 numBones header — no used-bone
+            # count, no maxWeights byte, no used-bone list.
+            data = pack('<3Bx', self.num_bones, 0, 0)
+        else:
+            data = pack('<3Bx', self.num_bones, self.num_used, self.max_weights)
+            # bones_used array
+            for bu in self.bones_used:
+                data += pack('<B', bu)
 
         for indices in self.bone_indices:
             data += pack('<4B', *indices)
@@ -909,7 +1049,7 @@ class SkinData:
 
         for matrix in self.bone_matrices:
             if oldver:
-                data += pack('<4x')  # 0xDEADDEAD marker in old format
+                data += pack('<I', 0xDEADDEAD)  # RW < 3.5 marker before each matrix
             flat = matrix[0] + matrix[1] + matrix[2] + matrix[3]
             data += pack('<16f', *flat)
 
@@ -933,11 +1073,16 @@ class HAnimData:
     version: int = 0x100
     bone_id: int = 0
     bones: list = field(default_factory=list)  # list[HAnimBone], only on root
+    # Hierarchy flags and max interpolated keyframe size — only meaningful
+    # on the frame that carries the node table. Vanilla SA: 0 / 36. The
+    # engine crashes on flags bit 2 (no matrices) and on a size < 28.
+    flags: int = 0
+    keyframe_size: int = 36
 
     def to_bytes(self, lib_id: int) -> bytes:
         data = pack('<3i', self.version, self.bone_id, len(self.bones))
         if self.bones:
-            data += pack('<II', 0, 36)  # flags, offset
+            data += pack('<II', self.flags, self.keyframe_size)
             for bone in self.bones:
                 data += pack('<3i', bone.bone_id, bone.index, bone.bone_type)
         return _chunk(CHUNK_HANIM_PLG, data, lib_id)
@@ -965,7 +1110,17 @@ class DffFrame:
     def extension_bytes(self, lib_id: int) -> bytes:
         ext = b''
         if self.write_name and self.name and self.name != "unknown":
-            ext += _chunk(CHUNK_FRAME_NAME, _pad_string(self.name), lib_id)
+            # Vanilla writes exactly strlen(name) bytes — no NUL, no 4-byte
+            # padding (NodeNameStreamGetSize = strlen). The engine reads the
+            # chunk into a 24-byte slot and writes name[length] = 0, so a
+            # padded chunk of 24 bytes (20..23-char name) overflows the
+            # slot by one byte; anything longer overflows in vanilla too.
+            raw = self.name.encode('ascii', errors='replace')
+            if len(raw) > FRAME_NAME_MAX:
+                raise DffLimitError(_t(
+                    "имя фрейма «{0}» длиннее {1} символов — движок хранит имя в 24-байтовом слоте и упадёт при загрузке. Переименуй объект/кость."
+                ).format(self.name, FRAME_NAME_MAX))
+            ext += _chunk(CHUNK_FRAME_NAME, raw, lib_id)
         if self.hanim:
             ext += self.hanim.to_bytes(lib_id)
         if self.user_data and self.user_data.sections:
@@ -1256,14 +1411,10 @@ class DffGeometry:
                     struct_data += pack('<2f', tc.u, tc.v)
 
             # Triangles (RenderWare format: b, a, material, c)
-            # Indices are u16. Vertex counts above 65536 are out of spec
-            # (surfaced as a warning in _validate_geometry_writable, not a
-            # hard block), so mask to u16 to write a file instead of
-            # crashing with a struct.error — over-limit indices wrap and
-            # the mesh may render incorrectly, as the warning states.
+            # Indices are u16; vertex counts above 65535 are rejected by
+            # _validate_geometry_writable before we get here.
             for tri in self.triangles:
-                struct_data += pack('<4H', tri.b & 0xFFFF, tri.a & 0xFFFF,
-                                    tri.material, tri.c & 0xFFFF)
+                struct_data += pack('<4H', tri.b, tri.a, tri.material, tri.c)
 
         # Bounding sphere — emitted on both paths.
         bs = self.bounding_sphere
@@ -1326,15 +1477,27 @@ class DffGeometry:
                     sk_data += pack('<16f', *flat)
                 ext_data += _chunk(CHUNK_SKIN_PLG, sk_data, lib_id)
             else:
-                ext_data += self.skin.to_bytes(lib_id)
+                ext_data += self.skin.to_bytes(lib_id, rw_version)
 
         # Night Vertex Colors (CHUNK_EXTRA_COLORS = 0x253F2F9) — SA-only
         # extension. III/VC engines don't read it; emitting on those
         # versions just bloats the file. Gate on rw_version ≥ SA (0x36003).
         if (self.extra_colors and self.extra_colors.colors
                 and rw_version >= 0x36000):
+            # W14: the engine reads exactly numVertices × 4 bytes here,
+            # ignoring the chunk length — a shorter or longer list
+            # desynchronises the stream. Pad with white / truncate, warn.
+            colors = list(self.extra_colors.colors)
+            nv = len(self.vertices)
+            if len(colors) != nv:
+                _w = _t(
+                    "ночных цветов {0}, а вершин {1} — список выровнен по числу вершин (движок читает ровно numVertices×4 байта)."
+                ).format(len(colors), nv)
+                DFF_EXPORT_WARNINGS.append(_w)
+                print(f"[DFF Export WARNING] {_w}")
+                colors = (colors + [RGBA()] * nv)[:nv]
             ec_data = bytearray(pack('<I', 1))  # magic; bytearray → O(N)
-            for c in self.extra_colors.colors:
+            for c in colors:
                 ec_data += pack('<4B', c.r, c.g, c.b, c.a)
             ext_data += _chunk(CHUNK_EXTRA_COLORS, bytes(ec_data), lib_id)
 
@@ -1395,6 +1558,10 @@ class DffLight:
 
 _U16_MAX = 65535
 _U8_MAX = 255
+# NodeName frame plugin: 24-byte slot, NAME_LENGTH 23 + terminating NUL.
+FRAME_NAME_MAX = 23
+# RwTexture name: 32-byte field, RwTextureSetName forces name[31] = 0.
+TEXTURE_NAME_MAX = 31
 
 # Non-fatal warnings collected during the last DFF validation/export.
 # Triangle-count "over limit" is NOT a hard format limit (count is u32),
@@ -1429,22 +1596,20 @@ def _validate_geometry_writable(geom: 'DffGeometry', idx: int):
     """Reject geometries that would overflow RenderWare's u16/u8 fields.
 
     DffGeometry.to_bytes() packs triangles as ``<4H`` (b, a, material, c) — so
-    vertex count and material count are capped at 65 536 (indices 0..65 535).
+    material count is capped at 65 536 (indices 0..65 535) and the vertex
+    count at 65 535: RpGeometryCreate refuses numVerts >= 0x10000 (DFF-09),
+    so a 65 536-vertex geometry would be written and then never load.
     UV layer count is packed into 8 bits of the geometry flags. Skin data
     packs bone counts and per-vertex bone indices as u8 (max 255).
     """
     n_verts = len(geom.vertices)
-    if n_verts > _U16_MAX + 1:
-        # RenderWare stores triangle indices as u16, so > 65536 vertices
-        # is technically out of spec. Rather than hard-blocking the
-        # export, surface it as a non-fatal warning (like the triangle
-        # check below) and let the export proceed — to_bytes() masks the
-        # indices to u16 so the write completes instead of crashing.
-        _w = _t(
-            "геометрия #{0}: {1} вершин — RenderWare хранит индексы треугольников в uint16 (максимум {2} вершин). Экспорт продолжен, но модель может отображаться некорректно. Рекомендуется разбить меш на части или упростить (Decimate)."
-        ).format(idx, n_verts, _U16_MAX + 1)
-        DFF_EXPORT_WARNINGS.append(_w)
-        print(f"[DFF Export WARNING] {_w}")
+    if n_verts > _U16_MAX:
+        # RenderWare stores triangle indices as u16. Masking the indices
+        # used to let the write "succeed" with wrapped, garbage triangles;
+        # refuse instead so the user splits the mesh.
+        raise DffLimitError(_t(
+            "геометрия #{0}: {1} вершин — RenderWare хранит индексы треугольников в uint16 (максимум {2} вершин). Разбей меш на части или упрости (Decimate)."
+        ).format(idx, n_verts, _U16_MAX))
 
     n_tris = len(geom.triangles)
     if n_tris > _U16_MAX + 1:
@@ -1594,6 +1759,11 @@ class DffClump:
                 # reflection/specular-only parts WITHOUT the flag, so they
                 # skipped the effect pipeline and rendered slightly darker.
                 # Match vanilla — same effect set as Right-to-Render below.
+                # W7 (left as is, by design): a Reflection Material chunk on
+                # a plain map building (Max-exporter leftover, e.g.
+                # airport_03_sfse / cables) also lands here, so such
+                # buildings get R2R + MatFX=1 that vanilla lacks. The engine
+                # treats it as a NULL effect and renders identically.
                 _matfx = any(
                     m.bump_map or m.env_map or m.dual_texture
                     or m.specular or m.reflection
@@ -2051,19 +2221,9 @@ def _read_geometry_chunk(r: BinaryReader, size: int, rw_version: int) -> DffGeom
                 elif ect == CHUNK_2DFXPLG:
                     geom.ext_2dfx = _read_2dfx_plugin(r, ecs)
                 elif ect == CHUNK_BREAKABLE:
-                    # Breakable Objects extension (Kams brakableobjects.ms):
-                    # 4×u32 buffer-allocs + 3×float offset + float force.
-                    # 28 bytes total — short enough that we just read the
-                    # whole struct here without a dedicated helper.
-                    if ecs >= 28:
-                        va, fa, ma, ua = r.read('<4I')
-                        ox, oy, oz = r.read('<3f')
-                        force = r.read_one('<f')
-                        geom.breakable = BreakableData(
-                            vertices_alloc=va, faces_alloc=fa,
-                            materials_alloc=ma, uvs_alloc=ua,
-                            offset=(ox, oy, oz), force=force,
-                        )
+                    # W1: the full mesh copy the engine parses; the 4-byte
+                    # "not breakable" marker (magic 0) leaves it None.
+                    geom.breakable = _read_breakable_plugin(r, ecs)
                 else:
                     pass
                 r.seek(plugin_end)
@@ -2441,6 +2601,26 @@ def _read_skin_plugin(r: BinaryReader, size: int, num_verts: int) -> SkinData:
     return skin
 
 
+# 24-byte 2DFX name fields (corona / shadow texture, particle system):
+# 23 chars + terminating NUL.
+EFFECT_NAME_MAX = 23
+
+
+def _cut_2dfx_name(name: str, what: str) -> str:
+    """Truncate a 24-byte-slot 2DFX name to 23 chars, warning once per
+    export (W13) — consistent with the rest of the exporter, which cuts
+    fixed-width strings instead of refusing."""
+    if len(name.encode('ascii', errors='replace')) > EFFECT_NAME_MAX:
+        cut = name[:EFFECT_NAME_MAX]
+        _w = _t(
+            "2DFX: имя {0} «{1}» длиннее {2} символов — обрезано до «{3}» (24-байтовое поле с NUL)."
+        ).format(what, name, EFFECT_NAME_MAX, cut)
+        DFF_EXPORT_WARNINGS.append(_w)
+        print(f"[DFF Export WARNING] {_w}")
+        return cut
+    return name
+
+
 def _write_2dfx_entry(entry) -> bytes:
     """Serialize a single 2DFX effect entry payload (without header)."""
     if isinstance(entry, Light2dfx):
@@ -2451,11 +2631,10 @@ def _write_2dfx_entry(entry) -> bytes:
                      entry.corona_show_mode, entry.corona_enable_reflection,
                      entry.corona_flare_type, entry.shadow_color_multiplier,
                      entry.flags1)
-        # Corona and shadow texture names — 24 bytes each
-        corona = entry.corona_tex_name.encode('ascii', errors='replace')[:24]
-        shadow = entry.shadow_tex_name.encode('ascii', errors='replace')[:24]
-        data += corona + b'\x00' * (24 - len(corona))
-        data += shadow + b'\x00' * (24 - len(shadow))
+        # Corona and shadow texture names — 24-byte C strings, so at most
+        # 23 chars + NUL (W13); longer names are cut with a warning.
+        data += _fixed_cstr(_cut_2dfx_name(entry.corona_tex_name, 'corona'), 24)
+        data += _fixed_cstr(_cut_2dfx_name(entry.shadow_tex_name, 'shadow'), 24)
         data += pack('<BB', entry.shadow_z_distance, entry.flags2)
         # Always write 80-byte variant (Kam's / GTA SA standard)
         if entry.look_direction is not None:
@@ -2465,8 +2644,9 @@ def _write_2dfx_entry(entry) -> bytes:
         return data
 
     elif isinstance(entry, Particle2dfx):
-        name = entry.effect_name.encode('ascii', errors='replace')[:24]
-        return name + b'\x00' * (24 - len(name))
+        # The engine copies the name until NUL (unbounded), so the NUL
+        # must sit inside the 24-byte field (W13).
+        return _fixed_cstr(_cut_2dfx_name(entry.effect_name, 'particle'), 24)
 
     elif isinstance(entry, PedAttractor2dfx):
         data = pack('<I', entry.attractor_type)
@@ -2474,7 +2654,10 @@ def _write_2dfx_entry(entry) -> bytes:
         script = entry.external_script.encode('ascii', errors='replace')[:8]
         data += script + b'\x00' * (8 - len(script))
         data += pack('<I', entry.ped_existing_probability)
-        return data
+        # W2: bytes 52..55 — without them the entry is 52 bytes and the
+        # engine drops it (size must be 0x38).
+        data += pack('<BxBx', entry.flags & 0xFF, entry.unknown & 0xFF)
+        return data   # 56 bytes
 
     elif isinstance(entry, SunGlare2dfx):
         return b''
@@ -2566,6 +2749,9 @@ def _read_2dfx_plugin(r: BinaryReader, size: int) -> Extension2dfx:
             end_e = script_raw.find(b'\x00')
             ped.external_script = script_raw[:end_e if end_e >= 0 else 8].decode('ascii', errors='replace')
             ped.ped_existing_probability = r.read_one('<I')
+            if entry_size >= 56:
+                # W2: keep bytes 52 and 54 (the engine stores both).
+                ped.flags, ped.unknown = r.read('<BxBx')
             ext.entries.append(ped)
 
         elif entry_type == 4:  # Sun Glare
@@ -2688,7 +2874,7 @@ def _read_hanim_plugin(r: BinaryReader, size: int) -> HAnimData:
     hanim = HAnimData()
     hanim.version, hanim.bone_id, bone_count = r.read('<3i')
     if bone_count > 0:
-        r.skip(8)  # flags + offset
+        hanim.flags, hanim.keyframe_size = r.read('<II')
         for _ in range(bone_count):
             bid, idx, btype = r.read('<3i')
             hanim.bones.append(HAnimBone(bone_id=bid, index=idx, bone_type=btype))

@@ -440,6 +440,27 @@ def _particle_curve_items(self, context):
     return _particle_curve_items_cache
 
 
+def _audit_fxp(op, fxp_path, fxf):
+    """DAT-47/48 audit after every effects.fxp write: NUM_PRIMS ≤ 8, known
+    FX_INFO keywords with the right curve count, NUM_KEYS ≤ 127 and equal
+    across an info's curves, |t| < 128, texture names ≤ 31 and present in
+    ``<project>PC.txd`` (the engine derives the TXD from the fxp name)."""
+    try:
+        from ..core.textdata_lint import check_fxp
+        from .textdata_audit import report_lint
+        textures = None
+        txd_path = fxp_path[:-4] + 'PC.txd' if fxp_path.lower().endswith('.fxp') else ''
+        if txd_path and os.path.isfile(txd_path):
+            try:
+                from ..core.txd import read_txd_texture_names
+                textures = set(read_txd_texture_names(txd_path))
+            except Exception as e:                   # noqa: BLE001
+                print(f"[INU lint] effectsPC.txd not readable: {e}")
+        report_lint(op, os.path.basename(fxp_path), *check_fxp(fxf, textures))
+    except Exception as e:                           # noqa: BLE001
+        print(f"[INU lint] fxp audit failed: {e}")
+
+
 def _create_blank_particle_system(name: str):
     """Return a brand-new FXSystem with sensible defaults — single emitter,
     a 'sphere' texture, basic emission/colour/size info blocks set to neutral
@@ -517,8 +538,11 @@ def _create_blank_particle_system(name: str):
         curves={
             'SIZEX': _start_end(0.3, 0.5),
             'SIZEY': _start_end(0.3, 0.5),
-            'SIZEXBIAS': _single(0.0),
-            'SIZEYBIAS': _single(0.0),
+            # Same key count as SIZEX/SIZEY: the engine allocates one
+            # time array per info from the FIRST curve's NUM_KEYS and
+            # shares it across the block (DAT-47c).
+            'SIZEXBIAS': _start_end(0.0, 0.0),
+            'SIZEYBIAS': _start_end(0.0, 0.0),
         },
     ))
     em.infos.append(FXInfoBlock(
@@ -611,6 +635,7 @@ class GTATOOLS_OT_particle_effect_new(bpy.types.Operator):
         except Exception as e:
             self.report({'ERROR'}, f"{T('Ошибка записи: ')}{e}")
             return {'CANCELLED'}
+        _audit_fxp(self, fxp_path, fxf)
 
         _fxp.clear_cache()
         # Force the enum to rebuild its cached item list on next draw
@@ -735,6 +760,7 @@ class GTATOOLS_OT_particle_effect_delete(bpy.types.Operator):
         except Exception as e:
             self.report({'ERROR'}, f"{T('Ошибка записи: ')}{e}")
             return {'CANCELLED'}
+        _audit_fxp(self, fxp_path, fxf)
 
         _fxp.clear_cache()
         global _particle_enum_cache_key
@@ -934,6 +960,7 @@ class GTATOOLS_OT_particle_curve_write(bpy.types.Operator):
         except Exception as e:
             self.report({'ERROR'}, f"{T('Ошибка записи: ')}{e}")
             return {'CANCELLED'}
+        _audit_fxp(self, fxp_path, fxf)
 
         _fxp.clear_cache()
 
@@ -1515,6 +1542,7 @@ class GTATOOLS_OT_save_particle_effect(bpy.types.Operator):
         except Exception as e:
             self.report({'ERROR'}, f"{T('Ошибка записи: ')}{e}")
             return {'CANCELLED'}
+        _audit_fxp(self, fxp_path, fxf)
 
         _fxp.clear_cache()
 

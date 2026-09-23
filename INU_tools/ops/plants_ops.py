@@ -33,6 +33,17 @@ _GEO_MAT = "INU_GrassGeo"
 _PREVIEW_CAP = 300000
 
 
+def _engine_surface_names():
+    """COLPOINT surface names ``SurfaceInfos_c::GetSurfaceIdFromName``
+    resolves (ids 0..177): our table + the game's abbreviations. An entry
+    with any other name makes LoadPlantsDat return false → no grass."""
+    from ..data.surface_materials import (
+        GTA_SA_SURFACE_MATERIALS, _COLPOINT_NAME_OVERRIDE)
+    names = {name for _sid, name, _d in GTA_SA_SURFACE_MATERIALS}
+    names.update(_COLPOINT_NAME_OVERRIDE.values())
+    return names
+
+
 def _resolve_path(context, *, must_exist):
     """Resolve the plants.dat path: explicit setting, else <GameRoot>/data.
     Returns an absolute path or '' if it can't be determined."""
@@ -144,6 +155,15 @@ class GTATOOLS_OT_grass_export(bpy.types.Operator):
             self.report({'ERROR'}, f"{T('Ошибка записи:')} {e}")
             return {'CANCELLED'}
 
+        # DAT-46: known surface names, 18 tokens, ≤ 57 surfaces, slot /
+        # model / uv ≤ 3 — an offending line silently disables ALL grass.
+        try:
+            from ..core.textdata_lint import check_plants
+            from .textdata_audit import report_lint
+            report_lint(self, os.path.basename(path),
+                        *check_plants(entries, _engine_surface_names()))
+        except Exception as e:                       # noqa: BLE001
+            print(f"[INU lint] plants audit failed: {e}")
         self.report({'INFO'}, f"{T('Записано в')} {path} ({len(entries)})")
         return {'FINISHED'}
 

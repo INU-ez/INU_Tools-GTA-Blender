@@ -751,6 +751,10 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
                         else:
                             inst.lod_index = -1
                         inst._source_ipl = ipl_basename
+                        # Loose text IPL → the placed model gets linked to
+                        # this row (map_link.stamp_ipl) right away.
+                        inst._source_path = p
+                        inst._source_base = base
                         instances.append(inst)
                     if any([ipl.culls, ipl.garages, ipl.enexs, ipl.pickups,
                             ipl.cars, ipl.jumps, ipl.auzos, ipl.occls]):
@@ -1331,6 +1335,14 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
                                 # wire-up pass; first MESH child stands
                                 # in for the whole instance.
                                 instance_to_main_obj[idx] = main_obj
+                                _sp = getattr(inst, '_source_path', '')
+                                if (_sp and not is_lod and main_obj is not None
+                                        and hasattr(main_obj, 'inu')):
+                                    from .map_link import stamp_ipl, norm
+                                    _li = inst.lod_index
+                                    stamp_ipl(main_obj, norm(_sp), inst,
+                                              _li - inst._source_base
+                                              if _li >= 0 else -1, fresh=True)
 
                             # COL: build/copy + place at the same
                             # transform as the DFF instance. Default mode

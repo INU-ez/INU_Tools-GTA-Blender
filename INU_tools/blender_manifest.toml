@@ -2,7 +2,7 @@ schema_version = "1.0.0"
 
 # Unique extension ID — reverse-DNS-style. Must not change between versions.
 id = "inu_tools_gta_sa"
-version = "2.3.3"
+version = "2.4.0"
 name = "INU Tools (GTA SA)"
 tagline = "Full-pipeline toolkit for GTA San Andreas modding"
 maintainer = "INU"
@@ -56,4 +56,16 @@ paths_exclude_pattern = [
   "*.blend1",
   "*.orig",
   "*.tmp",
+  # The "GTA Geo" tab (procedural pavement / kerb on geometry nodes and
+  # buildings on top of the separate Auto-Building addon) is experimental
+  # and is NOT registered in this release — see the comment above the
+  # ui.geo_panels import in __init__.py. Its modules are kept in the repo
+  # but left out of the published zip so the extension ships no code it
+  # never runs. Re-registering the tab means removing these four lines too.
+  # Leading "/" anchors the pattern to the package root (same syntax as
+  # Blender's own "/.git/" default), so only these exact files are cut.
+  "/ops/geo_curb_ops.py",
+  "/ops/geo_building_ops.py",
+  "/ui/geo_panels.py",
+  "/data/autobuilding_ui.py",
 ]

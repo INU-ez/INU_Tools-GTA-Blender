@@ -1,0 +1,94 @@
+Notes for the extensions.blender.org review
+===========================================
+
+INU Tools is a toolkit for editing GTA San Andreas game assets (models,
+collisions, textures, map and animation files). Everything happens on
+files the user picks; the addon has no online component.
+
+This file explains the few places where the addon does something that
+looks unusual at first glance, so the review does not have to guess.
+
+
+1. The addon turns on "Translate Interface" for non-Russian locales
+-------------------------------------------------------------------
+Where: __init__.py, at the end of register()
+
+The addon's source strings are Russian (the author's language), and its
+English and Spanish translations are registered through Blender's own
+i18n API (bpy.app.translations). Blender only applies registered
+translations when Preferences > Interface > Translation > "Translate
+Interface" is enabled. With that toggle off, an English-speaking user
+would see raw Russian labels across every panel — the translations are
+installed but never consulted.
+
+So, at register() time only, the addon enables that one preference, and
+only when ALL of these hold:
+
+  * Blender's locale is set and is NOT Russian (a Russian user already
+    reads the source strings — we leave their preferences alone), and
+  * the toggle is currently off.
+
+Nothing else in Preferences is touched, the value is never written back
+on unregister (the user stays in control of it afterwards), and the
+addon does not force a language — it only lets Blender apply the
+translations it was given. If the reviewer prefers this to be opt-in, we
+are happy to move it behind a prompt; it is a single guarded block.
+
+
+2. Permissions: only "files"
+----------------------------
+The addon reads and writes the user's GTA game files: DFF/COL/TXD models
+and textures, IMG archives, and the plain-text map data (IDE, IPL,
+water.dat, timecyc.dat, zones, plants.dat, effects.fxp). Every path
+comes from a file browser or a path property the user filled in.
+
+Writes to those text files go through core/mapsync/textfile.py, which
+writes a temporary file in the same folder and os.replace()s it into
+place, and keeps one "<file>.bak" copy per file per session. That backup
+sits next to the user's own file, never in the addon or config folder.
+
+No network access: there is no socket / urllib / requests / http.client
+anywhere. "Documentation", "Issues" and similar buttons call
+bpy.ops.wm.url_open, which hands the URL to Blender. Opening a file or
+folder from a panel uses bpy.ops.wm.path_open — no subprocess, no
+os.startfile.
+
+
+3. No subprocess, no binaries, no dynamic execution
+---------------------------------------------------
+  * No subprocess/Popen/os.system anywhere in the package.
+  * No compiled code: the package contains only .py files plus PNG
+    icons, two licence texts, one TOML and one JSON.
+  * DXT texture compression is pure numpy (core/dxt.py) — the external
+    compressor that earlier versions could call was removed.
+  * No eval / exec / compile / __import__ with runtime arguments.
+  * No threading or queue imports. Two places use
+    concurrent.futures.ThreadPoolExecutor to run numpy/zlib work
+    (TXD decode, IMG export); results are aggregated on the calling
+    thread and no worker touches bpy data.
+
+
+4. The "live bridge" is a folder, not a server
+----------------------------------------------
+ops/ariane_bridge.py talks to the Ariane map editor through a shared
+inbox/outbox folder (%LOCALAPPDATA%\INU_ariane_bridge by default, or a
+folder the user points at). Jobs are small text files; the addon polls
+them with bpy.app.timers. No sockets, no ports, no background threads.
+
+
+5. Bundled third-party material
+-------------------------------
+See THIRD_PARTY.txt: the Inter font (OFL-1.1, text in data/fonts/), the
+Blender UI icons baked to PNG for the addon's GPU-drawn floating panel
+(GPL-2.0-or-later, provenance in data/icons/native/NOTICE.txt), and the
+"Split into chunks" tool adapted from ChunkTools (Apache-2.0). All are
+compatible with the extension's GPL-3.0-or-later licence.
+
+
+6. Library modules that are not operators
+-----------------------------------------
+core/ holds pure-Python format readers/writers and linters (DFF, COL,
+TXD, IDE, IPL, IFP, timecyc, water, …) with no bpy imports. They are
+imported by the operators and panels in ops/ and ui/; keeping them
+separate is what makes them unit-testable without Blender. They are not
+a plugin loader and do not execute anything on their own.

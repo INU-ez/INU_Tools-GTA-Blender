@@ -494,6 +494,13 @@ def write_numpy_to_image(image, arr, *, pack=True):
     байт (TXD), здесь мы не покидаем систему координат Blender.
     """
     flat = np.ascontiguousarray(arr, dtype=np.float32).ravel()
+    # Буфер картинки мог «откатиться» к старому размеру после scale():
+    # любой colormanage-сигнал (alpha_mode, colorspace) перечитывает её из
+    # packed-данных. Сверяем с массивом и ресайзим прямо перед записью —
+    # иначе foreach_set падает с «expected N, got M».
+    if arr.ndim == 3 and len(image.pixels) != flat.size:
+        h, w = arr.shape[:2]
+        image.scale(w, h)
     image.pixels.foreach_set(flat)
     if pack:
         try:

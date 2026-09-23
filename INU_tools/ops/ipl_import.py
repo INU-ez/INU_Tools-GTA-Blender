@@ -81,6 +81,10 @@ def import_ipl(filepath: str, context=None) -> list:
             inu.model_id = inst.model_id
             inu.interior_id = inst.interior
             inu.lod_index = inst.lod_index
+            # Link the model to this row (Add/Del/Sync find it by content).
+            if not is_lod:
+                from .map_link import stamp_ipl, norm
+                stamp_ipl(obj, norm(filepath), inst, inst.lod_index)
 
             # Move paired COL to same position (COL not listed in IPL)
             if not is_lod:

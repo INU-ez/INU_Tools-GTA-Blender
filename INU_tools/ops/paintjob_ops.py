@@ -29,8 +29,8 @@ def _material_main_image_name(mat):
                 continue
         except Exception:
             pass
-        import os
-        return os.path.splitext(node.image.name)[0]
+        from ..core.tex_name import clean_texture_name
+        return clean_texture_name(node.image.name)
     return None
 
 

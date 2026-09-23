@@ -42,6 +42,8 @@
 - [Particle Effects (effects.fxp)](#particle-effects-effectsfxp)
 - [UV Tools](#uv-tools)
 - [Check](#check)
+  - [Validate Scene](#validate-scene)
+  - [Export audits — "Game will crash"](#export-audits--game-will-crash)
   - [File Scanner](#file-scanner)
   - [Lint Profiles](#lint-profiles)
   - [Map Analyzer (Game Validator)](#map-analyzer-game-validator)
@@ -52,6 +54,7 @@
 - [Cutscene Cameras (.dat)](#cutscene-cameras-dat)
 - [Handsign (ghands.ifp)](#handsign-ghandsifp)
 - [Fragment Mesh](#fragment-mesh)
+- [Split into Chunks](#split-into-chunks)
 - [Water IO](#water-io)
 - [Map zones (map.zon)](#map-zones-mapzon)
 - [Path IO](#path-io)
@@ -220,6 +223,15 @@ When the scene targets III/VC but objects still carry SA-only features, **Valida
 **Export includes:** geometry, materials, vertex colors (Day/Night), UV maps, normals, 2DFX effects, BinMesh PLG.
 
 **Auto TXD:** when importing DFF, automatically imports .txd from the same directory if found.
+
+**Textures from files (2.4.0):** whatever the TXD did not cover (or everything, when there is no
+`.txd` next to the model) is pulled in as ordinary images — `png / jpg / tga / bmp / dds / tiff /
+webp` — by looking for a file named after the texture in the model's folder **and its subfolders**.
+Drag-drop goes through the same path. The report says how many textures came from there:
+`textures from files: N`.
+
+**Platform (2.4.0):** a **PC / Mobile** selector in the import panel. Mobile DFFs are recognised from
+the data itself; the selector sets the default for later exports and hints.
 
 **Import 2DFX:** a toggle on DFF import (single Import, the Import-All file browser, and drag-drop). Creates the 2DFX effect empties baked into the DFF — lamps/coronas, particles, ped attractors, sun glare, signs, etc. On by default; turn it off to import the model geometry without its effects.
 
@@ -771,30 +783,79 @@ The alarming "nothing matched" warning fires **only** when truly zero objects li
 
 > 💡 **Example — sync Los Santos after Map Import:** you imported the LS district and have ~2000 fresh objects with no IPL links yet. Open **Sync multiple IPL** → **Add** → Ctrl-select `LAn.ipl`, `LAs.ipl`, `LAe.ipl`, `LAw.ipl`, `LAhills.ipl` → the row now reads `Sync multiple IPL (5)`. Deselect everything (Sync then sweeps every mesh in the scene) → **Sync**. Each object is matched against whichever of the 5 files holds its placement, and you get `Sync IPL: updated 0, new links 1980, skipped 20 (5 IPL)` — the 20 skips are props you added by hand that aren't in any vanilla IPL.
 
-### IDE/IPL routing on Add + LOD indexing
+### Adding and removing in IDE/IPL: how the sync works
 
-**Panel:** View3D → Sidebar (N) → GTA Tools → IDE / IPL / IMG → IDE / IPL boxes → **Add**
+**Panel:** View3D → Sidebar (N) → GTA Tools → IDE / IPL / IMG → IDE / IPL boxes → **Add** / **Del**, plus the selected-model box (**Add** ↑, 🗑, ▶)
 
-**Add** (`gtatools.upsert_ide` / `gtatools.upsert_ipl`) writes to the file you **pick** in the IDE/IPL box — the explicit pick always wins:
+**Where Add writes.** When a file is picked in the box, every selected model is written **there**. If a model used to be in another file, you get a warning that its row is still in the old file. With the box empty, each model goes to its own file (the one it was imported from or last added to). **Del** removes from the picked file. 🗑 in the model box removes from the model's own file.
 
-- **A path is picked** → every selected object is written to **that** file. If an object was previously linked to a *different* file, it is still written to the picked one and you get a warning (*N objects were linked to another IPL — check the old file for duplicates*). This is what keeps a DFF and its `LOD…` companion in the **same** file, which the LOD cross-reference needs (see below) — splitting them across files silently breaks LOD.
-- **The box is empty** → each object falls back to **its own** remembered file (the one it was imported from or last added to), grouped one write per file. Use this to update objects spread across several districts in one click.
+**How the addon finds a model's row.** A model remembers what it last wrote: file, Model ID, name, position and rotation. No line numbers are stored anywhere. Before every write the file is read again and the row is looked up by that content. So a repeated **Add** updates the row in place instead of adding a duplicate. Edits in another tool, deleted rows and reordering break nothing. A row nudged by hand (up to 2 m) is found nearby. A deleted row is added again, and the report warns about it.
 
-The active object's box shows where it lives — **In IDE ({file})** / **In IPL ({file})** with a checkmark, or **…params / coordinates differ** when it has drifted from what was last written (re-**Add** to push the new state).
+**The LOD always travels with its model.** You don't need to select the `LOD…` mesh. The partner comes from the **LOD partner** field (`inu.lod_object`), or, when that is empty, from the scene mesh with the same base name (`LODhouse` for `house`). Each placement gets **its own** LOD at its own spot. A copy (Shift+D) adds a new model row and a new LOD row and leaves the original's rows alone. `lod_index` is recomputed for every row in the file on every write. It stays correct for all neighbours after **Del**, and the removed model's LOD goes with it unless another model still uses it. A LOD with no Model ID takes **ID = DFF + 1**.
 
-**LOD `lod_index` is written automatically.** The SA IPL `lod_index` field is the **line number** of the LOD's `inst` row in the *same* file (`-1` = no LOD). When you select a DFF together with its `LOD…` companion and Add to IPL, the addon upserts the LOD row first, then stores that row's line number in the DFF's `lod_index` — the cross-reference that makes the LOD actually swap in-game. The same linking now runs in the **INU Export** IPL-upsert path (it previously wrote `-1`, so LODs never swapped). Deleting a middle row via **Remove** renumbers everyone else's `lod_index` so the references stay valid.
+**Copies.** A copy (Shift+D / Ctrl+D) inherits the original's link. The addon tells them apart by the object name remembered at write time. The copy becomes a new placement, and its status reads **Copy — will be added as a new instance**.
 
-**LOD partner is pulled in automatically.** You don't have to select the `LOD…` mesh by hand: when a DFF carries a LOD partner (its `inu.lod_object`), Add to IPL pulls that partner into the write even if only the DFF is selected. A LOD with no Model ID is auto-assigned **DFF ID + 1**, and the LOD row's coordinates/rotation are copied from its DFF sibling — so LODs are placed at the model's real position instead of landing at `0, 0, 0`. The add report spells out the split, e.g. `IPL: updated 0, added 2 (DFF 1, LOD 1)`.
+**IDE: someone else's row is never overwritten.** An IDE row is updated only when that ID in the file holds the same model (same name, or this model's previous name). These cases are a **conflict**: the model isn't written and the report says why:
+- the ID is taken by a different model;
+- the ID is used in another section (`anim`, `cars`…);
+- the model's name is already in the file under another ID.
 
-**Setting the LOD partner — "Find LOD".** Everything above rides on the `inu.lod_object` link (shown as the **LOD** row in the Selected-model box, with an editable **LOD ID** field next to it). Set it by hand, or click **Find LOD** (`gtatools.auto_find_lod`) beside the row: it scans the scene for the selected models' LOD twins by base name (same LOD detection as above) and fills `inu.lod_object` for each — the report reads `LOD found: N, not found: M`. LOD meshes themselves are skipped as sources.
+Changing a model's Model ID updates its own row with the new ID. `tobj` rows keep their hours, multi-mesh rows keep their extra draw distances.
 
-> 💡 **Example — update two buildings in their own files:** `bank01` came from `LAn.ipl`, `tower05` from `LAs.ipl`. Nudge both, leave the IPL box **empty**, select both → **Add**. Each is written back to its origin file (`IPL: updated 2, added 0`). Pick a specific IPL instead and both would go there — with a duplicate warning for the one that lived elsewhere.
+**Summary before writing — only when there's a problem.** A normal Add or Del writes straight away. If there is a conflict, a model without a Model ID, a LOD without its model or a lost row, a dialog lists them first. Press **OK** and everything else is written.
+
+**File safety.**
+- Only the needed lines change. Comments, blank lines, other rows' number formatting, `path`/`mult` sections, line endings and a BOM stay as they were.
+- The file is written through a temp file, so an interrupted write can't corrupt it.
+- The first write of a file in a session leaves `<file>.bak` with its previous state.
+- Binary IPLs from an IMG (`bnry`) are not edited, and the report says so.
+
+**Import links right away.** Map import, IMG import and IPL import link each model to its row in the text IPL. **Add** and **Del** work straight after an import, no **Check** needed.
+
+**Check / Update from IPL / ▶.**
+- **Check** moves nothing. It drops the link of a model whose row is gone from the file. An unlinked model is recognised by a row of its model nearby (0.5 m) or by the only free row of that model.
+- **Update from IPL** moves models to the positions in the file.
+- **▶** puts the selected model back at its IPL coordinates.
+
+**Setting the LOD partner — "Find LOD".** Press **Find LOD** (`gtatools.auto_find_lod`) next to the **LOD** row in the model box. It finds the LOD twins of the selected models by base name and fills `inu.lod_object`. The report reads `LOD found: N, not found: M`. If a LOD's name doesn't match the model's base name, set the partner by hand.
+
+> 💡 **Example — a copy of a house with its LOD:** `house` (ID 3500) and `LODhouse` (ID 3501) are already in `mymap.ipl`. Shift+D on `house`, move the copy, select it and press **Add**. The result is `IPL: added 1, LOD +1 ~0`. The file gets two new rows: the copy and its own LOD at its spot. The original's rows are untouched.
+
+> 💡 **Example — update two buildings in their own files:** `bank01` came from `LAn.ipl`, `tower05` from `LAs.ipl`. Move both, select them and press **Add** ↑ in the model box, or **Add** with the IPL box empty. Each building is written, with its LOD, to its own file.
 
 ### Inline path pickers for IDE / IPL / IMG (2.1.0)
 
 **Panel:** View3D → Sidebar (N) → GTA Tools → IDE / IPL / IMG → IDE / IPL / IMG box headers
 
 Each of the three boxes carries a 📁 **file-browser button** in its header. Click it to pick the target file; the box then shows the chosen path as a short, read-only label (last two path segments, e.g. `…/data/maps/LA/LAn.ipl`) under the header. If nothing is set yet, the label reads **File not selected**. The label itself is not editable inline — to change a path, click 📁 again. The same picker serves all three boxes; the file dialog filters to `*.ipl / *.ide / *.img`.
+
+### Apply to Selected — batch-edit IDE properties (2.4.0)
+
+**Panel:** View3D → Sidebar (N) → GTA Tools → IDE / IPL / IMG → selected-model box →
+**Apply to selected (N)** button (appears once more than one model is selected)
+
+Opens a dialog that writes IDE properties to every selected mesh at once. Each field has **its own
+checkbox** on the left: only the ticked fields are overwritten, everything else is left as it is.
+
+| Field | Notes |
+|---|---|
+| **Draw Dist** | Draw distance (ticked by default). |
+| **LOD Dist** | LOD distance. |
+| **Model ID** | With **Sequential (+1)** the first model gets the given ID and each next one +1. Objects are ordered by name (not by selection order, which follows Blender's internal scene order). |
+| **TXD** | Texture dictionary name. |
+| **Interior** | Interior number. |
+| **IDE Flags** | Numeric flag value. |
+| **COL Library** | `.col` library name. |
+
+Source: [`ops/col_surface_ops.py`](INU_tools/ops/col_surface_ops.py) → `gtatools.batch_set_distance`.
+
+### Opening IDE / IPL in an editor (2.4.0)
+
+The 📄 button next to a file path opens it in the **OS text editor** (like double-clicking it in the
+file manager). Turn on **Open IPL/IDE in Blender's editor** in the addon preferences
+(*Edit → Preferences → Add-ons → INU Tools*) and the file is loaded into Blender's own text editor
+instead — into an open TEXT_EDITOR area, or a new window when there is none. Handy when you do not
+want to leave Blender over a single line.
 
 ### Region filter pulls streamed child IPLs (2.1.0)
 
@@ -997,6 +1058,8 @@ Type a value → press Enter → the brightness offset is applied **immediately*
 | Day + / Night + | Create individual color attribute |
 | Day - / Night - | Remove individual color attribute |
 | Toggle Preview | Enable/disable Day/Night mix visualization in viewport |
+| ⧉ (under Preview) | **Copy the alpha** of the active attribute into the other one (Day↔Night), keeping its RGB. With `Day` active the alpha goes to `Night` and vice versa; if the target attribute does not exist yet it is created as a full copy of the active one |
+| 🗑 (next to Day/Night) | **Clear vertex alpha** on the active attribute: the alpha channel is filled with 1.0 and the RGB kept, so the model exports fully opaque. Applies to every selected mesh |
 | Add LightMap | Load lightmap texture and connect to UV2 (Multiply blend) |
 | 👁 LightMap | Toggle lightmap visibility (mute/unmute) |
 | ➖ LightMap | Remove lightmap nodes from materials |
@@ -1696,6 +1759,48 @@ Two ways to normalise UV island scale. Fields: **Texture** (Texture size, 128…
 
 > **Duplicate cleanup:** on IDE and IPL export, Blender duplicate suffixes (.001, .002, etc.) are automatically stripped from model names.
 
+### Validate Scene
+
+**Validate** runs the scene through a set of rules and collects the findings into a list. The list is
+**grouped by model**: one row per object — a disclosure triangle, an icon for its type (model / LOD /
+COL / material / action), the name and a problem count. Click a row to expand its problems; the arrow
+button jumps to the object (and reveals it in the Outliner). While everything is collapsed you get the
+overview: which models have problems and how many.
+
+Checked: duplicate `model_id`s, orphan LOD/COL with no model of their own, unlinked 2DFX, empty and
+oversized meshes, materials without a texture, unnormalised quaternions in actions, inconsistent
+suffixes/prefixes, non-uniform scale, `_ok` / `_dam` pairs, paintjob materials, UV animation together
+with night colours, extra colour attributes, Light Beam ASI, plus the cross-game warnings (see
+[Validate Scene — cross-game warnings](#validate-scene--cross-game-warnings)).
+
+New in 2.4.0:
+- **Loose geometry** — vertices and edges with no faces (what "Check Vertex" selects): such geometry
+  exports as garbage or silently disappears.
+- **Non-Latin name** — Cyrillic and other non-ASCII characters in an object name. GTA SA accepts only
+  Latin letters, digits and underscores in model names; anything else is never found in game.
+- A COL is no longer reported as a duplicate of its own model: collisions have no `model_id` of their
+  own, they are bound to the DFF by name.
+
+### Export audits — "Game will crash"
+
+Since 2.4.0 every exporter checks what it is about to write against what `gta_sa.exe` actually reads
+(the rules were taken from the engine's decompilation). DFF (map and skin), COL, TXD, IFP, IDE, IPL,
+`water.dat`, `timecyc.dat`, zones, `plants.dat` and `effects.fxp` all go through it.
+
+Findings reach the operator report at two levels:
+
+| Level | Text | What it means |
+|---|---|---|
+| **ERROR** | `Game will crash — …` | The engine dereferences something that is not there and faults: missing wheel dummies on a vehicle, a skin with no HAnim node table, out-of-range indices, a clump with no atomics, a collision with offsets past its own record. |
+| **WARNING** | `Model: …`, `Skin: …`, `Vehicle dummy: …` | The file loads, but something is lost or differs from vanilla: a truncated name, a dropped 2DFX entry of an unknown type, an over-long data line. |
+
+Each line names the geometry, bone, effect or file row in question, so there is nothing to guess.
+Full details of every finding are printed to the System Console.
+
+> The file is still **written** (except when the export is stopped by a real error — a mesh above
+> 65 535 vertices, say, or a texture name longer than 31 characters). The report tells you how the
+> game will behave; it is not a refusal to work.
+
 ### Cleanup Materials — details
 
 The button finds datablocks with `.001`, `.002`, etc. suffix and merges them with the original in a single pass — materials and textures (images) are processed separately.
@@ -1920,13 +2025,35 @@ The stack reads like Photoshop: the **bottom** layer is the base, layers above b
 |---|---|---|
 | **AO** | Multiply | Ambient occlusion. Noisy → uses Samples. |
 | **Diffuse** | Normal | Flat albedo (base color, no lighting). |
-| **Diffuse Lit** | Normal | Albedo lit by an internal 5-sun dome rig. |
-| **Shadow** | Multiply | Cast/contact shadow from a single internal key sun (no albedo). |
+| **Diffuse Lit** | Normal | Albedo lit by the **scene's own lights** ("Scene light" toggle ON by default), or by an internal 5-sun dome rig when the toggle is off. |
+| **Shadow** | Multiply | Cast/contact shadow (no albedo) from the **scene's own lights** by default, or from a single internal key sun when "Scene light" is off. |
 | **Bevel** | Overlay | Edge-wear mask from a Bevel-normal trick (lighter on edges). |
 | **Normal Map** | Normal | Tangent-space normals. Added with Desaturate on. |
 | **Emission** | Normal | The material's own emissive output. |
 | **Emission Light (GI)** | Add | Indirect bounce light *from* emissive faces onto neighbours. Noisy → uses Samples. |
 | **LightMap** | Multiply | Full GI from the **real scene light** (lamps, sun, world + bounce). Unlike Shadow / Diffuse Lit it does **not** use an internal rig and does **not** isolate the scene — it bakes your actual lights. Very noisy → high Samples + optional OIDN denoise. See below. |
+| **Dirt (Cavity)** | Multiply | Dirt in the cavities: the mask darkens wherever the surface is concave. |
+| **Edge Wear** | Add | Worn edges: convex corners get lighter (chipped paint, scuffs). |
+| **Curvature** | Overlay | Grey curvature map: 0.5 is flat, cavities darker, ridges lighter. |
+| **Height** | Multiply | Height gradient over the object's world Z: bright at the bottom (dirt and damp near the ground). |
+| **Thickness** | Multiply | Thickness (inside-AO): thick parts dark, thin parts light. Noisy → uses Samples. |
+| **Grunge** | Multiply | Procedural grunge: 3D noise in object space, seamless across the surface. |
+| **Paint** | Multiply | An empty white layer for hand-painting — never baked, see the **Paint** button below. |
+
+The six Dirt / Edge Wear / Curvature / Height / Thickness / Grunge masks are derived from the
+**geometry**, with no lighting: the object's materials are swapped for an EMIT material for the
+duration of the bake, the same trick Bevel uses. Scene lights, lamps and the HDRI do not affect them.
+
+### Paint — editing a map by hand
+
+The **Paint** button on a layer row switches Blender to **Texture Paint** and makes that layer's
+image the paint slot while the live composite stays on screen, so you see each stroke land in the
+final texture (WYSIWYG). Press **Tab** to leave.
+
+- Available on any **already baked** layer and on the **Paint** layer.
+- The Paint layer starts white (with the Multiply blend, white changes nothing): paint dark and you
+  add dirt and shading on top of what was baked.
+- The brush projects through the **bake UV**; the active UV layer is switched for you.
 
 ### LightMap — GI from the real scene light
 
@@ -2264,6 +2391,29 @@ Options in the dialog: **X / Y step** (grid step) or **Shard count / Seed** (sca
 
 ---
 
+## Split into Chunks
+
+**Panel:** View3D → Sidebar (N) → GTA Tools → **Check** → **Split into chunks** button (`gtatools.chunk_map`)
+
+Cut a large map mesh into square pieces along a **global XY grid**, turning one huge model into a
+set of objects you can export as separate DFFs, each with its own COL and its own IPL row.
+
+| Option | What it does |
+|---|---|
+| **Chunk size (m)** | Side of the square. The grid is global (X = k·size), so neighbouring objects are cut along the same lines. |
+| **Cut mode** | **Along grid lines** — faces are physically cut exactly on the cell borders. **By existing geometry** — nothing is cut, a face goes to the chunk its centre falls into. |
+| **Separate materials** | Give every chunk its own copies of the materials (needed if you will paint chunks individually). |
+| **Center origin** | Put each chunk's origin at its geometric centre (otherwise the shared origin is kept). |
+| **Hide original** | Hide the source mesh in the viewport and render after slicing. |
+
+Chunks are full copies of the object with the "foreign" faces deleted, so UVs (both sets), vertex
+colours, normals and materials survive as-is. Names follow `<Base>_Chunk_X_Y`.
+
+Source: [`ops/chunk_ops.py`](INU_tools/ops/chunk_ops.py) → `GTATOOLS_OT_chunk_map`. Adapted from
+[ChunkTools](https://github.com/milevskiy27/ChunkTools) (milevskiy27, Apache-2.0).
+
+---
+
 ## Water IO
 
 **Panel:** View3D → Sidebar (N) → GTA Tools → Water
@@ -2453,6 +2603,14 @@ A timecyc file holds one block per weather (23 in vanilla SA) and exactly
 (22:00 → 00:00 wraps through midnight), and so does the panel — the hour
 slider is continuous, but you always **edit a slot**, never an arbitrary hour.
 
+**GTA III and Vice City** go through the same import: the game is detected
+from the file's shape (24 rows per weather → III at 40 numbers per row, VC at
+52), the slots become **24 — one per hour**, and the panel only shows that
+game's fields: III has no object ambient, water or PostFX but has top clouds
+and a **Trails** colour (blur, RGBA); VC has two ambient pairs (normal and
+with Trails on), top clouds, Trails RGB and water. Export writes the file in
+its native format regardless of the "Game" tab.
+
 | Button | Description |
 |--------|-------------|
 | Import | Load a `timecyc.dat`, apply it to the scene and switch viewports to Material Preview |
@@ -2460,7 +2618,7 @@ slider is continuous, but you always **edit a slot**, never an arbitrary hour.
 | **Time-cycle on/off** | Master toggle at the top of the panel: **ON** — apply the whole cycle to the scene (light, fog, prelight game look on models) and enable live preview; **OFF** — full reset (materials back to PBR, world and compositor clean) |
 | Revert slot | Return the current slot to the values on disk |
 | Re-read file | Reload from disk, dropping all unsaved edits |
-| To all slots of the weather | Copy the current slot into all 8 slots of this weather |
+| To all slots of the weather | Copy the current slot into every slot of this weather (8 for SA, 24 for III/VC) |
 
 **Live preview is always on.** While the cycle is enabled, any change to the hour/weather/slot fields rebuilds the scene immediately — there is no separate "Live preview" or "Apply" button any more, and the viewport is switched to Material Preview automatically. The hour slider follows the **slot**: drag the hour to 21:00 → "Edit slot" switches to the nearest slot (20:00) and shows its fields below; picking a slot in the dropdown conversely sets the hour to that slot's time.
 
@@ -2577,6 +2735,8 @@ Generate Lua code for MTA SA lightmap scripts. The MTA script replaces shaders a
 | Button | Operator | Description |
 |--------|----------|-------------|
 | Load Lightmap | `gtatools.load_lightmap` | Load lightmap image for preview |
+| **LightMap from folder…** | `gtatools.lightmap_folder` | Hand out lightmaps to a batch of models from one folder: `<name>_d` is the day map, `<name>_n` the night one (matched against the object or mesh name) |
+| **Day** / **Night** | `gtatools.lightmap_daynight` | Switch the display between the day and night maps. With nothing selected it switches the whole scene |
 | Remove Lightmap | `gtatools.remove_lightmap` | Remove loaded lightmap |
 | Generate | `gtatools.lightmap_generate` | Generate Lua code from object textures |
 | Copy | `gtatools.lightmap_copy` | Copy result to clipboard |
@@ -2804,9 +2964,14 @@ Two more conditions from the tutorials: the animated **material must not be shar
 
 Marks a mesh as destructible by the GTA SA physics engine via chunk `0x253F2FD`.
 
-**Location:** Properties → Object → *GTA SA: IDE / IPL* panel → block **Breakable** (checkbox) + **Break Force**.
+**Location:** Properties → Object → *GTA SA: IDE / IPL* panel → **Breakable** checkbox.
 
-**What is written:** a 32-byte breakable chunk on the geometry extension with vertex/face/material/UV buffer counts derived from the exported mesh, plus the break force. Defaults mirror what Kams's `brakableobjects.ms` writes.
+**What is written (fixed in 2.4.0):** after the magic word the engine (`BreakableStreamRead`) expects
+a **full copy of the mesh** — vertices, UVs, colours, triangles, materials and texture names — not a
+record of buffer sizes. The addon used to write a 32-byte chunk, which desynchronised the RW stream
+so the model never loaded at all. The copy is now built from the geometry itself (one piece per
+material), and the chunk has no force / offset / buffer fields — the engine format has none either,
+so those fields were removed from the panel. The checkbox is all the exporter reads.
 
 Source: [`core/dff.py`](INU_tools/core/dff.py) → `BreakableData`, `CHUNK_BREAKABLE`; [`ops/dff_export.py`](INU_tools/ops/dff_export.py) → breakable block inside `_process_mesh`.
 

@@ -12,6 +12,8 @@
 # The actual UI lives in ui/panels.py (panel that draws the descendant
 # tree of the active object plus the operator buttons).
 
+import re
+
 import bpy
 from bpy.props import StringProperty
 
@@ -19,23 +21,48 @@ from .. import T
 
 
 # ── Vanilla SA name templates ──────────────────────────────────
-# Required = engine reads this exact name; missing = broken behavior.
-# Optional = nice to have, no engine error if absent.
+# These names are not folklore: they were read out of gta_sa.exe 1.0 US, from
+# the RwObjectNameIdAssocation tables that CClumpModelInfo::SetFrameIds walks
+# at load time. That is the one moment the engine cares what a frame is
+# called — it matches by name (with _stricmp, so casing is free), stamps a
+# hierarchy id onto the frame, and from then on everything works by id.
+#
+# FATAL vs the rest is measured, not guessed: CVehicleModelInfo::GetWheelPosn
+# dereferences whatever GetFrameFromId hands back with no null check on
+# either of its branches, so a missing wheel dummy faults the game rather
+# than degrading. Everything else merely goes missing.
 
-VEHICLE_REQUIRED = {
-    'chassis_dummy':   "верхний dummy всей машины",
+VEHICLE_FATAL = {
     'wheel_lf_dummy':  "ось переднего левого колеса",
     'wheel_rf_dummy':  "ось переднего правого колеса",
     'wheel_lb_dummy':  "ось заднего левого колеса",
     'wheel_rb_dummy':  "ось заднего правого колеса",
 }
 
+VEHICLE_REQUIRED = {
+    **VEHICLE_FATAL,
+    'chassis_dummy': "верхний dummy всей машины",
+}
+
 VEHICLE_OPTIONAL = {
-    'bonnet_dummy', 'boot_dummy',
-    'door_lf_dummy', 'door_rf_dummy', 'door_lb_dummy', 'door_rb_dummy',
-    'bumper_lf_dummy', 'bumper_rf_dummy',
+    # Rear doors are lr/rr in the engine's table, not lb/rb; bumpers are
+    # front/rear rather than left/right; the exhaust entry is exhaust_ok.
+    'chassis',
+    'wheel_lm_dummy', 'wheel_rm_dummy',        # six-wheelers only
+    'bonnet_dummy', 'boot_dummy', 'windscreen_dummy',
+    'door_lf_dummy', 'door_rf_dummy', 'door_lr_dummy', 'door_rr_dummy',
+    'bump_front_dummy', 'bump_rear_dummy',
     'wing_lf_dummy', 'wing_rf_dummy',
-    'exhaust_dummy', 'misc_a', 'misc_b', 'misc_c',
+    'exhaust_ok',
+    'misc_a', 'misc_b', 'misc_c', 'misc_d', 'misc_e',
+}
+
+# Bikes and BMX use a different table altogether and never reach
+# GetWheelPosn — CBike has its own code — so none of this is fatal.
+BIKE_REQUIRED = {
+    'chassis_dummy': "верхний dummy байка",
+    'wheel_front':   "переднее колесо",
+    'wheel_rear':    "заднее колесо",
 }
 
 # Ped skeleton — these 31 names are matched verbatim by ped.ifp.
@@ -47,6 +74,59 @@ PED_REQUIRED = {
     'R Thigh', 'R Calf', 'R Foot', 'R Toe0',
     'Bip01',
 }
+
+
+# Blender's duplicate suffix. Frame names are written to the DFF as-is, so
+# "wheel_lf_dummy.001" reaches the engine with the suffix attached and never
+# matches — the model looks fine in Blender and crashes in game.
+_DUP_SUFFIX = re.compile(r"\.\d{3}$")
+
+
+def check_vehicle_names(names):
+    """Audit the frame names a vehicle DFF will carry.
+
+    *names* must be the names as they will be written to the file, not
+    Blender object names, so that a ``.001`` suffix is judged the way the
+    engine will see it.
+
+    Returns ``(fatal, warnings)`` — two lists of ready-to-show strings.
+    Empty *fatal* means the game will at least not crash on wheel lookup.
+    """
+    lower = {str(n).lower() for n in names}
+
+    if 'wheel_front' in lower or 'wheel_rear' in lower:
+        missing = [f"{name} — {T(desc)}"
+                   for name, desc in BIKE_REQUIRED.items()
+                   if name not in lower]
+        return [], missing
+
+    fatal, warnings = [], []
+
+    for name, desc in VEHICLE_FATAL.items():
+        if name in lower:
+            continue
+        near = next((k for k in lower if _DUP_SUFFIX.sub("", k) == name), None)
+        if near:
+            fatal.append(f"{name} — "
+                         + T("есть как «{0}», суффикс уйдёт в DFF").format(near))
+        else:
+            fatal.append(f"{name} — {T(desc)}")
+
+    if 'chassis_dummy' not in lower:
+        warnings.append(
+            f"chassis_dummy — {T(VEHICLE_REQUIRED['chassis_dummy'])}")
+
+    for name in sorted(lower):
+        # Ровно `wheel` — ванильный меш колеса (admiral, landstal, hydra,
+        # linerun, monster…): игра клонирует его на wheel_*_dummy. Не дамми,
+        # сторона ему не положена.
+        if name == 'wheel':
+            continue
+        if 'wheel' in name and not any(s in name for s in
+                                       ('_lf', '_rf', '_lb', '_rb', '_lm', '_rm')):
+            warnings.append(f"{name} — {T('wheel без _lf/_rf/_lb/_rb')}")
+
+    return fatal, warnings
 
 
 # ── Helpers ────────────────────────────────────────────────────
@@ -259,20 +339,12 @@ class GTATOOLS_OT_frame_validate(bpy.types.Operator):
         names = {o.name for o in descendants}
         names_lower = {n.lower() for n in names}
 
+        fatal = []
         if self.template == 'VEHICLE':
-            required = VEHICLE_REQUIRED
-            missing = [
-                f"{name} — {desc}"
-                for name, desc in required.items()
-                if name not in names_lower
-            ]
-            # Suspicious wheel names (probably typos)
-            suspicious = []
-            for n in names_lower:
-                if 'wheel' in n:
-                    if not any(s in n for s in
-                               ('_lf', '_rf', '_lb', '_rb')):
-                        suspicious.append(f"{n} — wheel без _lf/_rf/_lb/_rb")
+            # Bikes, wheel typos and Blender's .001 suffix are all handled by
+            # the shared audit, so the export path and this button agree.
+            fatal, suspicious = check_vehicle_names(names_lower)
+            missing = []
             label = "Vehicle"
         else:
             required = PED_REQUIRED
@@ -288,6 +360,11 @@ class GTATOOLS_OT_frame_validate(bpy.types.Operator):
         # Always log — easier to copy-paste from console.
         print(f"[frame_validate {label}] root={root.name}, "
               f"descendants={len(descendants)}")
+        if fatal:
+            print(f"  ИГРА УПАДЁТ ({len(fatal)}) — GetWheelPosn разыменует "
+                  f"фрейм без проверки на NULL:")
+            for f in fatal:
+                print(f"    ✗ {f}")
         if missing:
             print(f"  Missing required ({len(missing)}):")
             for m in missing:
@@ -296,10 +373,15 @@ class GTATOOLS_OT_frame_validate(bpy.types.Operator):
             print(f"  Suspicious ({len(suspicious)}):")
             for s in suspicious:
                 print(f"    ? {s}")
-        if not missing and not suspicious:
+        if not fatal and not missing and not suspicious:
             print("  OK — все обязательные имена на месте")
 
-        if missing or suspicious:
+        if fatal:
+            self.report({'ERROR'},
+                        f"{label}: {T('игра упадёт')} — "
+                        f"{', '.join(f.split(' — ')[0] for f in fatal)} "
+                        f"({T('см. System Console')})")
+        elif missing or suspicious:
             self.report({'WARNING'},
                         f"{label}: missing={len(missing)}, "
                         f"suspicious={len(suspicious)} "

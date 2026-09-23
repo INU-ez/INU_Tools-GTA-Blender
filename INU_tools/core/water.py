@@ -93,10 +93,14 @@ def read_water(filepath: str) -> WaterFile:
     with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
         for raw_line in f:
             line = raw_line.strip()
-            if not line or line.startswith('#') or line == 'processed':
+            # Engine (0x6EAE80): empty lines and lines whose first
+            # non-blank char is ';', '*' or 'p' ("processed") are skipped;
+            # '#' kept for files written by other tools.
+            if not line or line[0] in ';*p#':
                 continue
 
-            parts = line.split()
+            # LoadLine turns every ',' into a space before sscanf.
+            parts = line.replace(',', ' ').split()
             try:
                 values = [float(p) for p in parts]
             except ValueError:
@@ -116,8 +120,10 @@ def read_water(filepath: str) -> WaterFile:
                     poly.vertices.append(v)
                 poly.flag = int(values[21])
 
-            elif len(parts) == 29:
-                # Quad (4 vertices + flag)
+            elif len(parts) in (28, 29):
+                # Quad (4 vertices + flag). Engine (0x6EAE80): sscanf of
+                # 29 floats == 28 is also a quad, with flag 1 — the whole
+                # vanilla water1.dat is written that way.
                 for i in range(4):
                     base = i * 7
                     v = WaterVertex(
@@ -126,7 +132,7 @@ def read_water(filepath: str) -> WaterFile:
                         speed_z=values[base + 5], wave_height=values[base + 6],
                     )
                     poly.vertices.append(v)
-                poly.flag = int(values[28])
+                poly.flag = int(values[28]) if len(parts) == 29 else 1
 
             else:
                 continue
@@ -138,23 +144,31 @@ def read_water(filepath: str) -> WaterFile:
 
 # ── Writing ─────────────────────────────────────────────────────────
 
+def format_water_line(poly: WaterPolygon) -> str:
+    """One water.dat record in the vanilla layout.
+
+    X/Y are written with one decimal — the engine ``_ftol``s them to
+    integers (AddWaterLevelVertex 0x6E5A40), so nothing past the point
+    survives anyway. The five per-vertex parameters (z, flow x/y, big /
+    small waves) are written with FIVE decimals exactly like vanilla
+    ``data/water.dat`` (``0.05100``, ``0.98244``, ``0.00528``): the old
+    ``%.1f`` doubled wave heights (0.051 → 0.1) and zeroed flow speeds
+    (0.00528 → 0.0) on every re-export (W4). Vertices are separated by
+    four spaces, the flag by two — byte-identical to vanilla.
+    """
+    parts = []
+    for v in poly.vertices:
+        parts.append(
+            f"{v.x:.1f} {v.y:.1f} {v.z:.5f} "
+            f"{v.speed_x:.5f} {v.speed_y:.5f} "
+            f"{v.speed_z:.5f} {v.wave_height:.5f}")
+    return '    '.join(parts) + f"  {poly.flag}"
+
+
 def write_water(filepath: str, water: WaterFile) -> int:
     """Write water polygons to a water.dat file. Returns polygon count."""
     with open(filepath, 'w', encoding='utf-8', newline='\n') as f:
         f.write('processed\n')
-
         for poly in water.polygons:
-            parts = []
-            for v in poly.vertices:
-                parts.extend([
-                    f"{v.x:.1f}", f"{v.y:.1f}", f"{v.z:.1f}",
-                    f"{v.speed_x:.1f}", f"{v.speed_y:.1f}",
-                    f"{v.speed_z:.1f}", f"{v.wave_height:.1f}",
-                ])
-            # Join with spaces, add flag at end
-            line = '    '.join(
-                ' '.join(parts[i * 7:(i + 1) * 7]) for i in range(len(poly.vertices))
-            )
-            f.write(f"{line}  {poly.flag}\n")
-
+            f.write(format_water_line(poly) + '\n')
     return len(water.polygons)

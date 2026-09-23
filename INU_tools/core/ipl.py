@@ -231,7 +231,14 @@ class IplTcyc:
 
 @dataclass
 class IplZone:
-    """Map zone from IPL ``zone`` section (9 fields)."""
+    """Map zone from IPL ``zone`` section (10 fields).
+
+    ``info`` is the 10th column (GXT key / zone-info name). It is not
+    optional for SA: ``CFileLoader::LoadZone`` (0x5B4AB0) calls
+    ``CreateZone`` only when ``sscanf`` returns exactly 10, so a 9-field
+    line is silently dropped (DAT-27). Empty → written as ``UNUSED``
+    like the vanilla map zones.
+    """
     name: str = ""
     zone_type: int = 0
     x1: float = 0.0
@@ -241,6 +248,7 @@ class IplZone:
     y2: float = 0.0
     z2: float = 0.0
     level: int = 0
+    info: str = ""
 
 
 @dataclass
@@ -260,6 +268,18 @@ class IplFile:
 
 
 # ── Parsing helpers ───────────────────────────────────────────────────
+
+def _tokens(line: str) -> list:
+    """Split a data line the way the engine does.
+
+    ``CFileLoader::LoadLine`` (0x536F80) turns every ``,`` and every
+    byte < 0x20 (TAB, CR) into a space before ``sscanf`` sees the line,
+    so commas and whitespace are interchangeable separators and empty
+    fields (``a,,b`` / trailing commas) simply vanish. Splitting on
+    commas only rejected vanilla lines with tab-separated fields or a
+    trailing comma (W10)."""
+    return line.replace(',', ' ').split()
+
 
 def _p(parts: list, idx: int, conv=float, default=0):
     """Safe field access with conversion."""
@@ -291,7 +311,7 @@ def _parse_inst_line(line: str) -> Optional[IplInstance]:
     token[2] parses as an int (SA's interior) AND token[10] also parses
     as int (SA's lod_index). III's token[2] is pos_x (float).
     """
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     n = len(parts)
     if n < 11:
         return None
@@ -341,7 +361,7 @@ def _parse_inst_line(line: str) -> Optional[IplInstance]:
 
 
 def _parse_cull_line(line: str) -> Optional[IplCull]:
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     try:
         if len(parts) < 10:
             return None
@@ -365,7 +385,7 @@ def _parse_cull_line(line: str) -> Optional[IplCull]:
 
 
 def _parse_grge_line(line: str) -> Optional[IplGarage]:
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     try:
         if len(parts) < 11:
             return None
@@ -381,7 +401,7 @@ def _parse_grge_line(line: str) -> Optional[IplGarage]:
 
 
 def _parse_enex_line(line: str) -> Optional[IplEnex]:
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     try:
         if len(parts) < 14:
             return None
@@ -403,7 +423,7 @@ def _parse_enex_line(line: str) -> Optional[IplEnex]:
 
 
 def _parse_pick_line(line: str) -> Optional[IplPickup]:
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     try:
         if len(parts) < 4:
             return None
@@ -416,7 +436,7 @@ def _parse_pick_line(line: str) -> Optional[IplPickup]:
 
 
 def _parse_cars_line(line: str) -> Optional[IplCar]:
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     try:
         if len(parts) < 10:
             return None
@@ -433,7 +453,7 @@ def _parse_cars_line(line: str) -> Optional[IplCar]:
 
 
 def _parse_auzo_line(line: str) -> Optional[IplAuzo]:
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     try:
         if len(parts) < 7:
             return None
@@ -456,7 +476,7 @@ def _parse_auzo_line(line: str) -> Optional[IplAuzo]:
 
 
 def _parse_jump_line(line: str) -> Optional[IplJump]:
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     try:
         if len(parts) < 16:
             return None
@@ -478,7 +498,7 @@ def _parse_jump_line(line: str) -> Optional[IplJump]:
 
 
 def _parse_occl_line(line: str) -> Optional[IplOccl]:
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     try:
         if len(parts) < 7:
             return None
@@ -496,7 +516,7 @@ def _parse_occl_line(line: str) -> Optional[IplOccl]:
 
 
 def _parse_tcyc_line(line: str) -> Optional[IplTcyc]:
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     try:
         if len(parts) < 8:
             return None
@@ -514,7 +534,7 @@ def _parse_tcyc_line(line: str) -> Optional[IplTcyc]:
 
 
 def _parse_zone_line(line: str) -> Optional[IplZone]:
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     try:
         if len(parts) < 9:
             return None
@@ -524,6 +544,7 @@ def _parse_zone_line(line: str) -> Optional[IplZone]:
             x1=float(parts[2]), y1=float(parts[3]), z1=float(parts[4]),
             x2=float(parts[5]), y2=float(parts[6]), z2=float(parts[7]),
             level=int(parts[8]),
+            info=parts[9] if len(parts) > 9 else "",
         )
     except (ValueError, IndexError):
         return None
@@ -585,10 +606,16 @@ def _format_grge_line(g: IplGarage) -> str:
 
 
 def _format_enex_line(e: IplEnex) -> str:
+    # The name MUST be double-quoted: CFileLoader::LoadEntryExit
+    # (0x5B8030) reads it with %s and then strrchr(name, '"') — without
+    # a quote the pointer passed to CEntryExitManager::AddOne is NULL and
+    # the marker is stored with an EMPTY name, so enex pairs no longer
+    # link and scripts can't find it (W5). Vanilla writes "name".
+    name = e.name.strip().strip('"')
     return (f'{_ff(e.x1)}, {_ff(e.y1)}, {_ff(e.z1)}, {_ff(e.enter_angle)}, '
             f'{_ff(e.size_x)}, {_ff(e.size_y)}, {_ff(e.size_z)}, '
             f'{_ff(e.x2)}, {_ff(e.y2)}, {_ff(e.z2)}, {_ff(e.exit_angle)}, '
-            f'{e.target_interior}, {e.flags}, {e.name}, '
+            f'{e.target_interior}, {e.flags}, "{name}", '
             f'{e.sky}, {e.num_peds}, {e.time_on}, {e.time_off}')
 
 
@@ -635,10 +662,11 @@ def _format_tcyc_line(t: IplTcyc) -> str:
 
 
 def _format_zone_line(z: IplZone) -> str:
+    # Exactly 10 fields — SA drops anything else (see IplZone.info).
     return (f'{z.name}, {z.zone_type}, '
             f'{_ff(z.x1)}, {_ff(z.y1)}, {_ff(z.z1)}, '
             f'{_ff(z.x2)}, {_ff(z.y2)}, {_ff(z.z2)}, '
-            f'{z.level}')
+            f'{z.level}, {z.info or "UNUSED"}')
 
 
 # ── LOD detection ────────────────────────────────────────────────────
@@ -962,7 +990,12 @@ def write_ipl(filepath: str, ipl: IplFile, *, binary: bool = False,
             f.write(_format_cull_line(c) + '\n')
         f.write('end\n')
 
-        # path section — SA reads nodes from nodes*.dat, IPL path block stays empty
+        # path section — SA reads nodes from nodes*.dat, IPL path block stays
+        # empty. Note (W17): the reader drops any ``path`` lines it meets
+        # (vanilla paths.ipl carries 53 378 of them) and the writer always
+        # emits an empty block — neutral for SA (CPathFind::StoreNodeInfo*
+        # are ``ret`` stubs, DAT-17/19), data loss for III/VC-style files.
+        # ``#`` comments are dropped the same way.
         f.write('path\n')
         f.write('end\n')
 

@@ -72,18 +72,25 @@ def drop_cache():
 _COLOR_FIELDS = (
     ('amb',           'f_amb'),
     ('amb_obj',       'f_amb_obj'),
+    ('amb_bl',        'f_amb_bl'),         # VC
+    ('amb_obj_bl',    'f_amb_obj_bl'),     # VC
     ('dir',           'f_dir'),
     ('sky_top',       'f_sky_top'),
     ('sky_bot',       'f_sky_bot'),
     ('sun_core',      'f_sun_core'),
     ('sun_corona',    'f_sun_corona'),
     ('low_clouds',    'f_low_clouds'),
+    ('top_clouds',    'f_top_clouds'),     # III / VC
     ('bottom_clouds', 'f_bottom_clouds'),
+    ('blur',          'f_blur'),           # III (RGBA) / VC (RGB)
 )
 
-# (ключ, свойство цвета, свойство альфы, индекс альфы в значениях файла)
+# (ключ, свойство цвета, свойство альфы, индекс альфы в значениях файла).
+# Поле короче четырёх чисел (blur у VC) здесь пропускается — его RGB уже
+# залил проход по _COLOR_FIELDS.
 _ALPHA_FIELDS = (
     ('water',   'f_water',   'f_water_a',   3),   # RGBA — альфа последняя
+    ('blur',    'f_blur',    'f_blur_a',    3),   # III: RGBA
     ('postfx1', 'f_postfx1', 'f_postfx1_a', 0),   # ARGB — альфа первая
     ('postfx2', 'f_postfx2', 'f_postfx2_a', 0),
 )
@@ -151,17 +158,34 @@ def sync_weather_list(props, cyc):
         props.weather_name = names[0] if names else ""
 
 
+def slot_prop_name(cyc):
+    """Какое из двух свойств-срезов относится к файлу: 8 срезов SA живут
+    в ``slot``, 24 почасовых III/VC — в ``slot_hourly``."""
+    return 'slot_hourly' if cyc is not None and len(cyc.slot_hours) == 24 else 'slot'
+
+
+def slot_index(props, cyc):
+    try:
+        return int(getattr(props, slot_prop_name(cyc)))
+    except (ValueError, TypeError):
+        return 0
+
+
+def set_slot_index(props, cyc, idx):
+    setattr(props, slot_prop_name(cyc), str(int(idx)))
+
+
+def slot_hours(cyc):
+    return cyc.slot_hours if cyc is not None else tc.SLOT_HOURS
+
+
 def current_slot(context=None, cyc=None):
     context = context or bpy.context
     cyc = cyc or get_cyc(context)
     if cyc is None:
         return None
     props = context.scene.inu_settings.gtatools_timecyc
-    try:
-        slot_idx = int(props.slot)
-    except (ValueError, TypeError):
-        slot_idx = 0
-    return cyc.slot(weather_index(props, cyc), slot_idx)
+    return cyc.slot(weather_index(props, cyc), slot_index(props, cyc))
 
 
 def sync_props_from_slot(context=None):
@@ -429,9 +453,9 @@ def on_weather_changed(self, context):
     apply_to_scene(context)
 
 
-def _slot_for_hour(hour):
-    """Индекс ближайшего среза к заданному часу (SLOT_HOURS)."""
-    hours = tc.SLOT_HOURS
+def _slot_for_hour(hour, cyc=None):
+    """Индекс ближайшего среза к заданному часу (часы срезов игры файла)."""
+    hours = slot_hours(cyc)
     return min(range(len(hours)), key=lambda i: abs(hours[i] - float(hour)))
 
 
@@ -443,15 +467,14 @@ def on_slot_changed(self, context):
     # НЕ снапаем и синк делаем сами — иначе таскание часа дёргало бы его назад.
     if _SYNCING:
         return
-    try:
-        idx = int(self.slot)
-    except (ValueError, TypeError):
-        idx = 0
+    cyc = get_cyc(context)
+    idx = slot_index(self, cyc)
+    hours = slot_hours(cyc)
     sync_props_from_slot(context)
-    if 0 <= idx < len(tc.SLOT_HOURS):
+    if 0 <= idx < len(hours):
         _SYNCING = True
         try:
-            self.hour = float(tc.SLOT_HOURS[idx])
+            self.hour = float(hours[idx])
         finally:
             _SYNCING = False
     apply_to_scene(context)
@@ -468,11 +491,12 @@ def on_hour_changed(self, context):
     # Таскание часа подтягивает «Правку среза» под текущее время: выбираем
     # ближайший срез и синкаем его значения вниз (час НЕ снапаем). Дропдаун
     # среза ставим под _SYNCING, чтобы on_slot_changed не дёрнул час назад.
-    idx = _slot_for_hour(self.hour)
-    if int(self.slot) != idx:
+    cyc = get_cyc(context)
+    idx = _slot_for_hour(self.hour, cyc)
+    if slot_index(self, cyc) != idx:
         _SYNCING = True
         try:
-            self.slot = str(idx)
+            set_slot_index(self, cyc, idx)
             sync_props_from_slot(context)
         finally:
             _SYNCING = False
@@ -590,8 +614,19 @@ class GTATOOLS_OT_import_timecyc(bpy.types.Operator):
         props.enabled = True
         apply_to_scene(context, force=True)
         timecyc_world.show_in_viewport(context)
-        self.report({'INFO'}, T("timecyc: погод %d, ширина строки %d")
-                    % (len(cyc.weathers), cyc.width))
+        self.report({'INFO'}, T("timecyc: %s, погод %d, срезов %d, ширина строки %d")
+                    % (cyc.game, len(cyc.weathers), len(cyc.slot_hours), cyc.width))
+        # Файл другой игры, чем выбрана в сцене — предупредить, как делают
+        # остальные импортёры (формат экспорта берётся из файла, а не из
+        # сцены, так что это только подсказка).
+        try:
+            from ..core import game_versions as gv
+            if gv.game_of_scene(context.scene) != cyc.game:
+                self.report({'WARNING'},
+                            T("timecyc.dat из {0}, а игра сцены — {1}").format(
+                                cyc.game, gv.game_of_scene(context.scene)))
+        except Exception:                                  # noqa: BLE001
+            pass
         return {'FINISHED'}
 
 
@@ -637,6 +672,14 @@ class GTATOOLS_OT_export_timecyc(bpy.types.Operator):
         except Exception as exc:
             self.report({'ERROR'}, T("Ошибка записи timecyc: ") + str(exc))
             return {'CANCELLED'}
+        # DAT-42: 184 data lines, only «//» comments, 51/52 columns,
+        # byte / int8 / int16 ranges — what CTimeCycle::Initialise does.
+        try:
+            from ..core.textdata_lint import check_timecyc
+            from .textdata_audit import report_lint
+            report_lint(self, os.path.basename(path), *check_timecyc(cyc))
+        except Exception as exc:                     # noqa: BLE001
+            print(f"[INU lint] timecyc audit failed: {exc}")
 
         context.scene.inu_settings.gtatools_timecyc.path = path
         _CACHE['path'] = path
@@ -927,7 +970,7 @@ class GTATOOLS_OT_timecyc_reload(bpy.types.Operator):
 
 
 class GTATOOLS_OT_timecyc_copy_to_all_slots(bpy.types.Operator):
-    """Скопировать текущий срез во все 8 срезов этой погоды"""
+    """Скопировать текущий срез во все срезы этой погоды (8 у SA, 24 у III/VC)"""
     bl_idname = "gtatools.timecyc_copy_to_all_slots"
     bl_label = "Во все срезы погоды"
     bl_options = {'REGISTER', 'UNDO'}

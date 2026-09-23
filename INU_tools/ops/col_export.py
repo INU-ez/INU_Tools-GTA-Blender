@@ -35,6 +35,72 @@ def _resolve_col_version(context=None) -> int:
     return game_versions.profile_for(game).col_version
 
 
+# Findings of the last operator run (cleared by the operator, filled by
+# ``audit_col`` for every record it writes) — the operator surfaces them
+# after the files are on disk, like DFF_EXPORT_WARNINGS.
+COL_EXPORT_FATAL = []
+COL_EXPORT_WARNINGS = []
+
+
+def _resolve_target_game(context=None) -> str:
+    """The game the scene exports for ('III' / 'VC' / 'SA') — what the
+    surface-ID clamp in ``write_col`` is keyed on (W3: the COL version
+    cannot tell, SA ships COL2 archives with SA surface IDs)."""
+    if context is None:
+        try:
+            import bpy as _bpy
+            context = _bpy.context
+        except Exception:
+            return 'SA'
+    scene = getattr(context, 'scene', None)
+    if scene is None:
+        return 'SA'
+    try:
+        return game_versions.game_of_scene(scene)
+    except Exception:
+        return 'SA'
+
+
+def audit_col(models, filepath: str = '', target_game: str = ''):
+    """Check ColModels against what the engine's collision loaders and
+    CCollision assume without checking.
+
+    ``core.col_lint.check_col_models`` mirrors LoadCollisionModel/Ver2/Ver3
+    and the consumers: a face index past the vertex block, more than
+    32767 faces, a surface id past the 179-row table, a coordinate past
+    ±255.99 or a name without room for its NUL give garbage collision or
+    crash the game instead of just looking wrong.
+
+    ``target_game`` applies the same surface-ID clamp ``write_col`` will
+    (in place, idempotent) *before* the lint, so a COL-18 id is reported
+    as what the file gets — "clamped to 0" — rather than as a crash the
+    writer then averts.
+
+    Returns ``(fatal, warnings)`` — ready-to-show strings, also printed
+    to the console the way the DFF audits are.
+    """
+    from ..core.col_lint import check_col_models
+    warnings = []
+    if target_game:
+        from ..core.col import _clamp_surfaces_for_target
+        for model in models:
+            n = _clamp_surfaces_for_target(model, target_game)
+            if n:
+                warnings.append(T(
+                    "COL «{0}»: {1} поверхностей с id вне таблицы {2} — в файл записан 0 (COL-18)."
+                ).format(model.model_name, n, target_game))
+    fatal, lint_warnings = check_col_models(models)
+    warnings.extend(lint_warnings)
+    COL_EXPORT_FATAL.extend(fatal)
+    COL_EXPORT_WARNINGS.extend(warnings)
+    tag = f" ({filepath})" if filepath else ""
+    for item in fatal:
+        print(f"[COL Export] ИГРА УПАДЁТ{tag}: {item}")
+    for item in warnings:
+        print(f"[COL Export]{tag} {item}")
+    return fatal, warnings
+
+
 def _auto_light_settings():
     """Read the scene's auto collision-light setting.
 
@@ -453,7 +519,9 @@ def export_col(filepath: str, objects, version: int = 3, model_name: str = "",
         # Empty COL still needs real bounds (from the visual model) or GTA
         # culls the model → it disappears.
         model.bounds = _empty_col_bounds(bounds_ref or objects, version, model_name)
-    write_col_file(filepath, [model])
+    target_game = _resolve_target_game()
+    audit_col([model], filepath, target_game=target_game)
+    write_col_file(filepath, [model], target_game=target_game)
     return model
 
 
@@ -497,7 +565,9 @@ def export_col_bytes(objects, version: int = 3, model_name: str = "") -> bytes:
     Export selected Blender objects as COL bytes (for embedding in DFF, etc.).
     """
     model = build_col_model(objects, version=version, model_name=model_name)
-    return write_col([model])
+    target_game = _resolve_target_game()
+    audit_col([model], target_game=target_game)
+    return write_col([model], target_game=target_game)
 
 
 def _group_objects_by_base(objects) -> dict:
@@ -582,7 +652,9 @@ def export_col_library(filepath: str, objects, version: int = 3,
 
     if models:
         from ..core.col import write_col_file
-        write_col_file(filepath, models)
+        target_game = _resolve_target_game()
+        audit_col(models, filepath, target_game=target_game)
+        write_col_file(filepath, models, target_game=target_game)
     return len(models)
 
 
@@ -634,6 +706,8 @@ class GTATOOLS_OT_export_col(bpy.types.Operator, ExportHelper):
             return n
 
         prelight_was_on = []
+        COL_EXPORT_FATAL.clear()
+        COL_EXPORT_WARNINGS.clear()
         try:
             for obj in context.selected_objects:
                 if obj.type == 'MESH':
@@ -700,6 +774,7 @@ class GTATOOLS_OT_export_col(bpy.types.Operator, ExportHelper):
                     return {'CANCELLED'}
                 summary = (f"{len(written)} COL written to {out_dir}"
                            + (f" ({len(errors)} failed)" if errors else ""))
+                self._report_audit()
                 self.report({'WARNING'} if errors else {'INFO'}, summary)
                 return {'FINISHED'}
 
@@ -729,6 +804,7 @@ class GTATOOLS_OT_export_col(bpy.types.Operator, ExportHelper):
             for obj in prelight_was_on:
                 setup_prelight_preview(obj, enable=True)
 
+            self._report_audit()
             self.report({'INFO'}, msg)
             return {'FINISHED'}
         except Exception as e:
@@ -741,5 +817,14 @@ class GTATOOLS_OT_export_col(bpy.types.Operator, ExportHelper):
                     pass
             self.report({'ERROR'}, f"COL export error: {str(e)}")
             return {'CANCELLED'}
+
+    def _report_audit(self):
+        """Surface the collision audit: warnings as WARNING, engine-crash
+        findings as ERROR — the file is already written, the user fixes
+        the mesh and re-exports."""
+        for w in COL_EXPORT_WARNINGS:
+            self.report({'WARNING'}, w)
+        for item in COL_EXPORT_FATAL:
+            self.report({'ERROR'}, f"{T('Игра упадёт')}: {item}")
 
 

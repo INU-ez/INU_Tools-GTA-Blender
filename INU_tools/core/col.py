@@ -11,6 +11,7 @@
 #   Body: version-dependent (spheres, boxes, vertices, faces, shadow mesh)
 
 from dataclasses import dataclass, field
+from struct import error as StructError
 from .rwbinary import BinaryReader, BinaryWriter
 
 
@@ -67,6 +68,18 @@ class ColFace:
 
 
 @dataclass
+class FaceGroup:
+    """COL2/3 face group (flag 8): an AABB over the inclusive face range
+    ``first..last``; the engine tests the box before any triangle of the
+    group (CCollision::ProcessColModels). Faces outside every group never
+    collide with moving entities, so groups must cover 0..numFaces-1."""
+    bb_min: Vec3 = field(default_factory=Vec3)
+    bb_max: Vec3 = field(default_factory=Vec3)
+    first: int = 0
+    last: int = 0
+
+
+@dataclass
 class ColModel:
     """Complete collision model."""
     version: int = 3           # 1=COLL, 2=COL2, 3=COL3, 4=COL4
@@ -79,6 +92,7 @@ class ColModel:
     faces: list = field(default_factory=list)          # list[ColFace]
     shadow_vertices: list = field(default_factory=list)  # list[Vec3]
     shadow_faces: list = field(default_factory=list)     # list[ColFace]
+    face_groups: list = field(default_factory=list)      # list[FaceGroup] (W6)
     flags: int = 0
 
 
@@ -95,6 +109,13 @@ _MAGIC_VERSION = {v: k for k, v in _VERSION_MAGIC.items()}
 # Header: magic(4) + file_size(4) + model_name(22) + model_id(2) = 32 bytes
 _HEADER_SIZE = 32
 _MODEL_NAME_LEN = 22
+# The name is hashed up to its NUL, so 21 chars + NUL fit the field (COL-03).
+MODEL_NAME_MAX = 21
+_FACE_GROUP_SIZE = 28   # bb_min 3f, bb_max 3f, i16 first, i16 last
+
+# Warnings collected by the last ``read_col`` (W11: a truncated / corrupt
+# model stops the read like the engine does instead of raising).
+COL_READ_WARNINGS = []
 
 
 # ── Reader ───────────────────────────────────────────────────────
@@ -180,28 +201,35 @@ def _read_vertex_v2(r: BinaryReader) -> Vec3:
     return Vec3(x / 128.0, y / 128.0, z / 128.0)
 
 
-def _read_col1_body(r: BinaryReader, model: ColModel):
-    """Read COL1 body: count-prefixed blocks."""
+def _read_col1_body(r: BinaryReader, model: ColModel, model_end: int = -1):
+    """Read COL1 body: count-prefixed blocks.
+
+    ``model_end`` (absolute offset of the next model) bounds every count:
+    a block that would run past it means a corrupt model (W11) and raises
+    ``ValueError`` for ``read_col`` to stop on.
+    """
+    def _count(stride: int) -> int:
+        n = r.read_u32()
+        if model_end >= 0 and n * stride > model_end - r.pos:
+            raise ValueError(f"count {n} × {stride} B runs past the model")
+        return n
+
     # Spheres
-    count = r.read_u32()
-    for _ in range(count):
+    for _ in range(_count(20)):
         model.spheres.append(_read_sphere_v1(r))
 
     r.skip(4)  # unknown count (documented on gtamods)
 
     # Boxes
-    count = r.read_u32()
-    for _ in range(count):
+    for _ in range(_count(28)):
         model.boxes.append(_read_box(r))
 
     # Vertices
-    count = r.read_u32()
-    for _ in range(count):
+    for _ in range(_count(12)):
         model.vertices.append(_read_vertex_v1(r))
 
     # Faces
-    count = r.read_u32()
-    for _ in range(count):
+    for _ in range(_count(16)):
         model.faces.append(_read_face_v1(r))
 
 
@@ -245,6 +273,21 @@ def _read_col2_body(r: BinaryReader, model: ColModel, header_start: int):
     for _ in range(face_count):
         model.faces.append(_read_face_v2(r))
 
+    # Face groups (flag 8, W6): ``[groups][u32 count]`` sit right before the
+    # face block — the engine reads the count at faces - 4 and the groups
+    # growing downwards from there.
+    if (flags & 8) and face_count and faces_off >= 4:
+        r.seek(base + faces_off - 4)
+        group_count = r.read_u32()
+        if 0 < group_count < 0x10000 and faces_off >= 4 + group_count * _FACE_GROUP_SIZE:
+            r.seek(base + faces_off - 4 - group_count * _FACE_GROUP_SIZE)
+            for _ in range(group_count):
+                g = FaceGroup()
+                g.bb_min = _read_vec3(r)
+                g.bb_max = _read_vec3(r)
+                g.first, g.last = r.read('<hh')
+                model.face_groups.append(g)
+
     # Vertex count: derived from max face index
     vert_count = 0
     for f in model.faces:
@@ -273,9 +316,14 @@ def read_col(data: bytes) -> list:
     """
     Read a COL file (may contain multiple models).
     Returns list of ColModel.
+
+    A truncated or corrupt model ends the read at that model with a
+    warning in ``COL_READ_WARNINGS`` (W11) — the engine's loaders stop at
+    the first bad entry too — instead of raising ``struct.error``.
     """
     r = BinaryReader(data)
     models = []
+    COL_READ_WARNINGS.clear()
 
     while r.remaining() >= _HEADER_SIZE:
         header_start = r.pos
@@ -295,13 +343,24 @@ def read_col(data: bytes) -> list:
             model_id=model_id,
         )
 
-        # Bounds
-        if version == 1:
-            model.bounds = _read_bounds_v1(r)
-            _read_col1_body(r, model)
-        else:
-            model.bounds = _read_bounds_v2(r)
-            _read_col2_body(r, model, header_start)
+        try:
+            if header_start + 8 + file_size > len(data):
+                raise ValueError(
+                    f"size {file_size} runs {header_start + 8 + file_size - len(data)} bytes past the end of the file")
+            # Bounds
+            if version == 1:
+                model.bounds = _read_bounds_v1(r)
+                _read_col1_body(r, model, header_start + 8 + file_size)
+            else:
+                model.bounds = _read_bounds_v2(r)
+                _read_col2_body(r, model, header_start)
+        except (StructError, ValueError, IndexError) as e:
+            _w = _t(
+                "COL: модель «{0}» (#{1}) обрезана или повреждена ({2}) — чтение остановлено на ней, как это делает движок."
+            ).format(model_name or '?', len(models), e)
+            COL_READ_WARNINGS.append(_w)
+            print(f"[COL WARNING] {_w}")
+            break
 
         # Jump to next model
         r.seek(header_start + file_size + 8)
@@ -528,6 +587,16 @@ def _write_col2_body(w: BinaryWriter, model: ColModel):
     for v in model.vertices:
         _write_vertex_compressed(data, v)
 
+    # Face groups (W6): ``[groups][u32 count]`` directly before the faces,
+    # exactly where the engine looks for them (pTriangles - 4 - 28 * n).
+    has_groups = bool(model.face_groups) and bool(model.faces)
+    if has_groups:
+        for g in model.face_groups:
+            _write_vec3(data, g.bb_min)
+            _write_vec3(data, g.bb_max)
+            data.write('<hh', g.first, g.last)
+        data.write_u32(len(model.face_groups))
+
     # Faces
     faces_off = offset_base + header_size + len(data)
     for f in model.faces:
@@ -539,6 +608,7 @@ def _write_col2_body(w: BinaryWriter, model: ColModel):
     has_shadow = model.version >= 3 and len(model.shadow_faces) > 0
     flags = 0
     flags |= 2 if (model.spheres or model.boxes or model.faces) else 0
+    flags |= 8 if has_groups else 0
     flags |= 16 if has_shadow else 0
 
     if has_shadow:
@@ -578,9 +648,6 @@ def _write_col2_body(w: BinaryWriter, model: ColModel):
     w.write_bytes(data.to_bytes())
 
 
-_COL_VERSION_TO_GAME = {1: 'III', 2: 'VC', 3: 'SA'}
-
-
 def _clamp_surfaces_for_target(model: 'ColModel', target_game: str) -> int:
     """In-place clamp every Surface.material on the model into the
     target game's valid range. Returns the count of clamped surfaces
@@ -610,26 +677,24 @@ def _clamp_surfaces_for_target(model: 'ColModel', target_game: str) -> int:
     return count
 
 
-def write_col(models: list) -> bytes:
+def write_col(models: list, target_game: str = '') -> bytes:
     """
     Write one or more ColModel to COL binary format.
     Returns bytes.
 
-    Each model's surface IDs are clamped to its version's vanilla
-    range as a final safety pass — writing a byte > target_max would
-    deref past the end of the engine's surface table and read
-    garbage material properties at load time.
+    ``target_game`` ('III' / 'VC' / 'SA') clamps every surface ID into
+    that game's table as a final safety pass — a byte past the table
+    makes the engine read garbage material properties. The COL version
+    says nothing about the game (SA ships COL1 weapons.col and COL2
+    seabed/levelmap archives with SA surface IDs, W3), so with no target
+    given nothing is clamped; ``core.col_lint`` reports out-of-range IDs.
     """
     out = BinaryWriter()
 
     for model in models:
         _validate_col_writable(model)
-        # Clamp surfaces against the version's game ceiling. If the
-        # model was built from a different game's source data and the
-        # caller didn't translate IDs explicitly, we still produce a
-        # file the target engine can read without corrupting state.
-        target_game = _COL_VERSION_TO_GAME.get(model.version, 'SA')
-        _clamp_surfaces_for_target(model, target_game)
+        if target_game:
+            _clamp_surfaces_for_target(model, target_game)
 
         # Build body first to know its size
         body = BinaryWriter()
@@ -658,7 +723,7 @@ def write_col(models: list) -> bytes:
     return out.to_bytes()
 
 
-def write_col_file(filepath: str, models: list):
+def write_col_file(filepath: str, models: list, target_game: str = ''):
     """Write COL models to a file."""
     with open(filepath, 'wb') as f:
-        f.write(write_col(models))
+        f.write(write_col(models, target_game=target_game))

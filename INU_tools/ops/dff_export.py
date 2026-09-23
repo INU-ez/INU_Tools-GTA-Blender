@@ -73,11 +73,11 @@ def _load_user_data(target) -> UserData:
 
 
 def _strip_ext(name: str) -> str:
-    """Remove file extension from a name (e.g. 'tex.png' → 'tex')."""
-    base, ext = os.path.splitext(name)
-    if ext.lower() in ('.png', '.jpg', '.jpeg', '.bmp', '.tga', '.dds'):
-        return base
-    return name
+    """Game texture name: image extension and everything after it, plus a bare
+    Blender .001 suffix, removed ('tex.png.001' → 'tex'). Same rule as the TXD
+    exporter, so the DFF and TXD names always match."""
+    from ..core.tex_name import clean_texture_name
+    return clean_texture_name(name)
 
 
 def _color_to_rgba(c, alpha=1.0) -> RGBA:
@@ -102,12 +102,69 @@ def _get_principled(mat):
     return None
 
 
+# diffuse_color нового материала в Blender — эталон для материалов без
+# импорт-штампа (созданных вручную): пока свотч равен ему, панель не трогали.
+_BL_DEFAULT_DIFFUSE = (0.8, 0.8, 0.8, 1.0)
+
+
+def _panel_color_override(mat):
+    """RGBA из свотча «Цвет (RGBA)» панели (mat.diffuse_color), если его
+    правил пользователь; иначе None.
+
+    Панель редактирует diffuse_color, а не Base Color ноды, поэтому раньше
+    ручной цвет/альфа «сбрасывались» при экспорте: _read_base_color читал
+    только Principled. Слот цвета машины при этом работал — он пишет в оба
+    места. Как с texture_name: свотч считается override'ом, только если он
+    отличается от значения, записанного импортом (inu_dff_color), — иначе
+    те, кто по привычке правит цвет в шейдере, ничего не потеряют.
+    """
+    dc = getattr(mat, 'diffuse_color', None)
+    if dc is None:
+        return None
+    dc = tuple(dc)
+    stamp = mat.get('inu_dff_color')
+    try:
+        ref = tuple(stamp) if stamp is not None and len(stamp) == 4 else None
+    except TypeError:
+        ref = None
+    if ref is None:
+        if mat.get('dff_texture_name') is not None:
+            # Импорт старой версией — штампа цвета ещё не было. Оригинал
+            # неизвестен, а diffuse_color = цвет DFF ≠ 0.8-серому: сочли бы
+            # правкой и перебили бы цвет, выставленный в шейдере. Старое
+            # поведение (Principled) до реимпорта.
+            return None
+        ref = _BL_DEFAULT_DIFFUSE
+    # Полшага 8-битной шкалы: float32-шум не считается правкой.
+    if all(abs(a - b) < 0.5 / 255.0 for a, b in zip(dc, ref)):
+        return None
+    return RGBA(*(max(0, min(255, int(round(v * 255)))) for v in dc))
+
+
 def _read_base_color(mat) -> RGBA:
     """Read base color from Principled BSDF or fallback."""
+    override = _panel_color_override(mat)
+    if override is not None:
+        return override
     principled = _get_principled(mat)
     if principled:
         bc = principled.inputs.get('Base Color')
         if bc:
+            # Alpha берём из входа Alpha Principled BSDF (не зависит от цвета).
+            alpha_input = principled.inputs.get('Alpha')
+
+            # Base Color ПОДКЛЮЧЁН (текстура/ноды) → цвет материала в DFF должен
+            # быть нейтральным БЕЛЫМ. У подключённого сокета default_value —
+            # это остаточное значение из UI (по умолчанию 0.8,0.8,0.8 → 204), а
+            # НЕ реальный цвет: с флагом MODULATE игра/Ariane умножают текстуру
+            # на цвет материала (204/255 ≈ 0.8) → текстура темнеет на ~20%.
+            # Поэтому default_value используем ТОЛЬКО для несвязанного сокета
+            # (солид-цвет без текстуры).
+            if getattr(bc, 'is_linked', False):
+                alpha = (int(alpha_input.default_value * 255)
+                         if alpha_input else 255)
+                return RGBA(255, 255, 255, alpha)
+
             c = bc.default_value
             # Режим timecyc «игровой вид» уводит цвет в Emission и ОБНУЛЯЕТ
             # Base Color в чёрный. Читать его в этом состоянии нельзя: цвет
@@ -126,8 +183,6 @@ def _read_base_color(mat) -> RGBA:
                 _dc = mat.diffuse_color
                 if tuple(_dc)[:3] != (0.0, 0.0, 0.0):
                     c = (_dc[0], _dc[1], _dc[2], c[3])
-            # Read alpha from Principled BSDF Alpha input
-            alpha_input = principled.inputs.get('Alpha')
             alpha = int(alpha_input.default_value * 255) if alpha_input else int(c[3] * 255)
             return RGBA(int(c[0]*255), int(c[1]*255), int(c[2]*255), alpha)
     if hasattr(mat, 'diffuse_color'):
@@ -235,7 +290,7 @@ def _tex_filters_and_mask(mat):
                 | (int(inu.tex_filter_hi) << 16))
     except (ValueError, AttributeError):
         filt = 0x11106
-    return filt, (getattr(inu, 'mask_texture', '') or "")
+    return filt, _strip_ext(getattr(inu, 'mask_texture', '') or "")
 
 
 def _read_surface(mat) -> SurfaceProperties:
@@ -268,7 +323,7 @@ def _read_material_plugins(mat) -> dict:
         bump = BumpMapEffect()
         bump_tex_name = getattr(inu, 'bump_map_tex', '')
         if bump_tex_name:
-            bump.bump_texture = DffTexture(name=bump_tex_name)
+            bump.bump_texture = DffTexture(name=_strip_ext(bump_tex_name))
         plugins['bump_map'] = bump
 
     # Environment map
@@ -278,14 +333,14 @@ def _read_material_plugins(mat) -> dict:
         env.use_fb_alpha = getattr(inu, 'env_map_fb_alpha', False)
         tex_name = getattr(inu, 'env_map_tex', '')
         if tex_name:
-            env.texture = DffTexture(name=tex_name)
+            env.texture = DffTexture(name=_strip_ext(tex_name))
         plugins['env_map'] = env
 
     # Specular
     if getattr(inu, 'export_specular', False):
         spec = SpecularMaterial()
         spec.level = getattr(inu, 'specular_level', 1.0)
-        spec.name = getattr(inu, 'specular_texture', '')
+        spec.name = _strip_ext(getattr(inu, 'specular_texture', '') or '')
         plugins['specular'] = spec
 
     # Reflection
@@ -305,7 +360,7 @@ def _read_material_plugins(mat) -> dict:
         dt.dst_blend = int(getattr(inu, 'dual_tex_dst_blend', '6'))
         tex_name = getattr(inu, 'dual_tex_texture', '')
         if tex_name:
-            dt.texture = DffTexture(name=tex_name)
+            dt.texture = DffTexture(name=_strip_ext(tex_name))
         plugins['dual_texture'] = dt
 
     return plugins
@@ -686,6 +741,19 @@ def _process_mesh(obj, clump: DffClump, frame_index: int, *,
             ca.data.foreach_get('color', flat)
             alphas = (flat[3::4] * 255.0).astype(np.int32)
             _mesh_alpha[ci] = dict(zip(loop_vidx.tolist(), alphas.tolist()))
+        # ONE vertex alpha for both layers. The engine LERPs prelit RGBA
+        # between Day and Night by time of day (alpha included,
+        # CCustomBuildingDNPipeline), so alpha painted in only one layer
+        # fades in/out with the clock. Kam's writes Max's single
+        # vertex-alpha channel into both layers — do the same: per vertex
+        # take the lower (more transparent) of Day/Night alpha, so it
+        # doesn't matter which layer the user painted in.
+        if _mesh_alpha[0] and _mesh_alpha[1]:
+            _shared = {vi: min(a, _mesh_alpha[1].get(vi, a))
+                       for vi, a in _mesh_alpha[0].items()}
+            _mesh_alpha[0] = _mesh_alpha[1] = _shared
+        elif _mesh_alpha[0] or _mesh_alpha[1]:
+            _mesh_alpha[0] = _mesh_alpha[1] = _mesh_alpha[0] or _mesh_alpha[1]
 
     # Per-loop custom normals — read BEFORE triangulate so the vertex-split
     # logic below can give a SEPARATE output vertex to every distinct loop
@@ -946,9 +1014,23 @@ def _process_mesh(obj, clump: DffClump, frame_index: int, *,
         radius = 0.0
 
     # ── Materials ──
+    # В DFF пишутся только материалы, на которые ссылается хотя бы одна грань:
+    # пустые слоты (остатки от правок меша) тянули за собой лишние TEXTURE-чанки,
+    # ели лимит движка (MATERIAL ≤ 28 на geometry) и требовали текстур в TXD.
+    # Индексы граней перенумеровываются под новый список.
     materials = []
     if obj.data.materials:
-        for mat in obj.data.materials:
+        slots = list(obj.data.materials)
+        used = sorted({t.material for t in triangles}) if triangles else []
+        used = [i for i in used if 0 <= i < len(slots)]
+        if used and len(used) < len(slots):
+            remap = {old_i: new_i for new_i, old_i in enumerate(used)}
+            for t in triangles:
+                t.material = remap.get(t.material, 0)
+            dropped = len(slots) - len(used)
+            print(f"[INU] {obj.name}: материалов без граней не записано: {dropped}")
+            slots = [slots[i] for i in used]
+        for mat in slots:
             materials.append(_build_material(mat))
     else:
         materials.append(DffMaterial())
@@ -1122,35 +1204,37 @@ def _process_mesh(obj, clump: DffClump, frame_index: int, *,
                 skin.bone_indices.append((0, 0, 0, 0))
                 skin.bone_weights.append((0.0, 0.0, 0.0, 0.0))
 
-        # Compute bones_used only if not restored from original
-        # Kams: bones_used excludes bone 0 (root) and only counts non-zero weight entries
-        if not skin.bones_used:
-            used_set = set()
-            for vi in range(len(skin.bone_indices)):
-                indices = skin.bone_indices[vi]
-                weights = skin.bone_weights[vi]
-                for slot in range(4):
-                    if indices[slot] != 0 and weights[slot] > 0:
-                        used_set.add(indices[slot])
-            skin.bones_used = sorted(used_set)
-            skin.num_used = len(skin.bones_used)
+        # Used-bone list = every bone referenced with a non-zero weight,
+        # bone 0 INCLUDED (vanilla ryder.dff / wfycrk.dff list it). The
+        # engine uploads the bone palette only for the bones in this list
+        # when it is shorter than the hierarchy, so a referenced bone that
+        # is missing here keeps a stale matrix from the previous model;
+        # and num_used == 0 skips the palette upload altogether. A stored
+        # import-time list is kept (round-trip fidelity) but widened by
+        # anything the current weights reference.
+        used_set = set()
+        for vi in range(len(skin.bone_indices)):
+            indices = skin.bone_indices[vi]
+            weights = skin.bone_weights[vi]
+            for slot in range(4):
+                if weights[slot] > 0:
+                    used_set.add(indices[slot])
+        if skin.bones_used:
+            used_set.update(skin.bones_used)
+        else:
             skin.max_weights = 4
+        skin.bones_used = sorted(used_set)
+        skin.num_used = len(skin.bones_used)
 
         geom.skin = skin
 
     # ── Breakable extension (chunk 0x253F2FD) ──
+    # W1: the engine (BreakableStreamRead @ 0x59CEC0) expects a full copy
+    # of the mesh after the magic word, not an allocation record — write
+    # the geometry itself as the break copy (one piece per material).
     inu_props = getattr(obj, 'inu', None)
     if inu_props and getattr(inu_props, 'breakable', False):
-        num_verts_local = len(geom.vertices)
-        num_tris_local = len(geom.triangles)
-        num_uv_local = len(geom.uv_layers) * num_verts_local if geom.uv_layers else 0
-        geom.breakable = BreakableData(
-            vertices_alloc=max(num_verts_local, 1),
-            faces_alloc=max(num_tris_local, 1),
-            materials_alloc=max(len(geom.materials), 1),
-            uvs_alloc=max(num_uv_local, 1),
-            force=float(getattr(inu_props, 'breakable_force', 1.0)),
-        )
+        geom.breakable = BreakableData.from_geometry(geom)
 
     # ── Add to clump ──
     geom_idx = len(clump.geometries)
@@ -1454,6 +1538,8 @@ def _collect_2dfx(objects) -> Extension2dfx:
             ped.rotation_matrix = tuple(float(v) for v in rot)
             ped.external_script = obj.get('2dfx_external_script', '')
             ped.ped_existing_probability = obj.get('2dfx_ped_probability', 0)
+            ped.flags = int(obj.get('2dfx_ped_flags', 0))
+            ped.unknown = int(obj.get('2dfx_ped_unknown', 0))
             ext.entries.append(ped)
 
         elif effect_type == 'SUN_GLARE':
@@ -1644,9 +1730,35 @@ def build_dff_clump(objects, version: int = GTA_SA_VERSION,
     })
 
     from ..tools.vc_layers import flatten_for_export
+    from ..tools.prelight import setup_prelight_preview
 
-    with flatten_for_export(_vcl_target_meshes):
-        return _build_dff_clump_inner(objects, version, col_model_name)
+    # Снять превью прилайта (Prelight_Mix) с экспортируемых мешей НА ВРЕМЯ
+    # чтения: иначе Base Color/текстура читаются через превью-ноды и DFF
+    # выходит неверным (тёмным/не тем цветом). Тут — ОБЩИЙ путь сборки, значит
+    # защищены ВСЕ экспорты (одиночный DFF, Export All, в IMG) без ручного
+    # отключения опции. Одиночный оператор уже снимает превью до вызова — там
+    # ноды нет, повторно не трогаем. Возврат гарантирован finally.
+    _pl_off = []
+    try:
+        for obj in objects:
+            if getattr(obj, 'type', None) != 'MESH':
+                continue
+            if any(ms.material and ms.material.use_nodes
+                   and ms.material.node_tree.nodes.get("Prelight_Mix")
+                   for ms in obj.material_slots):
+                try:
+                    setup_prelight_preview(obj, enable=False)
+                    _pl_off.append(obj)
+                except Exception:                     # noqa: BLE001
+                    pass
+        with flatten_for_export(_vcl_target_meshes):
+            return _build_dff_clump_inner(objects, version, col_model_name)
+    finally:
+        for obj in _pl_off:
+            try:
+                setup_prelight_preview(obj, enable=True)
+            except Exception:                         # noqa: BLE001
+                pass
 
 
 def _build_dff_clump_inner(objects, version: int, col_model_name: str) -> DffClump:
@@ -1858,11 +1970,11 @@ def _build_dff_clump_inner(objects, version: int, col_model_name: str) -> DffClu
                 clump.lights.append(rw_light)
 
     # Embed collision data in DFF (CHUNK_COLLISION_MODEL). COL version
-    # is derived from the same RW version: SA writes COL3, VC writes
-    # COL2, III writes COL1. Map: rw 0x36003=COL3, 0x35000=COL2,
-    # 0x33002=COL1. Inline rather than calling _resolve_col_version()
-    # since build_dff_clump receives `version` directly and we want
-    # the COL version to track the requested DFF version exactly.
+    # is derived from the same RW version: SA (0x36xxx) writes COL3,
+    # anything older writes COL1 — III and VC both accept only 'COLL'
+    # (COL2 is an SA-era format). Inline rather than calling
+    # _resolve_col_version() since build_dff_clump receives `version`
+    # directly and we want the COL version to track the DFF version.
     # Collision = COL/SHA meshes (faces + shadow) AND sphere/box collision
     # primitives, which the importer creates as SPHERE/CUBE-display Empties.
     # Both must be embedded — otherwise the vehicle keeps its body-mesh
@@ -1875,12 +1987,7 @@ def _build_dff_clump_inner(objects, version: int, col_model_name: str) -> DffClu
                        and _is_col_primitive_empty(obj))]
     if col_objects:
         from .col_export import export_col_bytes
-        if version >= 0x36000:
-            col_ver = 3
-        elif version >= 0x35000:
-            col_ver = 2
-        else:
-            col_ver = 1
+        col_ver = 3 if version >= 0x36000 else 1
         clump.collision_data = export_col_bytes(
             col_objects, version=col_ver, model_name=col_model_name)
 
@@ -1898,6 +2005,78 @@ def _build_dff_clump_inner(objects, version: int, col_model_name: str) -> DffClu
     clump.uv_anim_dict = _collect_uv_anim_dict(uv_mats)
 
     return clump
+
+
+def _audit_vehicle_frames(clump):
+    """Check the frame names a vehicle DFF is about to carry.
+
+    The engine matches vehicle dummies by name exactly once, at load time
+    (CClumpModelInfo::SetFrameIds), and CVehicleModelInfo::GetWheelPosn then
+    dereferences the frame it finds with no null check — so a wheel dummy
+    that is absent, or carries Blender's ``.001`` suffix, crashes the game
+    instead of just looking wrong.
+
+    Returns ``(fatal, warnings)``; both empty for anything that is not a
+    vehicle, so map models and peds pass straight through.
+    """
+    names = [f.name for f in clump.frames if f.name]
+    if not any('wheel' in n.lower() for n in names):
+        return [], []
+
+    from .frame_hierarchy import check_vehicle_names
+    return check_vehicle_names(names)
+
+
+def _audit_skin(clump):
+    """Check a skinned (ped) clump against what the engine dereferences.
+
+    ``core.skin_lint.check_skin_clump`` mirrors CPedModelInfo::SetClump and
+    the skin/HAnim readers: a missing node table, an unskinned last atomic,
+    a bone count ≠ node count, a missing hard-coded bone id and so on crash
+    the game at load or spawn instead of just looking wrong.
+
+    Returns ``(fatal, warnings)``; both empty for anything without a skin,
+    so map models and vehicles pass straight through.
+    """
+    if not any(g.skin is not None for g in clump.geometries):
+        return [], []
+    from ..core.skin_lint import check_skin_clump
+    return check_skin_clump(clump)
+
+
+def _audit_map(clump, model_name: str = ''):
+    """Check a non-skinned (map / object) clump against what the engine
+    dereferences when it streams it.
+
+    ``core.mapdff_lint.check_map_clump`` mirrors RpClumpStreamRead, the
+    geometry / material / 2dfx / night-colour / breakable plugin readers
+    and CAtomicModelInfo::SetAtomic: a bad frame or material index, a
+    texture name the TXD cannot hold, a 2dfx type the reader cannot skip,
+    a light with a shadow but no texture and so on crash the game or
+    leave the model invisible instead of just looking wrong.
+
+    Returns ``(fatal, warnings)``; both empty for skinned clumps (peds),
+    which ``_audit_skin`` covers. Vehicles and weapons go through the
+    same checks minus the objs/tobj-only rules (DFF-27/28/29/46) —
+    CVehicleModelInfo / CWeaponModelInfo keep every atomic and own the
+    ``_dam`` slot, so those would be false alarms (vanilla infernus.dff:
+    9, landstal.dff: 26).
+    """
+    if any(g.skin is not None for g in clump.geometries):
+        return [], []
+    from ..core.mapdff_lint import check_map_clump
+    return check_map_clump(clump, model_name=model_name,
+                           is_vehicle=_is_vehicle_or_weapon(clump))
+
+
+def _is_vehicle_or_weapon(clump) -> bool:
+    """Vehicle / weapon clump: an embedded COL (only vehicles carry one)
+    or the frame names the engine looks up by name (wheel_*, chassis,
+    gunflash)."""
+    if clump.collision_data:
+        return True
+    names = [(f.name or '').lower() for f in clump.frames]
+    return any(k in n for n in names for k in ('wheel', 'chassis', 'gunflash'))
 
 
 def export_dff(filepath: str, objects, version: int = GTA_SA_VERSION,
@@ -1922,7 +2101,44 @@ def export_dff(filepath: str, objects, version: int = GTA_SA_VERSION,
             if not g.raw_native_data_plg:
                 g.is_native_ogl = True
         clump.is_mobile = True
+
+    # Audit before writing, surface after: ``write_dff_file`` clears
+    # DFF_EXPORT_WARNINGS on its way in, so anything appended earlier is lost.
+    veh_fatal, veh_warn = _audit_vehicle_frames(clump)
+    skin_fatal, skin_warn = _audit_skin(clump)
+    map_fatal, map_warn = _audit_map(clump, model_name)
+    for item in veh_fatal:
+        print(f"[DFF Export] ИГРА УПАДЁТ: нет дамми {item}")
+    for item in veh_warn:
+        print(f"[DFF Export] дамми машины: {item}")
+    for item in skin_fatal:
+        print(f"[DFF Export] ИГРА УПАДЁТ: скин: {item}")
+    for item in skin_warn:
+        print(f"[DFF Export] скин: {item}")
+    for item in map_fatal:
+        print(f"[DFF Export] ИГРА УПАДЁТ: модель: {item}")
+    for item in map_warn:
+        print(f"[DFF Export] модель: {item}")
+
     write_dff_file(filepath, clump)
+
+    if veh_fatal or veh_warn or skin_fatal or skin_warn or map_fatal or map_warn:
+        from .. import T
+        from ..core.dff import DFF_EXPORT_WARNINGS
+        for item in veh_fatal:
+            DFF_EXPORT_WARNINGS.append(f"{T('Игра упадёт — нет дамми')}: {item}")
+        for item in veh_warn:
+            DFF_EXPORT_WARNINGS.append(f"{T('Дамми машины')}: {item}")
+        for item in skin_fatal:
+            DFF_EXPORT_WARNINGS.append(f"{T('Игра упадёт — скин')}: {item}")
+        for item in skin_warn:
+            DFF_EXPORT_WARNINGS.append(f"{T('Скин')}: {item}")
+        for item in map_fatal:
+            DFF_EXPORT_WARNINGS.append(f"{T('Игра упадёт — модель')}: {item}")
+        for item in map_warn:
+            DFF_EXPORT_WARNINGS.append(f"{T('Модель')}: {item}")
+
+    return veh_fatal, veh_warn + skin_warn + map_warn, skin_fatal + map_fatal
 
 
 def draw_export_game_rows(layout, context):
@@ -2109,9 +2325,10 @@ class GTATOOLS_OT_export_dff(bpy.types.Operator, ExportHelper):
                 print(f"  - {o.name} ({o.type})")
             target_platform = getattr(context.scene.inu_settings,
                                       'gtatools_platform', 'PC')
-            export_dff(filepath=self.filepath, objects=dff_objects,
-                       version=_resolve_export_version(context),
-                       target_platform=target_platform)
+            veh_fatal, _veh_warn, model_fatal = export_dff(
+                filepath=self.filepath, objects=dff_objects,
+                version=_resolve_export_version(context),
+                target_platform=target_platform)
 
             for obj in prelight_was_on:
                 setup_prelight_preview(obj, enable=True)
@@ -2122,6 +2339,22 @@ class GTATOOLS_OT_export_dff(bpy.types.Operator, ExportHelper):
             if DFF_EXPORT_WARNINGS:
                 for w in DFF_EXPORT_WARNINGS:
                     self.report({'WARNING'}, w)
+            if veh_fatal:
+                # A missing wheel dummy is not cosmetic: the game faults on
+                # it. Red, and named, so it is not lost among the warnings.
+                from .. import T
+                self.report(
+                    {'ERROR'},
+                    f"{T('Игра упадёт — нет дамми')}: "
+                    f"{', '.join(f.split(' — ')[0] for f in veh_fatal)}")
+            if model_fatal:
+                # Same weight as a missing wheel: the engine dereferences
+                # these at load / spawn (skin audit for peds, map audit for
+                # everything else). One line per finding — each names the
+                # geometry, bone or effect to fix.
+                from .. import T
+                for item in model_fatal:
+                    self.report({'ERROR'}, f"{T('Игра упадёт')}: {item}")
             self.report({'INFO'}, f"Exported DFF: {self.filepath}")
             return {'FINISHED'}
         except Exception as e:

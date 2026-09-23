@@ -198,6 +198,23 @@ def build_composite_material(specs, base_name, uv_name, vcol_name=None):
                     fac_out = gt.outputs[0]
                 invert_dir = not alpha_spec.get('decal_invert')   # деф.: видно тёмное
             else:
+                # CUTOUT для альфы из прозрачности материала. Значение может
+                # быть в RGB (обычный EMIT) ИЛИ в АЛЬФА-канале карты (покрытие
+                # Hi→Low, RGB пустой): берём max(Color, Alpha), затем порог 0.5
+                # → 1/0. Совпадает с numpy-сведением в bake_composite.
+                if (alpha_spec.get('map_id') == 'ALPHA'
+                        and (alpha_spec.get('alpha_source') or 'MATERIAL') == 'MATERIAL'):
+                    mx = nt.nodes.new('ShaderNodeMath')
+                    mx.operation = 'MAXIMUM'
+                    mx.location = (300, -520)
+                    nt.links.new(fac_out, mx.inputs[0])
+                    nt.links.new(atex.outputs['Alpha'], mx.inputs[1])
+                    gt = nt.nodes.new('ShaderNodeMath')
+                    gt.operation = 'GREATER_THAN'
+                    gt.location = (470, -520)
+                    gt.inputs[1].default_value = 0.5
+                    nt.links.new(mx.outputs[0], gt.inputs[0])
+                    fac_out = gt.outputs[0]
                 invert_dir = bool(alpha_spec.get('alpha_invert'))
             if invert_dir:
                 m = nt.nodes.new('ShaderNodeMath')

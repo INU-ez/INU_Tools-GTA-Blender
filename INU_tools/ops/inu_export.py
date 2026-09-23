@@ -157,6 +157,10 @@ class GTATOOLS_OT_inu_import(bpy.types.Operator, ImportHelper):
         g = top.column(align=True)
         g.row(align=True).prop(scn.inu_settings, "gtatools_import_auto_game",
                                text="Auto", toggle=True)
+        # Платформа (PC | Mobile) — отдельным рядом МЕЖДУ Auto и версиями
+        # игр, как в шапке N-панели. Не гаснет с Auto (платформа независима).
+        g.row(align=True).prop(scn.inu_settings, "gtatools_platform",
+                               expand=True)
         grow = g.row(align=True)
         grow.enabled = not scn.inu_settings.gtatools_import_auto_game
         grow.prop(scn.inu_settings, "gtatools_import_game", expand=True)
@@ -745,118 +749,184 @@ def _report_group_export(op, exported, errors, tri_warnings, num_groups,
     return {'FINISHED'}
 
 
-def _upsert_ide_for_groups(groups, ide_path):
-    """Build IDE objs/LOD entries for base→{DFF,LOD,COL} groups and upsert them
-    into ``ide_path``. Returns ``(updated, added)``. Shared by INU Export and
-    Export All so the LOD-id / entry logic lives in one place."""
-    from ..core.ide import upsert_ide
-    from .. import _ide_entry_from_obj, _clean_model_name_ide
-    entries = []
-    for base_name, models in groups.items():
-        if models['DFF']:
-            entries.append(_ide_entry_from_obj(models['DFF']))
-        if models['LOD']:
-            lod_entry = _ide_entry_from_obj(models['LOD'])
-            lod_entry.model_name = "LOD" + base_name
-            lod_entry.txd_name = _clean_model_name_ide(base_name)
-            # A LOD with no id of its own borrows dff_id+1 so it isn't written
-            # with id 0 (0 = player model → corrupts the game).
-            if lod_entry.model_id == 0 and models['DFF']:
-                _dff_id = getattr(models['DFF'].inu, 'model_id', 0)
-                if _dff_id > 0:
-                    lod_entry.model_id = _dff_id + 1
-            entries.append(lod_entry)
-    return upsert_ide(bpy.path.abspath(ide_path), entries)
-
-
-def _upsert_ipl_for_groups(groups, ipl_path, context):
-    """Place base→{DFF,LOD,COL} groups into ``ipl_path`` (update-in-place by
-    id+name+pos, else append). MAIN (DFF) is placed first, its LOD after —
-    the DFF's lod_index is back-filled once the LOD row exists (same order
-    as GTATOOLS_OT_upsert_ipl). Mirrors its safeguards: model_id ≤ 0 rows
-    are SKIPPED (id 0 = player model → corrupts the game), a LOD without
-    its own id borrows dff_id+1, an absent-from-selection LOD doesn't wipe
-    the existing lod_index, and the FLA ``realInterior`` column is
-    preserved. Returns ``(added, updated, skipped_names)``."""
-    from ..core.ipl import read_ipl, write_ipl, IplFile
-    from .. import _ipl_entry_from_obj
-    from .ide_ipl import _get_scene_game
-    ipl_path = bpy.path.abspath(ipl_path)
-    ipl = read_ipl(ipl_path) if os.path.isfile(ipl_path) else IplFile()
-
-    def _place(inst):
-        for k, ex in enumerate(ipl.instances):
-            if (ex.model_id == inst.model_id
-                    and ex.model_name.lower() == inst.model_name.lower()
-                    and abs(ex.pos_x - inst.pos_x) < 0.001
-                    and abs(ex.pos_y - inst.pos_y) < 0.001
-                    and abs(ex.pos_z - inst.pos_z) < 0.001):
-                ipl.instances[k] = inst
-                return k, False
-        ipl.instances.append(inst)
-        return len(ipl.instances) - 1, True
-
-    def _find_inst_by_name(name):
-        low = name.lower()
-        for k, ex in enumerate(ipl.instances):
-            if ex.model_name.lower() == low:
-                return k
-        return -1
-
-    n_upd = n_add = 0
-    skipped = []
-    for base_name, models in groups.items():
-        # MAIN (DFF) first, then its LOD — main's inst line precedes the LOD's
-        # (matching the IDE). _place stores the entry by reference, so setting
-        # dff_entry.lod_index after the LOD is placed back-fills the file row.
-        dff_entry = None
-        if models['DFF']:
-            dff_entry = _ipl_entry_from_obj(models['DFF'])
-            if dff_entry.model_id <= 0:
-                skipped.append(dff_entry.model_name or base_name)
-                dff_entry = None
+def _upsert_ide_ipl_objects(op, context, objs, ide_path='', ipl_path=''):
+    """Write *objs* (+ their LODs) into the given IDE / IPL through the same
+    sync rules as the IDE/IPL «Add» buttons (ops/map_link): rows found by
+    content, each placement with its own LOD row, id conflicts reported.
+    Returns short notes like «IDE: добавлено 2» for the export summary."""
+    from . import map_link
+    notes = []
+    for kind, path, fn in (("IDE", ide_path, map_link.ide_write),
+                           ("IPL", ipl_path, map_link.ipl_write)):
+        if not path:
+            continue
+        try:
+            rep = fn(context, objs, picked=path)
+        except Exception as e:                              # noqa: BLE001
+            notes.append(f"{kind} err: {e}")
+            continue
+        for level, text in rep.problems():
+            op.report({level}, text)
+        notes.append(map_link.summary(kind, rep))
+        from .textdata_audit import audit_ide_file, audit_ipl_file
+        for f in sorted(rep.files):
+            if kind == "IDE":
+                audit_ide_file(op, f)
             else:
-                # LOD не в этой выборке → не затирать связь в -1: берём
-                # существующую строку "LOD<base>" в файле, иначе прежний
-                # валидный inu.lod_index (как _resolve_lod_index в ide_ipl).
-                li = _find_inst_by_name("LOD" + base_name)
-                if li < 0:
-                    prev = int(getattr(models['DFF'].inu, 'lod_index', -1) or -1)
-                    li = prev if 0 <= prev < len(ipl.instances) else -1
-                dff_entry.lod_index = li
-                _, is_new = _place(dff_entry)
-                n_add += int(is_new)
-                n_upd += int(not is_new)
-        if models['LOD']:
-            lod_entry = _ipl_entry_from_obj(models['LOD'])
-            lod_entry.model_name = "LOD" + base_name
-            lod_entry.lod_index = -1
-            # LOD без своего id заимствует dff_id+1 (как в IDE-путях) —
-            # иначе строка ушла бы с id 0.
-            if lod_entry.model_id <= 0 and models['DFF']:
-                _dff_id = int(getattr(models['DFF'].inu, 'model_id', 0) or 0)
-                if _dff_id > 0:
-                    lod_entry.model_id = _dff_id + 1
-            if lod_entry.model_id <= 0:
-                skipped.append(lod_entry.model_name)
+                audit_ipl_file(op, f, context)
+    return notes
+
+
+def run_single_dff_export(context, directory, name_override='', *,
+                          want_dff=True, want_txd=True, want_col=True,
+                          backend='numpy', txd_merge=False):
+    """Один DFF: вся выделенная иерархия (машина / пед / любая
+    многокомпонентная модель) → ОДИН .dff. TXD (если включён) → один общий
+    .txd; коллизия встраивается ВНУТРЬ .dff.
+
+    Общий движок для «Экспорт всех выделенных» и INU Export — оба зовут эту
+    функцию, чтобы результат был байт-в-байт одинаковым. Возвращает
+    ``(out, errors, root, dropped)``; ``out is None`` — экспортировать нечего.
+    """
+    s = context.scene.inu_settings   # нужен только для платформы
+    # Машине/педу нужен ОДИН root-фрейм. Берём корень = самый верхний
+    # предок КРУПНЕЙШЕГО выделенного меша (кузова) и экспортируем всю его
+    # иерархию. Так отсекаются посторонние верхнеуровневые объекты
+    # (light-маркеры, пустышки, остатки): иначе они уходят в клапм как
+    # фантомные root-фреймы и ломают машину — настоящий root перестаёт
+    # быть кадром 0, камера и текстуры съезжают. Достаточно выделить любую
+    # часть машины (или корень) — иерархия соберётся сама.
+    picked = list(context.selected_objects)
+    meshes0 = [o for o in picked if o.type == 'MESH']
+    if not meshes0:
+        return None, [T("Нет меш объектов для экспорта")], None, 0
+    root = max(meshes0, key=lambda o: len(o.data.vertices))
+    while root.parent is not None:
+        root = root.parent
+    sel, stack = [root], [root]
+    while stack:
+        o = stack.pop()
+        for ch in o.children:
+            sel.append(ch)
+            stack.append(ch)
+    # Collision objects live OUTSIDE the vehicle root subtree: the importer
+    # creates the COL/SHA meshes AND the sphere/box primitives (SPHERE/CUBE
+    # empties) all top-level and unparented. Gather the WHOLE set so the
+    # complete collision embeds — пропустить сферы = машина проезжает сквозь
+    # модели. Лишних фреймов они не добавят: _collect_frame_objects
+    # пропускает COL/SHA-меши и сфера/бокс-empties.
+    import re
+    sel_set = set(sel)
+    picked_set = set(picked)
+    meshes0_set = set(meshes0)
+    # 1) COL/SHA меши (top-level или выделенные) — запоминаем их имена
+    col_mesh_names = []
+    for o in context.scene.objects:
+        if (o.type == 'MESH' and o not in sel_set
+                and is_collision_mesh(o)
+                and (o.parent is None or o in meshes0_set)):
+            sel.append(o)
+            sel_set.add(o)
+            col_mesh_names.append(o.name)
+    # 2) сфера/бокс-empties коллизии: отрезаем `_sphere_N`/`_box_N` от имени
+    # и проверяем, что остаток — префикс имени одного из COL-мешей (импорт
+    # называет их `<model>_sphere_N` рядом с `<model>_col`).
+    def _owner(nm):
+        m = re.match(r'^(.*)_(?:sphere|box)_\d+$', nm)
+        return m.group(1) if m else nm
+    for o in context.scene.objects:
+        if (o.type == 'EMPTY' and o not in sel_set
+                and getattr(o, 'empty_display_type', '') in ('SPHERE', 'CUBE')
+                and (o.parent is None or o in picked_set)):
+            base_e = _owner(o.name)
+            if (not col_mesh_names
+                    or any(cn.startswith(base_e) for cn in col_mesh_names)):
+                sel.append(o)
+                sel_set.add(o)
+    dropped = sum(1 for o in picked if o not in sel_set)
+    meshes = [o for o in sel if o.type == 'MESH']
+    name = (name_override or getattr(root, 'name', '') or 'model')
+    tp = getattr(s, 'gtatools_platform', 'PC')
+    out, errors = [], []
+
+    if want_dff:
+        try:
+            from .dff_export import (export_dff as inu_export_dff,
+                                     _resolve_export_version)
+            inu_export_dff(
+                filepath=os.path.join(directory, name + '.dff'),
+                objects=sel, version=_resolve_export_version(context),
+                target_platform=tp)
+            out.append(name + '.dff')
+        except Exception as e:
+            errors.append(f"{name}.dff: {e}")
+
+    if want_txd:
+        # TXD пишем из ТЕХ ЖЕ мешей, что и DFF (а не из текущего выделения,
+        # которое export_txd берёт через selected_only) — иначе текстуры
+        # берутся не из тех объектов. Временно выделяем meshes и
+        # восстанавливаем выделение после.
+        prev_sel = list(context.selected_objects)
+        prev_active = context.view_layer.objects.active
+        try:
+            bpy.ops.object.select_all(action='DESELECT')
+            for o in meshes:
+                o.select_set(True)
+            context.view_layer.objects.active = meshes[0]
+            merge = bool(txd_merge)
+            r, msg, _ = _write_txd_file(
+                os.path.join(directory, name + '.txd'), context,
+                getattr(s, 'gtatools_dxt_backend', 'numpy'), merge)
+            if r == {'FINISHED'}:
+                # merge → показать счётчики текстур вместо просто имени.
+                out.append(f"{name}.txd ({msg})" if (merge and msg)
+                           else name + '.txd')
             else:
-                lod_idx, is_new = _place(lod_entry)
-                n_add += int(is_new)
-                n_upd += int(not is_new)
-                if dff_entry is not None:
-                    dff_entry.lod_index = lod_idx
-                    if getattr(models['DFF'], 'inu', None):
-                        models['DFF'].inu.lod_index = lod_idx
-    # FLA realInterior: сохраняем 12-колоночный формат, если он уже был в
-    # файле или нужен объектам (то же правило #7, что в ide_ipl).
-    fla = (any(int(getattr(i, 'real_interior', 0) or 0)
-               for i in ipl.instances))
-    try:
-        write_ipl(ipl_path, ipl, game=_get_scene_game(context),
-                  fla_extended=fla)
-    except TypeError:
-        write_ipl(ipl_path, ipl, game=_get_scene_game(context))
-    return n_add, n_upd, skipped
+                errors.append(f"{name}.txd: {msg}")
+        except Exception as e:
+            errors.append(f"{name}.txd: {e}")
+        finally:
+            bpy.ops.object.select_all(action='DESELECT')
+            for o in prev_sel:
+                try:
+                    o.select_set(True)
+                except Exception:
+                    pass
+            context.view_layer.objects.active = prev_active
+
+    # COL: НЕ пишем отдельный .col. У машины/педа коллизия встраивается
+    # ВНУТРЬ .dff (CHUNK_COLLISION_MODEL) — export_dff делает это сам, если
+    # среди выделенных есть COL-меш (obj.inu.type == COL/SHA). Имя
+    # встроенной коллизии = имя .dff.
+    has_col = (any(is_collision_mesh(o) for o in meshes)
+               or any(o.type == 'EMPTY'
+                      and getattr(o, 'empty_display_type', '') in ('SPHERE', 'CUBE')
+                      for o in sel))
+    if has_col:
+        out.append(name + '.dff (+collision)')
+    elif want_col:
+        # Пользователь просил COL, но COL-меша нет → коллизия НЕ встроена,
+        # машина будет проезжать сквозь модели. Явно предупреждаем.
+        errors.append(T("COL-меш не найден — коллизия не встроена в .dff"))
+
+    return out, errors, root, dropped
+
+
+def _report_single_dff(op, out, errors, root, dropped):
+    """Отчёт оператора для run_single_dff_export (общий для обоих экспортов)."""
+    if not out:
+        op.report({'ERROR'}, T("Ничего не экспортировано")
+                  + ((": " + "; ".join(errors[:3])) if errors else ""))
+        return {'CANCELLED'}
+    tail = ""
+    if dropped:
+        tail += f" | {T('вне иерархии корня, пропущено объектов')}: {dropped}"
+    if errors:
+        tail += " | " + "; ".join(errors[:2])
+    op.report({'WARNING'} if (errors or dropped) else {'INFO'},
+              f"{T('Экспортировано:')} {', '.join(out)} "
+              f"({T('корень')}: {getattr(root, 'name', '?')}){tail}")
+    return {'FINISHED'}
 
 
 class GTATOOLS_OT_export_all(bpy.types.Operator):
@@ -990,13 +1060,23 @@ class GTATOOLS_OT_export_all(bpy.types.Operator):
             _draw_col_auto_light(sub, context)
         if scn.inu_settings.gtatools_export_all_txd:
             box = col.box()
-            row = box.row(align=True)
-            row.prop(scn.inu_settings, "gtatools_export_all_txd_shared",
-                     text="", **inu_icon(safe_icon('PACKAGE')))
-            row.prop(scn.inu_settings, "gtatools_export_all_txd_shared_name",
-                     text="", placeholder="textures")
+            # Раньше «общий TXD» был голой иконкой-коробкой без подписи —
+            # его просто не находили, и текстуры уходили в отдельные файлы.
+            box.prop(scn.inu_settings, "gtatools_export_all_txd_shared",
+                     text=T("Общий TXD — все модели в один файл"),
+                     **inu_icon(safe_icon('PACKAGE')))
+            sub = box.row(align=True)
+            sub.enabled = bool(scn.inu_settings.gtatools_export_all_txd_shared)
+            sub.prop(scn.inu_settings, "gtatools_export_all_txd_shared_name",
+                     text=T("Имя"), placeholder="textures")
             box.prop(scn.inu_settings, "gtatools_export_all_txd_merge",
                      text=T("Дописать в существующий TXD"))
+            if (not scn.inu_settings.gtatools_export_all_txd_shared
+                    and getattr(self, '_n_groups', 0) > 1):
+                note = box.row()
+                note.enabled = False
+                note.label(text=T("Текстуры пойдут в отдельные .txd по моделям"),
+                           **inu_icon(safe_icon('INFO')))
 
         # ── Pipeline + DFF flags — shared N-panel mirror ──
         # Показываем только когда включён формат, к которому флаги
@@ -1021,144 +1101,16 @@ class GTATOOLS_OT_export_all(bpy.types.Operator):
                           **inu_icon(safe_icon('ERROR')))
 
     def _export_single_dff(self, context, name_override):
-        """Один DFF: вся выделенная иерархия (машина / пед / любая
-        многокомпонентная модель) → ОДИН .dff. TXD (если включён) → один
-        общий .txd; COL → один .col из выделенных COL-мешей."""
+        """Один DFF — общий движок run_single_dff_export."""
         s = context.scene.inu_settings
-        # Машине/педу нужен ОДИН root-фрейм. Берём корень = самый верхний
-        # предок КРУПНЕЙШЕГО выделенного меша (кузова) и экспортируем всю его
-        # иерархию. Так отсекаются посторонние верхнеуровневые объекты
-        # (light-маркеры, пустышки, остатки): иначе они уходят в клапм как
-        # фантомные root-фреймы и ломают машину — настоящий root перестаёт
-        # быть кадром 0, камера и текстуры съезжают. Достаточно выделить любую
-        # часть машины (или корень) — иерархия соберётся сама.
-        picked = list(context.selected_objects)
-        meshes0 = [o for o in picked if o.type == 'MESH']
-        if not meshes0:
-            self.report({'ERROR'}, T("Нет меш объектов для экспорта"))
-            return {'CANCELLED'}
-        root = max(meshes0, key=lambda o: len(o.data.vertices))
-        while root.parent is not None:
-            root = root.parent
-        sel, stack = [root], [root]
-        while stack:
-            o = stack.pop()
-            for ch in o.children:
-                sel.append(ch)
-                stack.append(ch)
-        # Collision objects live OUTSIDE the vehicle root subtree: the importer
-        # creates the COL/SHA meshes AND the sphere/box primitives (SPHERE/CUBE
-        # empties) all top-level and unparented. Gather the WHOLE set so the
-        # complete collision embeds — пропустить сферы = машина проезжает сквозь
-        # модели. Лишних фреймов они не добавят: _collect_frame_objects
-        # пропускает COL/SHA-меши и сфера/бокс-empties.
-        import re
-        sel_set = set(sel)
-        picked_set = set(picked)
-        meshes0_set = set(meshes0)
-        # 1) COL/SHA меши (top-level или выделенные) — запоминаем их имена
-        col_mesh_names = []
-        for o in context.scene.objects:
-            if (o.type == 'MESH' and o not in sel_set
-                    and is_collision_mesh(o)
-                    and (o.parent is None or o in meshes0_set)):
-                sel.append(o)
-                sel_set.add(o)
-                col_mesh_names.append(o.name)
-        # 2) сфера/бокс-empties коллизии: отрезаем `_sphere_N`/`_box_N` от имени
-        # и проверяем, что остаток — префикс имени одного из COL-мешей (импорт
-        # называет их `<model>_sphere_N` рядом с `<model>_col`).
-        def _owner(nm):
-            m = re.match(r'^(.*)_(?:sphere|box)_\d+$', nm)
-            return m.group(1) if m else nm
-        for o in context.scene.objects:
-            if (o.type == 'EMPTY' and o not in sel_set
-                    and getattr(o, 'empty_display_type', '') in ('SPHERE', 'CUBE')
-                    and (o.parent is None or o in picked_set)):
-                base_e = _owner(o.name)
-                if (not col_mesh_names
-                        or any(cn.startswith(base_e) for cn in col_mesh_names)):
-                    sel.append(o)
-                    sel_set.add(o)
-        dropped = sum(1 for o in picked if o not in sel_set)
-        meshes = [o for o in sel if o.type == 'MESH']
-        name = (name_override or getattr(root, 'name', '') or 'model')
-        tp = getattr(s, 'gtatools_platform', 'PC')
-        out, errors = [], []
-
-        if s.gtatools_export_all_dff:
-            try:
-                from .dff_export import (export_dff as inu_export_dff,
-                                         _resolve_export_version)
-                inu_export_dff(
-                    filepath=os.path.join(self.directory, name + '.dff'),
-                    objects=sel, version=_resolve_export_version(context),
-                    target_platform=tp)
-                out.append(name + '.dff')
-            except Exception as e:
-                errors.append(f"{name}.dff: {e}")
-
-        if s.gtatools_export_all_txd:
-            # TXD пишем из ТЕХ ЖЕ мешей, что и DFF (а не из текущего выделения,
-            # которое export_txd берёт через selected_only) — иначе текстуры
-            # берутся не из тех объектов. Временно выделяем meshes и
-            # восстанавливаем выделение после.
-            prev_sel = list(context.selected_objects)
-            prev_active = context.view_layer.objects.active
-            try:
-                bpy.ops.object.select_all(action='DESELECT')
-                for o in meshes:
-                    o.select_set(True)
-                context.view_layer.objects.active = meshes[0]
-                merge = bool(getattr(s, 'gtatools_export_all_txd_merge', False))
-                r, msg, _ = _write_txd_file(
-                    os.path.join(self.directory, name + '.txd'), context,
-                    getattr(s, 'gtatools_dxt_backend', 'numpy'), merge)
-                if r == {'FINISHED'}:
-                    # merge → показать счётчики текстур вместо просто имени.
-                    out.append(f"{name}.txd ({msg})" if (merge and msg)
-                               else name + '.txd')
-                else:
-                    errors.append(f"{name}.txd: {msg}")
-            except Exception as e:
-                errors.append(f"{name}.txd: {e}")
-            finally:
-                bpy.ops.object.select_all(action='DESELECT')
-                for o in prev_sel:
-                    try:
-                        o.select_set(True)
-                    except Exception:
-                        pass
-                context.view_layer.objects.active = prev_active
-
-        # COL: НЕ пишем отдельный .col. У машины/педа коллизия встраивается
-        # ВНУТРЬ .dff (CHUNK_COLLISION_MODEL) — export_dff делает это сам, если
-        # среди выделенных есть COL-меш (obj.inu.type == COL/SHA). Имя
-        # встроенной коллизии = имя .dff.
-        has_col = (any(is_collision_mesh(o) for o in meshes)
-                   or any(o.type == 'EMPTY'
-                          and getattr(o, 'empty_display_type', '') in ('SPHERE', 'CUBE')
-                          for o in sel))
-        if has_col:
-            out.append(name + '.dff (+collision)')
-        elif s.gtatools_export_all_col:
-            # Пользователь просил COL, но COL-меша нет → коллизия НЕ встроена,
-            # машина будет проезжать сквозь модели. Явно предупреждаем.
-            errors.append(T("COL-меш не найден — коллизия не встроена в .dff"))
-
-        if not out:
-            self.report({'ERROR'}, T("Ничего не экспортировано")
-                        + ((": " + "; ".join(errors[:3])) if errors else ""))
-            return {'CANCELLED'}
-        tail = ""
-        if dropped:
-            tail += f" | {T('вне иерархии корня, пропущено объектов')}: {dropped}"
-        if errors:
-            tail += " | " + "; ".join(errors[:2])
-        self.report({'WARNING'} if (errors or dropped) else {'INFO'},
-                    f"{T('Экспортировано:')} {', '.join(out)} "
-                    f"({T('корень')}: {getattr(root, 'name', name)}){tail}")
-        return {'FINISHED'}
+        out, errors, root, dropped = run_single_dff_export(
+            context, self.directory, name_override,
+            want_dff=bool(s.gtatools_export_all_dff),
+            want_txd=bool(s.gtatools_export_all_txd),
+            want_col=bool(s.gtatools_export_all_col),
+            backend=getattr(s, 'gtatools_dxt_backend', 'numpy'),
+            txd_merge=bool(getattr(s, 'gtatools_export_all_txd_merge', False)))
+        return _report_single_dff(self, out, errors, root, dropped)
 
     def execute(self, context):
         s = context.scene.inu_settings
@@ -1203,6 +1155,17 @@ class GTATOOLS_OT_export_all(bpy.types.Operator):
         if getattr(s, 'gtatools_export_all_single_dff', False):
             return self._export_single_dff(context, name_override)
 
+        # Выбранный (или вписанный) в браузере <имя>.txd = «все текстуры в ЭТОТ
+        # файл», сколько бы моделей ни было выделено. Раньше имя работало только
+        # для ОДНОЙ модели, а на нескольких молча игнорировалось и каждая писала
+        # свой <имя модели>.txd — и получались «те же текстуры в разных TXD».
+        txd_shared = bool(getattr(s, 'gtatools_export_all_txd_shared', False))
+        txd_shared_name = (getattr(s, 'gtatools_export_all_txd_shared_name', '')
+                           or 'textures')
+        if name_override and picked.lower().endswith('.txd'):
+            txd_shared = True
+            txd_shared_name = name_override
+
         exported, errors, tri_warnings, txd_notes, num_groups = run_group_export(
             context, self.directory,
             skip_dff=not s.gtatools_export_all_dff,
@@ -1212,8 +1175,8 @@ class GTATOOLS_OT_export_all(bpy.types.Operator):
             skip_cst=not getattr(s, 'gtatools_export_all_cst', False),
             col_library=bool(getattr(s, 'gtatools_export_all_col_library', False)),
             col_library_name=getattr(s, 'gtatools_export_all_col_library_name', '') or 'collision',
-            txd_shared=bool(getattr(s, 'gtatools_export_all_txd_shared', False)),
-            txd_shared_name=getattr(s, 'gtatools_export_all_txd_shared_name', '') or 'textures',
+            txd_shared=txd_shared,
+            txd_shared_name=txd_shared_name,
             backend=getattr(s, 'gtatools_dxt_backend', 'numpy'),
             empty_col=bool(getattr(s, 'gtatools_export_all_col_empty', False)),
             txd_merge=bool(getattr(s, 'gtatools_export_all_txd_merge', False)),
@@ -1234,30 +1197,13 @@ class GTATOOLS_OT_export_all(bpy.types.Operator):
             self.report({'WARNING'},
                         T("IDE/IPL: файлы не выбраны в панели — пропущено"))
             return
-        from ..tools.model_utils import find_all_selected_model_groups
-        try:
-            groups = find_all_selected_model_groups()
-        except Exception as e:
-            self.report({'WARNING'}, f"IDE/IPL groups: {e}")
-            return
-        parts = []
-        if ide_path:
-            try:
-                u, a = _upsert_ide_for_groups(groups, ide_path)
-                parts.append(f"IDE +{a} ~{u}")
-            except Exception as e:
-                parts.append(f"IDE err: {e}")
-        if ipl_path:
-            try:
-                na, nu, skipped = _upsert_ipl_for_groups(groups, ipl_path,
-                                                         context)
-                parts.append(f"IPL +{na} ~{nu}")
-                if skipped:
-                    self.report({'WARNING'}, T(
-                        "IPL: пропущены строки с model_id 0 (задай ID): ")
-                        + ", ".join(skipped[:5]))
-            except Exception as e:
-                parts.append(f"IPL err: {e}")
+        objs = [o for o in context.selected_objects if o.type == 'MESH']
+        if not objs:
+            from ..tools.model_utils import _get_active_collection_objects
+            objs = [o for o in _get_active_collection_objects()
+                    if o.type == 'MESH']
+        parts = _upsert_ide_ipl_objects(self, context, objs,
+                                        ide_path=ide_path, ipl_path=ipl_path)
         if parts:
             self.report({'INFO'}, "  ".join(parts))
 
@@ -1325,13 +1271,21 @@ class GTATOOLS_OT_inu_export(bpy.types.Operator, ExportHelper):
     filename_ext = ""
     use_filter_folder = True
 
-    # ── Format checkboxes ──
+    # ── Format checkboxes ── те же, что у «Экспорта всех выделенных»
     export_dff: BoolProperty(name="DFF", default=True, description="Export DFF models")
     export_col: BoolProperty(name="COL", default=True, description="Export COL collision")
+    export_lod: BoolProperty(name="LOD", default=True,
+        description=T("Экспортировать LOD-модели (LOD<имя>.dff)"))
     from ..tools.txd_export import export_txd
     export_txd: BoolProperty(name="TXD", default=True, description="Export TXD textures")
+    export_cst: BoolProperty(name="CST", default=False,
+        description=T("Коллизия текстом для Collision File Editor II (.cst)"))
     export_ide: BoolProperty(name="IDE", default=False, description="Export IDE definitions")
     export_ipl: BoolProperty(name="IPL", default=False, description="Export IPL placements")
+    single_dff: BoolProperty(
+        name=T("Один DFF (машина/пед)"),
+        description=T("Вся выделенная иерархия — в ОДИН .dff, коллизия внутрь него"),
+        default=False)
 
     # ── Source ──
     source: EnumProperty(
@@ -1344,11 +1298,6 @@ class GTATOOLS_OT_inu_export(bpy.types.Operator, ExportHelper):
         default='SELECTED',
     )
 
-    # ── DFF settings ──
-    dff_include_2dfx: BoolProperty(name="Include 2DFX", default=True)
-    dff_auto_lod: BoolProperty(name="Auto-LOD", default=True,
-        description="Automatically export LOD models (LOD*.dff)")
-
     # ── COL settings ──
     col_library: BoolProperty(
         name=T("COL Library"),
@@ -1360,10 +1309,38 @@ class GTATOOLS_OT_inu_export(bpy.types.Operator, ExportHelper):
         description=T("Имя общего .col файла без расширения (например 'district' → district.col)"),
         default="collision",
     )
+    col_empty: BoolProperty(
+        name=T("Пустая коллизия"),
+        description=T("Записать запись без геометрии (границы — по видимой модели)"),
+        default=False)
+
+    # Старые поля — только чтобы сохранённые пресеты оператора не падали на
+    # неизвестном атрибуте. Не рисуются и ни на что не влияют: текстуры всегда
+    # берутся из экспортируемых моделей, 2DFX-дети всегда идут в DFF, LOD — галочка LOD.
+    txd_selected_only: BoolProperty(name="Selected Only", default=True,
+                                    options={'HIDDEN', 'SKIP_SAVE'})
+    dff_include_2dfx: BoolProperty(name="Include 2DFX", default=True,
+                                   options={'HIDDEN', 'SKIP_SAVE'})
+    dff_auto_lod: BoolProperty(name="Auto-LOD", default=True,
+                               options={'HIDDEN', 'SKIP_SAVE'})
 
     # ── TXD settings ──
-    txd_selected_only: BoolProperty(name="Selected Only", default=True,
-        description="Export only textures used by exported models")
+    txd_shared: BoolProperty(
+        name=T("Общий TXD"),
+        description=T(
+            "Все текстуры экспортируемых моделей — в ОДИН файл с именем ниже.\n"
+            "Без этой галочки каждая модель получает свой <имя>.txd"),
+        default=False)
+    txd_shared_name: StringProperty(
+        name=T("Имя"),
+        description=T("Имя общего TXD без .txd"),
+        default="")
+    txd_merge: BoolProperty(
+        name=T("Дописать в существующий"),
+        description=T(
+            "Если TXD уже есть — добавить/обновить в нём текстуры сцены, "
+            "сохранив остальные (от других моделей). Иначе файл перезаписывается целиком"),
+        default=False)
 
     # ── IDE/IPL settings ──
     ide_ipl_upsert: BoolProperty(name="Upsert (add/update)", default=False,
@@ -1373,6 +1350,13 @@ class GTATOOLS_OT_inu_export(bpy.types.Operator, ExportHelper):
     ipl_upsert_path: StringProperty(name="IPL File", subtype='FILE_PATH',
         description="Path to existing IPL file for upsert")
 
+    def invoke(self, context, event):
+        preset = getattr(context.scene.inu_settings,
+                         'gtatools_shared_txd_name', '').strip()
+        if preset and not self.txd_shared_name:
+            self.txd_shared_name = preset
+        return super().invoke(context, event)
+
     def draw(self, context):
         layout = self.layout
 
@@ -1380,15 +1364,19 @@ class GTATOOLS_OT_inu_export(bpy.types.Operator, ExportHelper):
         from .dff_export import draw_export_game_block
         draw_export_game_block(layout, context)
 
-        # Format
+        # Format — тот же набор, что у основного экспорта (+ IDE/IPL)
         box = layout.box()
         box.label(text=T("Формат:"), **inu_icon(safe_icon('EXPORT')))
-        col = box.column(align=True)
-        col.prop(self, "export_dff")
-        col.prop(self, "export_col")
-        col.prop(self, "export_txd")
-        col.prop(self, "export_ide")
-        col.prop(self, "export_ipl")
+        row = box.row(align=True)
+        row.prop(self, "export_dff", toggle=True)
+        row.prop(self, "export_col", toggle=True)
+        row.prop(self, "export_lod", toggle=True)
+        row.prop(self, "export_txd", toggle=True)
+        row.prop(self, "export_cst", toggle=True)
+        row = box.row(align=True)
+        row.prop(self, "export_ide", toggle=True)
+        row.prop(self, "export_ipl", toggle=True)
+        box.prop(self, "single_dff")
 
         # Source
         box = layout.box()
@@ -1396,30 +1384,35 @@ class GTATOOLS_OT_inu_export(bpy.types.Operator, ExportHelper):
         box.prop(self, "source", text="")
 
         # DFF settings
-        if self.export_dff:
+        if self.export_dff or self.export_lod:
             box = layout.box()
             box.label(text="DFF:", **inu_icon(safe_icon('MESH_DATA')))
-            box.prop(self, "dff_include_2dfx")
-            box.prop(self, "dff_auto_lod")
             # Pipeline buttons + DFF flags column — shared N-panel mirror.
             from .dff_export import draw_dff_flags_block
             draw_dff_flags_block(box, context)
 
-        # COL settings
-        if self.export_col:
+        # COL settings (те же, что у основного: library / пустая / авто-свет)
+        if self.export_col or self.export_cst:
             box = layout.box()
             box.label(text="COL:", **inu_icon(safe_icon('MESH_ICOSPHERE')))
-            box.prop(self, "col_library")
-            if self.col_library:
-                box.prop(self, "col_library_name")
+            if self.export_col:
+                box.prop(self, "col_library")
+                if self.col_library:
+                    box.prop(self, "col_library_name")
+            box.prop(self, "col_empty")
             from .col_export import _draw_col_auto_light
-            _draw_col_auto_light(box, context)
+            sub = box.column()
+            sub.enabled = not self.col_empty
+            _draw_col_auto_light(sub, context)
 
         # TXD settings
         if self.export_txd:
             box = layout.box()
             box.label(text="TXD:", **inu_icon(safe_icon('IMAGE_DATA')))
-            box.prop(self, "txd_selected_only")
+            box.prop(self, "txd_shared")
+            if self.txd_shared:
+                box.prop(self, "txd_shared_name")
+            box.prop(self, "txd_merge")
             backend = getattr(context.scene.inu_settings, 'gtatools_dxt_backend', 'numpy')
             backend_label = {
                 'numpy':      "Numpy (range-fit mip0 + bbox mip1+)",
@@ -1450,9 +1443,13 @@ class GTATOOLS_OT_inu_export(bpy.types.Operator, ExportHelper):
             return [o for o in context.scene.objects if o.type in ('MESH', 'EMPTY')]
 
     def execute(self, context):
-        from ..tools.txd_export import clear_dxt_cache
-        # Сброс кэша DXT: он не ловит правки пикселей «на месте».
-        clear_dxt_cache()
+        # ЕДИНЫЙ движок с основным экспортом: DFF/LOD/COL/CST/TXD пишет
+        # run_group_export (тот же, что у «Экспорта всех выделенных»), INU
+        # Export добавляет к нему выбор источника и IDE/IPL. Раньше здесь была
+        # СВОЯ копия цикла: без общего TXD и дописывания (TXD всегда падал
+        # отдельным файлом на каждую модель), без CST, пустой коллизии,
+        # одного DFF и без предупреждений о треугольниках.
+        from ..tools.model_utils import find_all_selected_model_groups
         directory = os.path.dirname(self.filepath) if self.filepath else self.filepath
         if not directory or not os.path.isdir(directory):
             self.report({'ERROR'}, T("Выберите папку для экспорта"))
@@ -1460,208 +1457,110 @@ class GTATOOLS_OT_inu_export(bpy.types.Operator, ExportHelper):
 
         source_objects = self._get_source_objects(context)
         mesh_objects = [o for o in source_objects if o.type == 'MESH']
-
         if not mesh_objects:
             self.report({'ERROR'}, T("Нет меш объектов для экспорта"))
             return {'CANCELLED'}
 
-        # Build model groups from source objects
+        s = context.scene.inu_settings
+        backend = getattr(s, 'gtatools_dxt_backend', 'numpy')
+        shared_name = (self.txd_shared_name.strip()
+                       or getattr(s, 'gtatools_shared_txd_name', '').strip()
+                       or 'textures')
+        if shared_name.lower().endswith('.txd'):
+            shared_name = shared_name[:-4]
+
+        # Движок работает по ВЫДЕЛЕНИЮ — на время экспорта выделяем
+        # объекты источника (выделенное / коллекция / сцена) и возвращаем как было.
+        prev_selected = list(context.selected_objects)
+        prev_active = context.view_layer.objects.active
         groups = {}
-        for obj in mesh_objects:
-            from ..tools.model_utils import get_model_type
-            model_type, base_name = get_model_type(obj)
-            if not base_name:
-                continue
-            base_name_clean = base_name.rstrip('_')
-            if base_name_clean not in groups:
-                groups[base_name_clean] = {'DFF': None, 'LOD': None, 'COL': None}
-            if model_type and groups[base_name_clean][model_type] is None:
-                groups[base_name_clean][model_type] = obj
-
-        if not groups:
-            self.report({'ERROR'}, T("Не найдено моделей для экспорта"))
-            return {'CANCELLED'}
-
-        # Disable prelight preview
-        prelight_was_on = set()
-        for base_name, models in groups.items():
-            for mt in ('DFF', 'LOD', 'COL'):
-                obj = models[mt]
-                if obj and obj.type == 'MESH':
-                    for mat_slot in obj.material_slots:
-                        mat = mat_slot.material
-                        if mat and mat.use_nodes and mat.node_tree.nodes.get("Prelight_Mix"):
-                            prelight_was_on.add(obj)
-                            from ..tools.prelight import setup_prelight_preview
-                            setup_prelight_preview(obj, enable=False)
-                            break
-
-        all_exported = []
-        all_errors = []
-        backend = getattr(context.scene.inu_settings, 'gtatools_dxt_backend', 'numpy')
-
-        # Library COL bypasses the per-group loop — collect once and emit
-        # a single multi-entry .col after all groups finish.
-        library_col_objects = []
-        write_col_per_group = self.export_col
-        if self.export_col and self.col_library:
-            write_col_per_group = False
-            for _base, _models in groups.items():
-                if _models['COL']:
-                    library_col_objects.append(_models['COL'])
-
-        wm = context.window_manager
-        total_groups = len(groups)
-        wm.progress_begin(0, total_groups)
-        context.workspace.status_text_set(T("INU Export..."))
-
-        for idx, (base_name, models) in enumerate(groups.items()):
-            wm.progress_update(idx)
-            context.workspace.status_text_set(
-                f"{T('INU Export:')} {idx + 1}/{total_groups} {base_name}")
-
-            # ── DFF ──
-            if self.export_dff and models['DFF']:
-                dff_path = os.path.join(directory, f"{base_name}.dff")
+        try:
+            bpy.ops.object.select_all(action='DESELECT')
+            for o in mesh_objects:
                 try:
-                    from .dff_export import export_dff as inu_export_dff, _resolve_export_version
-                    rw_ver = _resolve_export_version(context)
-                    tp = getattr(context.scene.inu_settings, 'gtatools_platform', 'PC')
-                    dff_objects = [models['DFF']]
-                    if self.dff_include_2dfx:
-                        for child in models['DFF'].children:
-                            if child.type == 'EMPTY' and getattr(child, 'inu', None) and child.inu.type == '2DFX':
-                                dff_objects.append(child)
-                    inu_export_dff(filepath=dff_path, objects=dff_objects,
-                                   version=rw_ver, target_platform=tp)
-                    all_exported.append(f"{base_name}.dff")
-                except Exception as e:
-                    all_errors.append(f"{base_name}.dff: {e}")
+                    o.select_set(True)
+                except RuntimeError:
+                    pass
+            context.view_layer.objects.active = mesh_objects[0]
 
-            # ── LOD ──
-            if self.export_dff and self.dff_auto_lod and models['LOD']:
-                lod_path = os.path.join(directory, f"LOD{base_name}.dff")
+            groups = find_all_selected_model_groups()
+
+            if self.single_dff:
+                out, errors, root, dropped = run_single_dff_export(
+                    context, directory, '',
+                    want_dff=self.export_dff, want_txd=self.export_txd,
+                    want_col=self.export_col, backend=backend,
+                    txd_merge=self.txd_merge)
+                result = _report_single_dff(self, out, errors, root, dropped)
+            else:
+                exported, errors, tri_warnings, txd_notes, num_groups = \
+                    run_group_export(
+                        context, directory,
+                        skip_dff=not self.export_dff,
+                        skip_col=not self.export_col,
+                        skip_lod=not self.export_lod,
+                        skip_txd=not self.export_txd,
+                        skip_cst=not self.export_cst,
+                        col_library=bool(self.col_library),
+                        col_library_name=self.col_library_name or 'collision',
+                        txd_shared=bool(self.txd_shared),
+                        txd_shared_name=shared_name,
+                        backend=backend,
+                        empty_col=bool(self.col_empty),
+                        txd_merge=bool(self.txd_merge))
+                result = _report_group_export(self, exported, errors,
+                                              tri_warnings, num_groups,
+                                              txd_notes)
+        finally:
+            bpy.ops.object.select_all(action='DESELECT')
+            for o in prev_selected:
                 try:
-                    from .dff_export import export_dff as inu_export_dff, _resolve_export_version
-                    rw_ver = _resolve_export_version(context)
-                    tp = getattr(context.scene.inu_settings, 'gtatools_platform', 'PC')
-                    inu_export_dff(filepath=lod_path, objects=[models['LOD']],
-                                   version=rw_ver, target_platform=tp)
-                    all_exported.append(f"LOD{base_name}.dff")
-                except Exception as e:
-                    all_errors.append(f"LOD{base_name}.dff: {e}")
-
-            # ── COL ── (per-group, skipped when library mode is on)
-            if write_col_per_group and models['COL']:
-                col_path = os.path.join(directory, f"{base_name}.col")
+                    o.select_set(True)
+                except RuntimeError:
+                    pass
+            if prev_active is not None:
                 try:
-                    from .col_export import export_col as inu_export_col, _resolve_col_version
-                    original_loc = models['COL'].location.copy()
-                    models['COL'].location = (0, 0, 0)
-                    inu_export_col(filepath=col_path, objects=[models['COL']],
-                                   version=_resolve_col_version(context), model_name=base_name)
-                    models['COL'].location = original_loc
-                    all_exported.append(f"{base_name}.col")
-                except Exception as e:
-                    all_errors.append(f"{base_name}.col: {e}")
+                    context.view_layer.objects.active = prev_active
+                except Exception:
+                    pass
 
-            # ── TXD ──
-            from ..tools.txd_export import export_txd
-            if self.export_txd and (models['DFF'] or models['LOD']):
-                txd_path = os.path.join(directory, f"{base_name}.txd")
-                try:
-                    bpy.ops.object.select_all(action='DESELECT')
-                    if models['DFF']:
-                        models['DFF'].select_set(True)
-                        context.view_layer.objects.active = models['DFF']
-                    if models['LOD']:
-                        models['LOD'].select_set(True)
-                        if not models['DFF']:
-                            context.view_layer.objects.active = models['LOD']
-                    result, msg, _ = export_txd(txd_path, context, self.txd_selected_only, backend=backend)
-                    if result == {'FINISHED'}:
-                        all_exported.append(f"{base_name}.txd")
-                    else:
-                        all_errors.append(f"{base_name}.txd: {msg}")
-                except Exception as e:
-                    all_errors.append(f"{base_name}.txd: {e}")
-
-        # ── IDE ──
-        if self.export_ide:
+        # ── IDE / IPL ── чего у основного экспорта нет: либо дописывание в
+        # выбранные файлы, либо objects.ide / objects.ipl рядом с моделями.
+        notes = []
+        if self.export_ide and groups:
             if self.ide_ipl_upsert and self.ide_upsert_path:
-                try:
-                    updated, added = _upsert_ide_for_groups(
-                        groups, self.ide_upsert_path)
-                    all_exported.append(f"IDE: +{added} ~{updated}")
-                except Exception as e:
-                    all_errors.append(f"IDE upsert: {e}")
+                notes += _upsert_ide_ipl_objects(
+                    self, context, mesh_objects,
+                    ide_path=bpy.path.abspath(self.ide_upsert_path))
             else:
                 ide_path = os.path.join(directory, "objects.ide")
                 try:
                     from .ide_export import export_ide as inu_export_ide
                     inu_export_ide(filepath=ide_path, objects=mesh_objects)
-                    all_exported.append("objects.ide")
+                    notes.append("objects.ide")
+                    from .textdata_audit import audit_ide_file
+                    audit_ide_file(self, ide_path)
                 except Exception as e:
-                    all_errors.append(f"IDE: {e}")
+                    notes.append(f"IDE err: {e}")
 
-        # ── IPL ──
-        if self.export_ipl:
+        if self.export_ipl and groups:
             if self.ide_ipl_upsert and self.ipl_upsert_path:
-                try:
-                    n_add, n_upd, skipped = _upsert_ipl_for_groups(
-                        groups, self.ipl_upsert_path, context)
-                    all_exported.append(f"IPL: +{n_add} ~{n_upd}")
-                    if skipped:
-                        all_errors.append(
-                            T("IPL: пропущены строки с model_id 0 (задай ID): ")
-                            + ", ".join(skipped[:5]))
-                except Exception as e:
-                    all_errors.append(f"IPL upsert: {e}")
+                notes += _upsert_ide_ipl_objects(
+                    self, context, mesh_objects,
+                    ipl_path=bpy.path.abspath(self.ipl_upsert_path))
             else:
                 ipl_path = os.path.join(directory, "objects.ipl")
                 try:
                     from .ipl_export import export_ipl as inu_export_ipl
                     inu_export_ipl(filepath=ipl_path, objects=mesh_objects)
-                    all_exported.append("objects.ipl")
+                    notes.append("objects.ipl")
+                    from .textdata_audit import audit_ipl_file
+                    audit_ipl_file(self, ipl_path, context)
                 except Exception as e:
-                    all_errors.append(f"IPL: {e}")
+                    notes.append(f"IPL err: {e}")
 
-        # Library COL — one multi-entry .col after per-group loop
-        if self.col_library and library_col_objects:
-            context.workspace.status_text_set(
-                f"{T('INU Export:')} library COL ({len(library_col_objects)} models)")
-            try:
-                from .col_export import export_col_library, _resolve_col_version
-                lib_name = self.col_library_name or 'collision'
-                lib_path = os.path.join(directory, f"{lib_name}.col")
-                original_locations = {}
-                for obj in library_col_objects:
-                    original_locations[obj.name] = obj.location.copy()
-                    obj.location = (0, 0, 0)
-                count = export_col_library(lib_path, library_col_objects,
-                                           version=_resolve_col_version(context))
-                for obj in library_col_objects:
-                    if obj.name in original_locations:
-                        obj.location = original_locations[obj.name]
-                all_exported.append(f"{lib_name}.col ({count} records)")
-            except Exception as e:
-                all_errors.append(f"col library: {e}")
-
-        wm.progress_end()
-        context.workspace.status_text_set(None)
-
-        # Restore prelight
-        for obj in prelight_was_on:
-            setup_prelight_preview(obj, enable=True)
-
-        # Report
-        if all_exported:
-            self.report({'INFO'}, f"INU Export: {len(all_exported)} — {', '.join(all_exported)}")
-        if all_errors:
-            self.report({'WARNING'}, f"{T('Ошибки:')} {'; '.join(all_errors)}")
-        if not all_exported and not all_errors:
-            self.report({'WARNING'}, T("Нечего экспортировать"))
-
-        return {'FINISHED'} if all_exported else {'CANCELLED'}
+        if notes:
+            self.report({'INFO'}, "  ".join(notes))
+        return result
 
 

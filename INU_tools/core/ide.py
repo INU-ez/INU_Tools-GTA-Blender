@@ -17,6 +17,7 @@ No Blender dependency — pure Python.
 
 from __future__ import annotations
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -201,81 +202,145 @@ class IdeFile:
 
 # ── Parsing helpers ───────────────────────────────────────────────────
 
-def _parse_obj_line(line: str, timed: bool = False) -> Optional[IdeObject]:
-    """Parse one comma-separated OBJS/TOBJ line.
+def _tokens(line: str) -> list:
+    """Split a data line the way the engine does.
 
-    Поддерживает type 1 (single mesh), type 2 (2 mesh), type 3 (3 mesh)
-    форматы — определяет по количеству полей. Без этого type 2/3
-    раньше парсились молча неверно: meshCount читался как drawDist
-    и dd1 как flags.
-    """
-    parts = [p.strip() for p in line.split(',')]
-    try:
-        if len(parts) < 4:
-            return None
-        model_id = int(parts[0])
-        model_name = parts[1]
-        txd_name = parts[2]
-        n = len(parts)
-        time_on = None
-        time_off = None
+    ``CFileLoader::LoadLine`` (0x536F80) turns every ``,`` and every
+    byte < 0x20 (TAB, CR) into a space before ``sscanf`` sees the line,
+    so commas and whitespace are interchangeable and empty fields
+    (trailing commas) vanish. The old comma-only split silently dropped
+    vanilla lines: ``vehicles.ide`` 446/585/586/593 (tabs instead of
+    commas, trailing comma) and ``peds.ide`` 51 (W10)."""
+    return line.replace(',', ' ').split()
 
-        if not timed:
-            # OBJS forms (по канонике CFileLoader::LoadObject):
-            #   5 = type 1: id, name, txd, dd, flags
-            #   7 = type 2: id, name, txd, meshCount=2, dd1, dd2, flags
-            #   8 = type 3: id, name, txd, meshCount=3, dd1, dd2, dd3, flags
-            if n >= 8:
-                draw_dist = float(parts[4])
-                extras = [float(parts[5]), float(parts[6])]
-                flags = int(parts[7])
-            elif n >= 7:
-                draw_dist = float(parts[4])
-                extras = [float(parts[5])]
-                flags = int(parts[6])
-            else:
-                draw_dist = float(parts[3])
-                extras = []
-                flags = int(parts[4]) if n >= 5 else 0
+
+_INT_PREFIX_RE = re.compile(r'[-+]?\d+')
+
+
+def _sscanf_int(tok: str):
+    """``%d`` semantics: the leading integer of the token, or None when
+    the token does not start with one. ``3.5`` → 3 (the ``.5`` makes the
+    NEXT conversion fail, see ``_sscanf_seq``)."""
+    m = _INT_PREFIX_RE.match(tok)
+    return int(m.group(0)) if m else None
+
+
+def _sscanf_seq(parts: list, start: int, kinds: str) -> list:
+    """Emulate the numeric tail of an ``sscanf`` format from token
+    ``start``: ``kinds`` is one char per conversion (``d`` / ``f``).
+    Conversions run in order and stop at the first failure — like the
+    CRT, which leaves the remaining targets untouched. A ``%d`` on
+    ``3.5`` consumes ``3`` and the leftover ``.5`` fails the following
+    conversion. Returns the list of successfully converted values."""
+    out = []
+    i = start
+    for k in kinds:
+        if i >= len(parts):
+            break
+        tok = parts[i]
+        if k == 'd':
+            v = _sscanf_int(tok)
+            if v is None:
+                break
+            out.append(v)
+            if _INT_PREFIX_RE.match(tok).end() != len(tok):
+                # partial consumption — the next conversion sees ".5"
+                break
         else:
-            # TOBJ — те же 3 формы + 2 trailing int (timeOn, timeOff):
-            #   7  = type 1
-            #   9  = type 2 (2 mesh)
-            #   10 = type 3 (3 mesh)
-            if n >= 10:
-                draw_dist = float(parts[4])
-                extras = [float(parts[5]), float(parts[6])]
-                flags = int(parts[7])
-                time_on = int(parts[8])
-                time_off = int(parts[9])
-            elif n >= 9:
-                draw_dist = float(parts[4])
-                extras = [float(parts[5])]
-                flags = int(parts[6])
-                time_on = int(parts[7])
-                time_off = int(parts[8])
-            elif n >= 7:
-                draw_dist = float(parts[3])
-                extras = []
-                flags = int(parts[4])
-                time_on = int(parts[5])
-                time_off = int(parts[6])
-            else:
-                return None
+            try:
+                out.append(float(tok))
+            except ValueError:
+                break
+        i += 1
+    return out
 
+
+def _parse_obj_line(line: str, timed: bool = False) -> Optional[IdeObject]:
+    """Parse one OBJS/TOBJ line exactly the way ``CFileLoader::LoadObject``
+    (0x5B3C60) / ``LoadTimeObject`` (0x5B3DE0) do (W9):
+
+    1. ``"%d %s %s %f %d"`` (tobj: ``+ %d %d``). Accepted only when
+       every conversion succeeded AND draw distance ≥ 4.0.
+    2. Otherwise the legacy mesh-count form: ``"%d %s %s %d"`` gives
+       ``count`` (sscanf ``%d`` reads the integer part of ``3.5``), then
+       ``count == 1``: ``%f %d``, ``2``: ``%f %f %d``, ``3``: ``%f %f %f %d``
+       (tobj: ``+ %d %d``). Any other count keeps whatever pass 1 left in
+       dd / flags. Only the first draw distance is used by the game; the
+       extra ones are kept for round-trips.
+       A fractional count token is consumed only up to the dot: the
+       following ``%f`` reads the leftover ``.5``, so ``3.5, 8`` gives
+       dd = 0.5 (DAT-08, the object goes invisible) and ``1.5, 2000, 0``
+       gives dd = 0.5, flags = 2000. The surplus distances read in that
+       case are the flag column, not mesh distances — they are dropped.
+    3. Fewer than 4 usable tokens → the engine drops the line (DAT-08b).
+
+    So ``320, airtrain_vlo, generic, 1, 2000, 0`` (vanilla default.ide)
+    reads as dd = 2000, flags = 0 — not dd = 1, flags = 2000.
+    """
+    parts = _tokens(line)
+    if len(parts) < 4:
+        return None
+    model_id = _sscanf_int(parts[0])
+    if model_id is None:
+        return None
+    model_name = parts[1]
+    txd_name = parts[2]
+    time_on = None
+    time_off = None
+    extras = []
+
+    # Pass 1 — the SA single-mesh form.
+    kinds = 'fd' + ('dd' if timed else '')
+    vals = _sscanf_seq(parts, 3, kinds)
+    draw_dist = vals[0] if len(vals) > 0 else 0.0
+    flags = vals[1] if len(vals) > 1 else 0
+    if timed and len(vals) > 2:
+        time_on = vals[2]
+    if timed and len(vals) > 3:
+        time_off = vals[3]
+    if len(vals) == len(kinds) and draw_dist >= 4.0:
         return IdeObject(
             model_id=model_id, model_name=model_name, txd_name=txd_name,
             draw_distance=draw_dist, flags=flags,
             time_on=time_on, time_off=time_off,
-            extra_draw_distances=extras,
         )
-    except (ValueError, IndexError):
+
+    # Pass 2 — legacy mesh-count form.
+    count = _sscanf_int(parts[3])
+    if count is None:
         return None
+    if count in (1, 2, 3):
+        kinds = 'f' * count + 'd' + ('dd' if timed else '')
+        # "%d" on "3.5" leaves ".5" for the next conversion.
+        rest = parts[3][_INT_PREFIX_RE.match(parts[3]).end():]
+        tail = ([rest] if rest else []) + parts[4:]
+        vals = _sscanf_seq(tail, 0, kinds)
+        dds = vals[:count]
+        if dds:
+            draw_dist = dds[0]
+            extras = [] if rest else list(dds[1:])
+        if len(vals) > count:
+            flags = vals[count]
+        if timed:
+            if len(vals) > count + 1:
+                time_on = vals[count + 1]
+            if len(vals) > count + 2:
+                time_off = vals[count + 2]
+    if timed and (time_on is None or time_off is None):
+        # LoadTimeObject stores the hours it got; unfilled ones are stack
+        # garbage in-engine — treat the line as unusable.
+        return None
+    return IdeObject(
+        model_id=model_id, model_name=model_name, txd_name=txd_name,
+        draw_distance=draw_dist, flags=flags,
+        time_on=time_on, time_off=time_off,
+        extra_draw_distances=extras,
+    )
 
 
 def _parse_anim_line(line: str) -> Optional[IdeAnim]:
     """Parse anim section line: ID, ModelName, TXDName, AnimFile, DrawDist, Flags"""
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     try:
         if len(parts) < 5:
             return None
@@ -304,13 +369,16 @@ def _parse_car_line(line: str) -> Optional[IdeCar]:
     best-effort SA-style parse — matches the legacy behaviour where
     short lines were tolerated.
     """
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     n = len(parts)
     if n < 10:
         return None
     try:
         # ── III: 12 cols, no anims field ──────────────────────────
-        if n == 12:
+        # Token 7 is III's ``frq`` (a number); in an SA line with 12
+        # tokens (boat/plane with a trailing column) it is the class
+        # word — so only a numeric token 7 means III.
+        if n == 12 and _sscanf_int(parts[7]) is not None:
             return IdeCar(
                 model_id=int(parts[0]), model_name=parts[1],
                 txd_name=parts[2], veh_type=parts[3],
@@ -379,7 +447,7 @@ def _parse_ped_line(line: str) -> Optional[IdePed]:
     Short / unrecognised line counts fall through to best-effort SA
     parse (matches legacy tolerance).
     """
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     n = len(parts)
     if n < 7:
         return None
@@ -437,7 +505,7 @@ def _parse_ped_line(line: str) -> Optional[IdePed]:
 
 def _parse_weap_line(line: str) -> Optional[IdeWeap]:
     """Parse weap section line: ID, ModelName, TxdName, AnimName, MeshCount, DrawDist"""
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     try:
         if len(parts) < 5:
             return None
@@ -455,7 +523,7 @@ def _parse_weap_line(line: str) -> Optional[IdeWeap]:
 
 def _parse_hier_line(line: str) -> Optional[IdeHier]:
     """Parse hier section line: ID, ModelName, TxdName"""
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     try:
         if len(parts) < 3:
             return None
@@ -470,7 +538,7 @@ def _parse_hier_line(line: str) -> Optional[IdeHier]:
 
 def _parse_txdp_line(line: str) -> Optional[IdeTxdp]:
     """Parse txdp section line: TxdName, ParentTxdName"""
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     try:
         if len(parts) < 2:
             return None
@@ -616,7 +684,7 @@ def _parse_2dfx_line(line: str) -> Optional[IdeFx2dfx]:
     """Parse one ``2dfx`` IDE line: 9-field header + type-specific tail.
     Tail tokens are kept as strings so the writer round-trips them
     verbatim without losing exact float precision or string quoting."""
-    parts = [p.strip() for p in line.split(',')]
+    parts = _tokens(line)
     if len(parts) < 9:
         return None
     try:
@@ -935,11 +1003,11 @@ def remove_ide(filepath: str, model_ids: set[int]) -> int:
             if stripped and not stripped.startswith('#'):
                 # Try to extract model_id (first field)
                 try:
-                    mid = int(stripped.split(',')[0].strip())
+                    mid = int(_tokens(stripped)[0])
                     if mid in model_ids:
                         removed += 1
                         continue
-                except ValueError:
+                except (ValueError, IndexError):
                     pass
 
         result_lines.append(line)

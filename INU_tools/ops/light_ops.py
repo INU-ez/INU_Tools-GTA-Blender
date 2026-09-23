@@ -720,7 +720,8 @@ class GTATOOLS_OT_lightmap_generate(bpy.types.Operator):
 
             for node in mat.node_tree.nodes:
                 if node.type == 'TEX_IMAGE' and node.image:
-                    tex_name = os.path.splitext(node.image.name)[0]
+                    from ..core.tex_name import clean_texture_name
+                    tex_name = clean_texture_name(node.image.name)
                     if tex_name not in textures:
                         textures.append(tex_name)
 
@@ -1947,6 +1948,43 @@ class GTATOOLS_OT_copy_vertex_alpha(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class GTATOOLS_OT_clear_vertex_alpha(bpy.types.Operator):
+    """Полностью убрать альфу вершин из АКТИВНОГО цветового атрибута:
+    залить альфа-канал в 1.0 (непрозрачно), RGB сохранить. Так модель
+    экспортируется без вертекс-альфы (полностью непрозрачной). Работает по
+    всем выделенным мешам (у каждого — свой активный атрибут)."""
+    bl_idname = "gtatools.clear_vertex_alpha"
+    bl_label = "INU: Clear Vertex Alpha"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        mesh_objects = [o for o in context.selected_objects if o.type == 'MESH']
+        if not mesh_objects:
+            obj = context.active_object
+            if obj and obj.type == 'MESH':
+                mesh_objects = [obj]
+        if not mesh_objects:
+            _pub(self, {'ERROR'}, T("Выберите меш объект!"))
+            return {'CANCELLED'}
+
+        done = 0
+        for obj in mesh_objects:
+            attr = compat.vcol_active(obj.data)
+            if not attr:
+                continue
+            for i in range(len(attr.data)):
+                c = attr.data[i].color
+                attr.data[i].color = (c[0], c[1], c[2], 1.0)
+            done += 1
+
+        if not done:
+            _pub(self, {'WARNING'}, T("Нет активного цветового атрибута"))
+            return {'CANCELLED'}
+        _pub(self, {'INFO'}, f"{T('Альфа вершин очищена')}: "
+                             f"{done} {T('объектов')}")
+        return {'FINISHED'}
+
+
 class GTATOOLS_OT_prelight_preview(bpy.types.Operator):
     """Переключить превью prelight - показать vertex colors с текстурами"""
     bl_idname = "gtatools.prelight_preview"
@@ -1995,7 +2033,12 @@ class GTATOOLS_OT_prelight_preview(bpy.types.Operator):
 class GTATOOLS_OT_alpha_preview(bpy.types.Operator):
     """Показать прозрачность по альфе вершин во вьюпорте, независимо от
     превью prelight (RGB). Заводит альфа-канал активного слоя в Alpha
-    материала и включает blended-режим отрисовки."""
+    материала и включает blended-режим отрисовки.
+
+    ⚠ ПРИ ПЕРВОЙ ПОКРАСКЕ альфы на модели, у которой её ещё не было,
+    мазок не появится сразу — переключи превью (выключи и включи), чтобы
+    материал подцепил новый альфа-канал. Дальше рисование обновляется
+    вживую без переключений."""
     bl_idname = "gtatools.alpha_preview"
     bl_label = "INU: Toggle Vertex Alpha Preview"
     # No 'UNDO': this is a non-destructive viewport-preview toggle, and the

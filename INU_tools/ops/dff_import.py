@@ -211,6 +211,10 @@ def _create_blender_material(dff_mat: DffMaterial, index: int,
     # together". Carry the DFF alpha too so glass shows through in Solid view
     # (Viewport Shading → Color → Material).
     mat.diffuse_color = (c.r / 255.0, c.g / 255.0, c.b / 255.0, c.a / 255.0)
+    # Штамп импорта: с ним экспорт сравнивает diffuse_color и понимает, что
+    # пользователь правил свотч «Цвет (RGBA)» в панели (см. _read_base_color
+    # в dff_export). Точно те же float'ы, что ушли в diffuse_color.
+    mat['inu_dff_color'] = (c.r / 255.0, c.g / 255.0, c.b / 255.0, c.a / 255.0)
 
     # Connect texture if available
     tex_node = None
@@ -1011,6 +1015,10 @@ def _import_2dfx(ext_2dfx: Extension2dfx, collection, base_name: str) -> list:
             obj['2dfx_rotation_matrix'] = list(entry.rotation_matrix)
             obj['2dfx_external_script'] = entry.external_script
             obj['2dfx_ped_probability'] = entry.ped_existing_probability
+            # Tail bytes 52/54 (W2) — vanilla carries 0x23 on 18 entries;
+            # kept so a Blender round-trip re-writes the record verbatim.
+            obj['2dfx_ped_flags'] = entry.flags
+            obj['2dfx_ped_unknown'] = entry.unknown
 
         elif isinstance(entry, SunGlare2dfx):
             name = f"{base_name}.2dfx_sunglare.{i}"
@@ -2199,6 +2207,85 @@ def _init_import_stats(stats: dict) -> dict:
     return stats
 
 
+# Обычные форматы текстур (НЕ в .txd) — для fallback-поиска на диске.
+_LOOSE_IMG_EXTS = ('.png', '.tga', '.dds', '.bmp', '.jpg', '.jpeg',
+                   '.tif', '.tiff')
+
+
+def _pull_loose_textures(loose_dirs, scope_mats, *, recursive=True,
+                         _cap=40000):
+    """Подтянуть ОБЫЧНЫЕ картинки (png/tga/dds/…) для текстур DFF, которых
+    нет в .txd: ищем ``<имя_текстуры>.<ext>`` в папках модели и подпапках,
+    грузим и назначаем материалам. Имя текстуры — из label Image-ноды (его
+    ставит импорт DFF). Возвращает число назначенных нод."""
+    # 1) какие Image-ноды scope остались без картинки (+ их имя текстуры)
+    pending = []          # (node, texname)
+    wanted = set()        # texname.lower()
+    for mat in scope_mats:
+        nt = mat.node_tree if (mat and getattr(mat, 'use_nodes', False)) else None
+        if nt is None:
+            continue
+        for n in nt.nodes:
+            if getattr(n, 'type', '') == 'TEX_IMAGE' and n.image is None:
+                nm = (getattr(n, 'label', '') or '').strip()
+                if nm:
+                    pending.append((n, nm))
+                    wanted.add(nm.lower())
+    if not wanted:
+        return 0
+    # 2) индекс файлов картинок в папках модели (рекурсивно по подпапкам)
+    index = {}            # basename_без_ext.lower() -> полный путь
+    seen = 0
+    for d in loose_dirs:
+        if not d or not os.path.isdir(d):
+            continue
+        if recursive:
+            for root, _dirs, files in os.walk(d):
+                for f in files:
+                    stem, ext = os.path.splitext(f)
+                    if ext.lower() in _LOOSE_IMG_EXTS:
+                        index.setdefault(stem.lower(), os.path.join(root, f))
+                    seen += 1
+                    if seen > _cap:
+                        break
+                if seen > _cap:
+                    break
+        else:
+            try:
+                for f in os.listdir(d):
+                    stem, ext = os.path.splitext(f)
+                    if ext.lower() in _LOOSE_IMG_EXTS:
+                        index.setdefault(stem.lower(), os.path.join(d, f))
+            except Exception:                          # noqa: BLE001
+                pass
+    if not index:
+        return 0
+    # 3) назначить найденные файлы материалам
+    assigned = 0
+    cache = {}            # texname.lower() -> image
+    for node, nm in pending:
+        key = nm.lower()
+        img = cache.get(key)
+        if img is None:
+            path = index.get(key)
+            if not path:
+                continue
+            img = bpy.data.images.get(nm)
+            if img is None:
+                try:
+                    img = bpy.data.images.load(path, check_existing=True)
+                    try:
+                        img.name = nm
+                    except Exception:                  # noqa: BLE001
+                        pass
+                except Exception:                      # noqa: BLE001
+                    continue
+            cache[key] = img
+        node.image = img
+        assigned += 1
+    return assigned
+
+
 def import_one_dff(path, context, stats, *, import_game=None,
                    link_alpha=False, txd_hint=None, weld_sharpen=None,
                    skip_2dfx=None):
@@ -2379,6 +2466,18 @@ def import_one_dff(path, context, stats, *, import_game=None,
             stats['warnings'].append(
                 f"{name}: {T('TXD не найден')} '{dff_name}.txd' "
                 f"({T('и нет .txd с покрытием ≥50% в')} {dirs_str})")
+
+        # Fallback: текстуры НЕ из TXD — обычные картинки (png/tga/dds/…) в
+        # папке модели и подпапках. Тянем то, что TXD не покрыл (или всё, если
+        # TXD не найден). Работает и в drag-drop (общий путь import_one_dff).
+        try:
+            _loose_dirs = [d for d in (custom_dir, directory) if d]
+            _n_loose = _pull_loose_textures(_loose_dirs, _scope_mats)
+            if _n_loose:
+                stats['infos'].append(
+                    f"{T('текстуры из файлов')}: {_n_loose}")
+        except Exception as _e:                        # noqa: BLE001
+            print(f"[loose-tex] {name}: {_e!r}")
 
 
 def _iter_import_dff_files(paths, context, stats, *,
@@ -2571,6 +2670,9 @@ class GTATOOLS_OT_import_dff(_DFFImportModalMixin, bpy.types.Operator):
         # Game-source override — sits at the top so user sees it
         # before the TXD-help block.
         layout.prop(self, "import_game")
+        # Платформа (PC / Mobile). Mobile-DFF распознаётся по данным сам —
+        # это выбор/дефолт (влияет на дальнейший экспорт и подсказки).
+        layout.prop(scene.inu_settings, "gtatools_platform", text=T("Платформа"))
         layout.separator()
 
         # Auto-weld / sharp-edges toggle — turn OFF for custom models.

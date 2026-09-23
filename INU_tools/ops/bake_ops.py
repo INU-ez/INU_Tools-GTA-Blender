@@ -52,6 +52,30 @@ def _alpha_src_img(s, base, src):
     return bpy.data.images.get(f"{base}_{src}")
 
 
+def _map_image(obj, map_id):
+    """Картинка запечённой карты `map_id` у объекта. Слой печёт в
+    <base>_<uid> (см. _lkey), а не в <base>_<map_id> — искать надо по ключу
+    слоя, иначе свежий бейк «не находится»: превью LightMap, «Применить» и
+    «Пост-обработка» ругались «Нет запечённого результата — сначала
+    запеките». Fallback — старое имя <base>_<map_id>."""
+    base = obj.get("inu_bake_base", "") if obj is not None else ""
+    if not base:
+        return None
+    blo = getattr(obj, 'inu', None)
+    for L in getattr(blo, 'gtatools_bake_layers', []) or []:
+        if L.map_id != map_id:
+            continue
+        im = bpy.data.images.get(f"{base}_{_lkey(L)}")
+        if im is not None:
+            return im
+    return bpy.data.images.get(f"{base}_{map_id}")
+
+
+def _lightmap_image(obj):
+    """Запечённый LightMap объекта (или None)."""
+    return _map_image(obj, 'LIGHTMAP')
+
+
 def _layer_faces_key(uid):
     return f"inu_bake_faces_{uid}"
 
@@ -511,7 +535,7 @@ def _apply_lightmap_preview(obj):
     вживую (rebuild_live_composite). Сэмплится через UV запекания лайтмапа.
     Возвращает материал или None."""
     base = obj.get("inu_bake_base", "")
-    if bpy.data.images.get(f"{base}_LIGHTMAP") is None:
+    if _lightmap_image(obj) is None:
         return None
     s = bpy.context.scene.inu_settings
     uv = obj.get("inu_bake_lm_uv", "") or obj.get("inu_bake_uv", "")
@@ -586,6 +610,17 @@ def _composite_stack_image(s, base, out_name):
     # для sRGB-байтовой картинки (совпадает с нодовым превью и с игрой).
     arr = B.composite_layers(pixels, specs, w, h, srgb=True)
     out = B.setup_target_image(out_name, w, h, transient=False)
+    # RGB и альфа независимы (без premultiply) — cutout-текстура не темнеет.
+    # Ставим ТОЛЬКО при отличии: смена alpha_mode — colormanage-сигнал, Blender
+    # сбрасывает буфер и перечитывает картинку из packed-данных, отменяя
+    # ресайз из setup_target_image (старая 2048² при новом бейке 1024² →
+    # foreach_set «expected 16777216, got 4194304»). На первый раз, когда
+    # режим реально меняется, страхует проверка размера в write_numpy_to_image.
+    try:
+        if out.alpha_mode != 'CHANNEL_PACKED':
+            out.alpha_mode = 'CHANNEL_PACKED'
+    except Exception:                                 # noqa: BLE001
+        pass
     B.write_numpy_to_image(out, arr, pack=True)
     return out
 
@@ -745,6 +780,118 @@ def rebuild_live_composite(obj):
     bake_nodes.build_composite_material(_layer_specs(s), base, uv, vcol)
 
 
+def _ensure_paint_image(name, w, h):
+    """Картинка слоя «Рисование»: если её нет — создаём БЕЛУЮ RGBA (белый =
+    no-op для blend MULTIPLY, пока не нарисуешь тёмное). Существующую не
+    трогаем (неразрушающе к уже нарисованному)."""
+    img = bpy.data.images.get(name)
+    if img is not None:
+        return img
+    img = bpy.data.images.new(name, width=int(w), height=int(h), alpha=True)
+    try:
+        import numpy as np
+        from ..tools import bake as B
+        B.write_numpy_to_image(
+            img, np.ones((int(h), int(w), 4), dtype='float32'), pack=True)
+    except Exception:                                 # noqa: BLE001
+        try:
+            img.generated_color = (1.0, 1.0, 1.0, 1.0)
+            img.pack()
+        except Exception:                             # noqa: BLE001
+            pass
+    return img
+
+
+class GTATOOLS_OT_bake_paint_layer(bpy.types.Operator):
+    """Рисовать по картинке слоя кистью (Texture Paint, Material-mode) — WYSIWYG:
+    живой композит обновляется по мазкам. Работает по любой запечённой карте
+    ИЛИ по слою «Рисование». Выход — Tab (назад в Object Mode)."""
+    bl_idname = "gtatools.bake_paint_layer"
+    bl_label = "Рисовать"
+    bl_options = {'REGISTER'}
+
+    uid: StringProperty(default="")
+    map_id: StringProperty(default="")
+
+    def execute(self, context):
+        from ..tools.bake import bake_nodes
+        obj = context.active_object
+        s = context.scene.inu_settings
+        if obj is None or obj.type != 'MESH':
+            self.report({'ERROR'}, T("Выделите меш-объект"))
+            return {'CANCELLED'}
+        blo = obj.inu
+        base = obj.get("inu_bake_base", "") or _derive_texture_name(obj, s)
+        uv = obj.get("inu_bake_uv", "") or (
+            obj.data.uv_layers.active.name if obj.data.uv_layers.active else "")
+        # найти слой по ключу (uid) или map_id
+        L = None
+        for _L in blo.gtatools_bake_layers:
+            if ((self.uid and _lkey(_L) == self.uid)
+                    or (not self.uid and _L.map_id == self.map_id)):
+                L = _L
+                break
+        if L is None:
+            self.report({'ERROR'}, T("Слой не найден"))
+            return {'CANCELLED'}
+        key = _lkey(L)
+        img = bpy.data.images.get(f"{base}_{key}")
+        if img is None:
+            if L.map_id == 'PAINT':
+                img = _ensure_paint_image(f"{base}_{key}",
+                                          s.gtatools_bake_res_x,
+                                          s.gtatools_bake_res_y)
+                obj["inu_bake_base"] = base
+                obj["inu_bake_uv"] = uv
+            else:
+                self.report({'ERROR'},
+                            T("Слой ещё не запечён — сначала «Запечь»"))
+                return {'CANCELLED'}
+        # слой должен быть включён — иначе его нет в живом композите
+        if not L.enabled:
+            L.enabled = True
+        # показать живой композит (mode_live), чтобы мазки были видны сразу
+        obj["inu_bake_mode_live"] = 1
+        _apply_result_material(obj)
+        # активировать image-ноду этой картинки → она станет paint-слотом
+        mat = bpy.data.materials.get(bake_nodes.COMPOSITE_MAT)
+        if mat is not None and mat.use_nodes:
+            for n in mat.node_tree.nodes:
+                if getattr(n, 'type', '') == 'TEX_IMAGE' and n.image is img:
+                    mat.node_tree.nodes.active = n
+                    break
+        # активная UV = UV запекания (проекция кисти)
+        if uv:
+            uvl = obj.data.uv_layers.get(uv)
+            if uvl is not None:
+                uvl.active = True
+        try:
+            for o in context.view_layer.objects:
+                try:
+                    o.select_set(o is obj)
+                except Exception:                     # noqa: BLE001
+                    pass
+            context.view_layer.objects.active = obj
+            if obj.mode != 'TEXTURE_PAINT':
+                bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+            context.scene.tool_settings.image_paint.mode = 'MATERIAL'
+        except Exception as e:                        # noqa: BLE001
+            self.report({'ERROR'},
+                        T("Не удалось войти в режим рисования: {0}").format(e))
+            return {'CANCELLED'}
+        # 2D: показать картинку в Image-редакторе, если он открыт
+        for area in context.screen.areas:
+            if area.type == 'IMAGE_EDITOR':
+                try:
+                    area.spaces.active.image = img
+                except Exception:                     # noqa: BLE001
+                    pass
+                break
+        self.report({'INFO'},
+                    T("Рисуй по слою «{0}». Выход — Tab").format(L.map_id))
+        return {'FINISHED'}
+
+
 class GTATOOLS_OT_bake_run(bpy.types.Operator):
     """Запечь карты активного объекта в свои картинки и собрать живой
     нодовый композит. Свет для карт генерируется самой подсистемой —
@@ -763,12 +910,97 @@ class GTATOOLS_OT_bake_run(bpy.types.Operator):
                     "per-layer «Запечь», чтобы не затрагивать другие слои той "
                     "же карты")
 
+    # Состояние модального прогона (создаётся в invoke).
+    _timer = None
+    _gen = None
+
     @classmethod
     def poll(cls, context):
         obj = context.active_object
         return obj is not None and obj.type == 'MESH'
 
+    # ── Драйверы генератора _bake_iter ──────────────────────────────────
     def execute(self, context):
+        """Синхронный путь (скрипты / без окна): прокрутить генератор до конца.
+        Итог операции лежит в StopIteration.value."""
+        gen = self._bake_iter(context)
+        try:
+            while True:
+                next(gen)
+        except StopIteration as e:
+            return e.value or {'FINISHED'}
+
+    def invoke(self, context, event):
+        """UI-путь: печём по карте за тик таймера — Blender не виснет на всю
+        пачку, виден прогресс, работает ESC-отмена."""
+        self._gen = self._bake_iter(context)
+        wm = context.window_manager
+        wm.progress_begin(0, 100)
+        try:
+            context.workspace.status_text_set(T("Запекание…"))
+        except Exception:                             # noqa: BLE001
+            pass
+        self._timer = wm.event_timer_add(0.05, window=context.window)
+        wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type == 'ESC' and event.value == 'PRESS':
+            self.report({'WARNING'}, T("Запекание отменено"))
+            return self._end(context, {'CANCELLED'}, cancelled=True)
+        if event.type != 'TIMER':
+            # Захватываем ввод, чтобы во время бейка ничего не сломало
+            # состояние (изоляция/материалы). Перерисовка при этом идёт.
+            return {'RUNNING_MODAL'}
+        wm = context.window_manager
+        try:
+            done, total, label = next(self._gen)
+        except StopIteration as e:
+            return self._end(context, e.value or {'FINISHED'})
+        except Exception as e:                        # noqa: BLE001
+            self.report({'ERROR'}, T("Ошибка запекания: ") + str(e))
+            return self._end(context, {'CANCELLED'}, cancelled=True)
+        try:
+            wm.progress_update(int(100 * done / max(1, total)))
+            context.workspace.status_text_set(
+                T("Запекание {0}/{1}: {2}").format(done, total, label))
+        except Exception:                             # noqa: BLE001
+            pass
+        return {'RUNNING_MODAL'}
+
+    def _end(self, context, retval, cancelled=False):
+        """Снять таймер/прогресс/статус; при отмене — закрыть генератор, что
+        раскрутит его finally (изоляция/прилайт/временная копия вернутся)."""
+        wm = context.window_manager
+        if cancelled and self._gen is not None:
+            try:
+                self._gen.close()
+            except Exception:                         # noqa: BLE001
+                pass
+        if self._timer is not None:
+            try:
+                wm.event_timer_remove(self._timer)
+            except Exception:                         # noqa: BLE001
+                pass
+            self._timer = None
+        try:
+            wm.progress_end()
+        except Exception:                             # noqa: BLE001
+            pass
+        try:
+            context.workspace.status_text_set(None)
+        except Exception:                             # noqa: BLE001
+            pass
+        self._gen = None
+        return retval
+
+    def _bake_iter(self, context):
+        """ГЕНЕРАТОР запекания: печёт по одной карте за итерацию и `yield`-ит
+        (готово, всего, имя_карты) — драйвер (модальный или синхронный)
+        крутит его, показывая прогресс. Кадр генератора держит открытым
+        `with BakeStateGuard`, изоляцию и `finally`, поэтому отмена через
+        gen.close() корректно раскручивает всё восстановление. `return {…}`
+        внутри уходит в StopIteration.value — итог операции."""
         from ..tools import bake as B
 
         scene = context.scene
@@ -980,6 +1212,18 @@ class GTATOOLS_OT_bake_run(bpy.types.Operator):
                 base = _LM_QUALITY_SAMPLES.get(
                     q, int(s.gtatools_bake_lightmap_samples))
                 return max(1, base // (aa * aa))
+            # Bevel — нода Bevel стохастическая (случайная нормаль на сэмпл),
+            # поэтому EMIT-запёк шумит и его надо гасить сэмплами Cycles, а не
+            # только лучами ноды. Берём max(ползунок Samples, «Bevel samples»),
+            # БЕЗ деления на aa² — Bevel печётся без суперсэмплинга (map_aa=1).
+            if md.id == 'BEVEL':
+                return max(1, int(scene_samples),
+                           int(s.gtatools_bake_bevel_samples))
+            # Thickness — inside-AO, стохастична: сэмплы из настроек, с учётом
+            # ускорения AA (суперсэмплинг усредняет шум), как у AO.
+            if md.id == 'THICKNESS':
+                base = max(int(scene_samples), md.samples)
+                return max(1, base // (aa * aa))
             # AO / светозависимые / непрямой GI (свет излучения) — шумные,
             # берут сэмплы из настроек. Остальные (плоский color/normal) — 1.
             if (md.bake_type == 'AO' or md.needs_light
@@ -1106,6 +1350,13 @@ class GTATOOLS_OT_bake_run(bpy.types.Operator):
                     mid = L.map_id
                     key = _lkey(L)
                     md = B.get_map(mid)
+                    # Слой «Рисование» не печётся — только гарантируем его
+                    # картинку (белую), уже нарисованное НЕ трогаем.
+                    if mid == 'PAINT':
+                        _ensure_paint_image(f"{result_name}_{key}", res_x, res_y)
+                        baked += 1
+                        yield (baked, len(bake_targets), mid)
+                        continue
                     # AA (super-sampling) per-map. Bevel сэмплит лучи вокруг
                     # КАЖДОГО пикселя и уже сам сглаживает (bevel.samples), так
                     # что super-sampling ему не нужен — а он множит стоимость в
@@ -1156,11 +1407,12 @@ class GTATOOLS_OT_bake_run(bpy.types.Operator):
                         except Exception:
                             pass
                     # Денойз ЛЮБОЙ шумной карты (AO / Shadow / Diffuse Lit /
-                    # Emission GI / LightMap) на финальном размере.
+                    # Emission GI / LightMap / Bevel) на финальном размере.
                     # denoise_image по контракту не бросает (graceful False).
                     # Feature-пассы (albedo/normal) — только для LightMap.
                     _noisy = (md.bake_type == 'AO' or md.needs_light
-                              or getattr(md, 'pass_indirect', False))
+                              or getattr(md, 'pass_indirect', False)
+                              or mid in ('BEVEL', 'THICKNESS'))
                     if _noisy and s.gtatools_bake_denoise:
                         _alb = _nrm = None
                         if (mid == 'LIGHTMAP'
@@ -1173,8 +1425,8 @@ class GTATOOLS_OT_bake_run(bpy.types.Operator):
                     # + смягчение) → <base>_LIGHTMAP. Raw нужен, чтобы менять
                     # интенсивность/фильтр БЕЗ пере-GI (кнопка «Пост-обработка»).
                     if mid == 'LIGHTMAP':
-                        _stash_lightmap_raw(result_name, img)
-                        _apply_lightmap_postprocess(s, result_name, img)
+                        _stash_lightmap_raw(img)
+                        _apply_lightmap_postprocess(s, img)
                     # Normal с включённым «Обесцветить» — сводим запечённую
                     # карту в серое сразу (как при сведении нормал-мапы в
                     # Фотошопе), убирая синий tangent-space оттенок.
@@ -1215,6 +1467,9 @@ class GTATOOLS_OT_bake_run(bpy.types.Operator):
                     if mid == 'DIFFUSE' or (result_img is None and mid != 'ALPHA'):
                         result_img = img
                     baked += 1
+                    # Уступить управление драйверу: карта готова → обновить
+                    # прогресс, дать Blender перерисоваться (модальный путь).
+                    yield (baked, len(bake_targets), mid)
         except RuntimeError as e:
             self.report({'ERROR'}, T("Ошибка запекания: ") + str(e))
             return {'CANCELLED'}
@@ -1529,6 +1784,13 @@ class GTATOOLS_OT_bake_flatten(bpy.types.Operator):
                 self.report({'ERROR'}, T("Не удалось уменьшить: ") + str(e))
                 return {'CANCELLED'}
         try:
+            # CHANNEL_PACKED: RGB и альфа НЕЗАВИСИМЫ — Blender не домножает RGB
+            # на альфу (premultiply) при сохранении. Иначе полупрозрачные зоны
+            # (cutout-силуэт) темнели и вся текстура «уходила в полуальфу».
+            try:
+                save_img.alpha_mode = 'CHANNEL_PACKED'
+            except Exception:                         # noqa: BLE001
+                pass
             save_img.filepath_raw = self.filepath
             save_img.file_format = 'PNG'
             save_img.save()
@@ -1616,6 +1878,12 @@ class GTATOOLS_OT_bake_save_map(bpy.types.Operator):
                 return False
         ok = True
         try:
+            # CHANNEL_PACKED — не премультиплаить RGB на альфу при сохранении
+            # (иначе cutout-текстура выходит полупрозрачной/тёмной).
+            try:
+                save_img.alpha_mode = 'CHANNEL_PACKED'
+            except Exception:                         # noqa: BLE001
+                pass
             save_img.filepath_raw = self.filepath
             save_img.file_format = 'PNG'
             save_img.save()
@@ -1772,28 +2040,28 @@ def _show_image(context, img):
         pass
 
 
-def _stash_lightmap_raw(base, img):
+def _stash_lightmap_raw(img):
     """Сохранить сырой (post-denoise, ДО пост-обработки) LightMap в
-    <base>_LIGHTMAP_raw — источник для пере-применения интенсивности/фильтра
+    <картинка слоя>_raw — источник для пере-применения интенсивности/фильтра
     без пере-GI (кнопка «Пост-обработка»)."""
     from ..tools import bake as B
     w, h = img.size
-    raw = B.setup_target_image(f"{base}_LIGHTMAP_raw", w, h, transient=False)
+    raw = B.setup_target_image(f"{img.name}_raw", w, h, transient=False)
     try:
         B.write_numpy_to_image(raw, B.read_image_to_numpy(img), pack=True)
     except Exception:
         pass
 
 
-def _apply_lightmap_postprocess(s, base, target_img):
-    """raw → смягчение (Gaussian) × интенсивность → target_img
-    (<base>_LIGHTMAP). Источник — <base>_LIGHTMAP_raw (или сам target, если
-    raw нет). Значения клампятся в [0,1] — GTA-текстуры LDR."""
+def _apply_lightmap_postprocess(s, target_img):
+    """raw → смягчение (Gaussian) × интенсивность → target_img (картинка
+    LightMap-слоя). Источник — <её имя>_raw (или сам target, если raw нет).
+    Значения клампятся в [0,1] — GTA-текстуры LDR."""
     import numpy as np
     from ..tools import bake as B
     intensity = float(getattr(s, 'gtatools_bake_lightmap_intensity', 1.0))
     radius = float(getattr(s, 'gtatools_bake_lightmap_filter', 0.0))
-    raw = bpy.data.images.get(f"{base}_LIGHTMAP_raw")
+    raw = bpy.data.images.get(f"{target_img.name}_raw")
     src = raw if raw is not None else target_img
     try:
         arr = B.read_image_to_numpy(src)     # приватный свежий буфер
@@ -1826,14 +2094,13 @@ class GTATOOLS_OT_bake_lightmap_apply(bpy.types.Operator):
         obj = context.active_object
         if obj is None or obj.type != 'MESH':
             return False
-        base = obj.get("inu_bake_base", "")
-        return bool(base) and bpy.data.images.get(f"{base}_LIGHTMAP") is not None
+        return _lightmap_image(obj) is not None
 
     def execute(self, context):
         s = context.scene.inu_settings
         obj = context.active_object
         base = obj.get("inu_bake_base", "")
-        lm = bpy.data.images.get(f"{base}_LIGHTMAP")
+        lm = _lightmap_image(obj)
         if lm is None:
             self.report({'ERROR'}, T("Сначала запеките слой LightMap"))
             return {'CANCELLED'}
@@ -1851,7 +2118,7 @@ class GTATOOLS_OT_bake_lightmap_apply(bpy.types.Operator):
     # ── режим: впечь в diffuse ──
     def _apply_diffuse(self, context, obj, base, lm):
         from ..tools import bake as B
-        diff = bpy.data.images.get(f"{base}_DIFFUSE")
+        diff = _map_image(obj, 'DIFFUSE')
         if diff is None:
             self.report({'ERROR'},
                         T("Нет запечённого Diffuse — добавьте слой Diffuse и запеките"))
@@ -1956,18 +2223,16 @@ class GTATOOLS_OT_bake_lightmap_postprocess(bpy.types.Operator):
         obj = context.active_object
         if obj is None or obj.type != 'MESH':
             return False
-        base = obj.get("inu_bake_base", "")
-        return bool(base) and bpy.data.images.get(f"{base}_LIGHTMAP") is not None
+        return _lightmap_image(obj) is not None
 
     def execute(self, context):
         s = context.scene.inu_settings
         obj = context.active_object
-        base = obj.get("inu_bake_base", "")
-        target = bpy.data.images.get(f"{base}_LIGHTMAP")
+        target = _lightmap_image(obj)
         if target is None:
             self.report({'ERROR'}, T("Сначала запеките слой LightMap"))
             return {'CANCELLED'}
-        _apply_lightmap_postprocess(s, base, target)
+        _apply_lightmap_postprocess(s, target)
         # Обновить активное превью: обычный/лайтмап-композит подхватит новую
         # картинку сам (тот же датаблок), а over-base показывает отдельную
         # свёрнутую <base>_OVER — её надо пересчитать.

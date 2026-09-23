@@ -16,7 +16,7 @@ from typing import Optional
 # String IDs used by the Scene EnumProperty. Stable — do not rename.
 
 GAME_III = 'III'    # Grand Theft Auto III (2001, RW3.3)
-GAME_VC = 'VC'      # Grand Theft Auto: Vice City (2002, RW3.4)
+GAME_VC = 'VC'      # Grand Theft Auto: Vice City (2002, RW3.4.0.3 on PC)
 GAME_SA = 'SA'      # Grand Theft Auto: San Andreas (2004, RW3.6)
 
 ALL_GAMES = (GAME_III, GAME_VC, GAME_SA)
@@ -27,7 +27,8 @@ ALL_GAMES = (GAME_III, GAME_VC, GAME_SA)
 # 4-byte LE field at the end of every RW chunk header.
 
 RW_VERSION_III = 0x33002    # RW 3.3.0.2 — vanilla III (also 0x31000 in early PS2 builds)
-RW_VERSION_VC = 0x35000     # RW 3.5.0.0 — vanilla VC
+RW_VERSION_VC = 0x34003     # RW 3.4.0.3 — vanilla VC PC (3.5.0.0 is the Xbox build;
+                            # the PC exe is linked against 3.4.0.3 and rejects newer streams)
 RW_VERSION_SA = 0x36003     # RW 3.6.0.3 — vanilla SA
 
 _RW_VERSION_BY_GAME = {
@@ -93,26 +94,28 @@ class GameProfile:
     name: str               # 'San Andreas' / 'Vice City' / 'III'
     rw_version: int         # canonical RW3 version int
     # ── COL format ─────────────────────────────────────────────
-    col_version: int        # 1 (III), 2 (VC), 3 (SA)
+    col_version: int        # 1 (III, VC), 3 (SA). COL2 is an SA-era
+                            # format too (weapons.col) — no game reads
+                            # COL2/COL3 but SA; III/VC assert 'COLL'.
     col_supports_shadow_mesh: bool   # SA-only
     col_supports_face_groups: bool   # SA-only
     # ── DFF capabilities ──────────────────────────────────────
     dff_supports_skinning: bool      # peds skin in all 3, vehicles skin only in SA
     dff_supports_2dfx: bool          # all 3
-    dff_supports_night_vertex_colors: bool   # SA-specific extension
+    dff_supports_night_vertex_colors: bool   # Extra Vert Colours (VC+)
     # ── TXD / textures ────────────────────────────────────────
     txd_native_platform_default: int   # 8=D3D8 (SA), 9=D3D9 (VC PC), …
     # ── IDE sections (which kinds the parser must support) ───
     ide_sections: frozenset         # e.g. {'objs', 'tobj', 'cars'}
     # ── IPL inst column count ─────────────────────────────────
-    ipl_inst_columns: int           # 12 (III), 12 (VC), 11 (SA)
+    ipl_inst_columns: int           # 12 (III), 13 (VC: +interior), 11 (SA)
     ipl_supports_binary: bool       # SA-only
     # ── IMG archive ───────────────────────────────────────────
     img_version: int                # 1 (III/VC, .dir external), 2 (SA, embedded)
     # ── Surface IDs (collision material) ─────────────────────
     surface_id_max: int             # 84 (III), 85 (VC), 178 (SA)
     # ── Model ID limits ──────────────────────────────────────
-    model_id_max: int               # 6500 (III), 8500 (VC), 19999 (SA)
+    model_id_max: int               # stock MODELINFOSIZE: 5500 (III), 6500 (VC), 19999 (SA)
 
 
 _PROFILE_III = GameProfile(
@@ -132,27 +135,27 @@ _PROFILE_III = GameProfile(
     ipl_supports_binary=False,
     img_version=1,
     surface_id_max=84,
-    model_id_max=6500,
+    model_id_max=5500,          # MODELINFOSIZE (re3 config.h); more needs a limit adjuster
 )
 
 _PROFILE_VC = GameProfile(
     name="Grand Theft Auto: Vice City",
     rw_version=RW_VERSION_VC,
-    col_version=2,
+    col_version=1,              # VC PC LoadCollisionFile asserts ident == 'COLL'
     col_supports_shadow_mesh=False,
     col_supports_face_groups=False,
     dff_supports_skinning=True,
     dff_supports_2dfx=True,
-    dff_supports_night_vertex_colors=False,
+    dff_supports_night_vertex_colors=True,   # VC introduced Extra Vert Colours
     txd_native_platform_default=8,
     ide_sections=frozenset({'objs', 'tobj', 'hier',
                             'cars', 'peds', 'weap', 'anim',
                             'txdp'}),  # txdp was added in VC
-    ipl_inst_columns=12,
+    ipl_inst_columns=13,        # id name interior x y z sx sy sz rx ry rz rw
     ipl_supports_binary=False,
     img_version=1,
     surface_id_max=85,
-    model_id_max=8500,
+    model_id_max=6500,          # MODELINFOSIZE (reVC config.h)
 )
 
 _PROFILE_SA = GameProfile(
@@ -233,15 +236,13 @@ def detect_game_from_dff(path: str) -> Optional[str]:
 
 def detect_game_from_col(path: str) -> Optional[str]:
     """Detect game from a COL file's first-model magic header.
-    COLL → III, COL2 → VC, COL3 → SA."""
+    COL2/COL3 → SA (only SA reads them). COLL is shared by III and VC
+    (both engines accept nothing else), so it can't pick one — return
+    None and let the caller keep the scene's game."""
     try:
         with open(path, 'rb') as f:
             magic = f.read(4)
-        if magic == b'COLL':
-            return GAME_III
-        if magic == b'COL2':
-            return GAME_VC
-        if magic == b'COL3':
+        if magic in (b'COL2', b'COL3'):
             return GAME_SA
     except OSError:
         pass

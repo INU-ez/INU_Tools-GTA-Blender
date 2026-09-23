@@ -9,6 +9,7 @@ Pure Python — no Blender required.
 """
 
 from pathlib import Path
+import struct
 import sys
 
 
@@ -195,15 +196,16 @@ def test_material_with_specular():
     assert mat.specular.name == "vehiclespecdot64"
 
 
-def test_material_with_reflection():
+def test_material_reflection_not_written():
+    # W7: Reflection Material (0x0253F2FC) — остаток 3ds Max-экспортёра, ваниль
+    # SA его не пишет и движку он не нужен. Экспортёр его НЕ сериализует, чтобы
+    # DFF совпадал с ванильным → после round-trip reflection отсутствует.
     geom = _basic_geom(with_uv=True)
     geom.materials[0].reflection = ReflectionMaterial(
         scale_x=2.0, scale_y=1.0, offset_x=0.1, offset_y=0.2, intensity=0.05)
     parsed = read_dff(write_dff(_wrap(geom)))
     mat = parsed.geometries[0].materials[0]
-    assert mat.reflection is not None
-    assert abs(mat.reflection.scale_x - 2.0) < 1e-5
-    assert abs(mat.reflection.intensity - 0.05) < 1e-5
+    assert mat.reflection is None
 
 
 def test_material_with_dual_texture():
@@ -469,26 +471,49 @@ def test_hanim_on_frame():
 # ── Breakable Objects (chunk 0x253F2FD) ──────────────────────────
 
 def test_breakable_objects():
-    geom = _basic_geom()
-    geom.breakable = BreakableData(
-        vertices_alloc=150,
-        faces_alloc=300,
-        materials_alloc=2,
-        uvs_alloc=150,
-        offset=(0.5, 1.0, 0.0),
-        force=2.5,
-    )
+    """W1: the chunk is the engine's mesh copy (magic + 52-byte header +
+    arrays), built from the geometry and read back field by field."""
+    geom = _basic_geom(with_uv=True)
+    geom.prelit_colors = [RGBA(10, 20, 30, 255)] * 3
+    geom.materials[0].texture = DffTexture(name="brick", mask="brick_m")
+    geom.breakable = BreakableData.from_geometry(geom)
     parsed = read_dff(write_dff(_wrap(geom)))
     b = parsed.geometries[0].breakable
     assert b is not None
-    assert b.vertices_alloc == 150
-    assert b.faces_alloc == 300
-    assert b.materials_alloc == 2
-    assert b.uvs_alloc == 150
-    assert abs(b.force - 2.5) < 1e-5
-    assert b.offset[0] == 0.5
-    assert b.offset[1] == 1.0
-    assert b.offset[2] == 0.0
+    assert b.posn_rule == 1
+    assert len(b.vertices) == 3 and len(b.uvs) == 3 and len(b.colors) == 3
+    assert b.triangles == [(0, 1, 2)]
+    assert b.tri_materials == [0]
+    assert b.tex_names == ["brick"] and b.mask_names == ["brick_m"]
+    assert b.ambient == [(1.0, 1.0, 1.0)]
+    assert b.colors[0].g == 20
+
+
+def test_breakable_marker_zero_is_not_breakable():
+    """The 4-byte magic-0 marker vanilla writes on non-breakable
+    geometries reads back as "no breakable" (same state as no chunk)."""
+    from core.dff import _read_breakable_plugin
+    from core.rwbinary import BinaryReader
+    assert _read_breakable_plugin(BinaryReader(bytes(4)), 4) is None
+
+
+def test_breakable_chunk_layout_matches_engine():
+    """W1 regression: magic + 52-byte header with u16 counts at the
+    offsets BreakableStreamRead (0x59CEC0) reads, then the arrays."""
+    geom = _basic_geom(with_uv=True)
+    geom.materials[0].texture = DffTexture(name="brick")
+    blob = BreakableData.from_geometry(geom).to_bytes(0x1803FFFF)
+    ctype, size, _lib = struct.unpack_from('<III', blob, 0)
+    assert ctype == 0x253F2FD
+    body = blob[12:]
+    assert struct.unpack_from('<I', body, 0)[0] != 0          # magic
+    nv = struct.unpack_from('<H', body, 4 + 4)[0]
+    nt = struct.unpack_from('<H', body, 4 + 0x14)[0]
+    nm = struct.unpack_from('<H', body, 4 + 0x20)[0]
+    assert (nv, nt, nm) == (3, 1, 1)
+    assert size == 4 + 52 + nv * 24 + nt * 8 + nm * 76
+    names_off = 4 + 52 + nv * 24 + nt * 8
+    assert body[names_off:names_off + 6] == b"brick" + bytes(1)
 
 
 # ── UV animation dictionary (clump-level) ────────────────────────
@@ -590,7 +615,7 @@ def test_geometry_with_everything():
         )],
         bounding_sphere=BoundingSphere(radius=3.0),
     )
-    geom.breakable = BreakableData(force=1.5)
+    geom.breakable = BreakableData.from_geometry(geom)
     geom.ext_2dfx = Extension2dfx(entries=[
         Light2dfx(loc=(0.5, 0.5, 1.0), color=RGBA(r=255, g=255),
                   corona_size=1.0, corona_tex_name="coronastar",
@@ -608,6 +633,6 @@ def test_geometry_with_everything():
     assert m.env_map.texture.name == "xvehicleenv128"
     assert m.specular is not None
     assert g.breakable is not None
-    assert abs(g.breakable.force - 1.5) < 1e-5
+    assert len(g.breakable.vertices) == 4 and g.breakable.tex_names == ["vehiclebody"]
     assert g.ext_2dfx is not None
     assert len(g.ext_2dfx.entries) == 1

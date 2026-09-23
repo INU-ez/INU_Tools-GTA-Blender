@@ -148,11 +148,9 @@ def test_write_anp3_round_trip_within_quantisation_tolerance(tmp_path):
             assert abs(kf_in.translation[i] - kf_out.translation[i]) < 1e-3
 
 
-def test_write_anp3_time_round_trips_via_30fps_quantisation(tmp_path):
-    """ANP3 stores time as uint16 frame@30fps. Time 0.5s → frame 15 →
-    0.5s on read. Time 0.0167s (half a frame) quantises to frame 1 →
-    1/30s ≈ 0.0333s — outside our 1/30s tolerance only at sub-frame
-    timings, which we don't test here."""
+def test_write_anp3_time_round_trips_via_60_units_quantisation(tmp_path):
+    """ANP3 stores time as a 16-bit value in 1/60 s units. Time 0.5s →
+    raw 30 → 0.5s on read."""
     src = IFPFile(name="t", animations=[
         Animation(name="A", bones=[
             AnimBone(name="B", bone_id=0, key_type=HAS_ROT, keyframes=[
@@ -169,6 +167,56 @@ def test_write_anp3_time_round_trips_via_30fps_quantisation(tmp_path):
     assert abs(times[0] - 0.0) < 1e-6
     assert abs(times[1] - 1.0) < 1e-6
     assert abs(times[2] - 2.0) < 1e-6
+
+
+def _anp3_single_bone_bytes(raw_times, bone_type=3):
+    """Hand-built ANP3 file: one animation, one bone, identity rotations,
+    the given raw 16-bit time values."""
+    import struct
+    kf = b"".join(struct.pack("<4hH", 0, 0, 0, 4096, t)
+                  + (struct.pack("<3h", 0, 0, 0) if bone_type == 4 else b"")
+                  for t in raw_times)
+    bone = (b"Root".ljust(24, b"\0") + struct.pack("<IIi", bone_type, len(raw_times), 0) + kf)
+    anim = b"WALK".ljust(24, b"\0") + struct.pack("<III", 1, len(bone), 0) + bone
+    body = b"pkg".ljust(24, b"\0") + struct.pack("<I", 1) + anim
+    return b"ANP3" + struct.pack("<I", len(body)) + body
+
+
+def test_read_anp3_time_is_sixtieths_of_a_second(tmp_path):
+    """The game reads ANP3 keyframe time as fixed-point with a 60.0 divisor
+    (gta-reversed KeyFrameCompressed::DeltaTime = FixedFloat<int16, 60>).
+    Vanilla SA anims are keyed at 30 fps, so raw times step by 2: ped.ifp
+    WALK_player has 37 keys with times 0, 2, ..., 72 and lasts 1.2 s.
+    Reading raw 72 as frame@30fps would give 2.4 s — double length."""
+    path = tmp_path / "vanilla_like.ifp"
+    path.write_bytes(_anp3_single_bone_bytes(list(range(0, 73, 2)), bone_type=4))
+    parsed = read_ifp(str(path))
+    times = [kf.time for kf in parsed.animations[0].bones[0].keyframes]
+    assert len(times) == 37
+    assert abs(times[1] - 1.0 / 30.0) < 1e-6
+    assert abs(times[-1] - 1.2) < 1e-6
+
+
+def test_write_anp3_emits_sixtieths_of_a_second_on_disk(tmp_path):
+    """1.2 s must be written as raw 72 (not 36), otherwise the exported anim
+    plays twice as fast in game."""
+    import struct
+    src = IFPFile(name="t", animations=[
+        Animation(name="A", bones=[
+            AnimBone(name="B", bone_id=0, key_type=HAS_ROT, keyframes=[
+                KeyFrame(rotation=(0.0, 0.0, 0.0, 1.0), time=0.0),
+                KeyFrame(rotation=(0.0, 0.0, 0.0, 1.0), time=1.0 / 30.0),
+                KeyFrame(rotation=(0.0, 0.0, 0.0, 1.0), time=1.2),
+            ]),
+        ]),
+    ])
+    path = tmp_path / "out.ifp"
+    write_anp3(str(path), src)
+    data = path.read_bytes()
+    # header 8 + pkg 24 + count 4 + anim hdr 36 + bone hdr 36 → first key
+    first_key = 8 + 24 + 4 + 36 + 36
+    raw = [struct.unpack_from("<H", data, first_key + 10 * i + 8)[0] for i in range(3)]
+    assert raw == [0, 2, 72]
 
 
 # ────────────────────────── dispatch / default ──────────────────────────

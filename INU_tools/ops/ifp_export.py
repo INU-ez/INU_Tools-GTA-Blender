@@ -807,12 +807,38 @@ def build_ifp_from_actions(actions=None, armature=None,
     return ifp
 
 
+def audit_ifp(ifp, filepath: str = "", fmt: str = "", target: str = 'SA',
+              check_stem: bool = True):
+    """Check an IFPFile against what the engine's loader / player does.
+
+    ``core.ifp_lint.check_ifp`` mirrors CAnimManager::LoadAnimFile and the
+    CAnimBlend* playback code: an empty sequence, a decreasing time, an
+    int16 overflow or a block name that differs from the file name crash
+    or hang the game instead of just playing wrong.
+
+    Returns ``(fatal, warnings)`` — ready-to-show strings, also printed to
+    the console the way the DFF audits are.
+    """
+    import os
+    from ..core.ifp_lint import check_ifp
+    stem = ''
+    if check_stem and filepath:
+        stem = os.path.splitext(os.path.basename(filepath))[0]
+    fatal, warnings = check_ifp(ifp, target=target, fmt=fmt, file_stem=stem)
+    for item in fatal:
+        print(f"[IFP Export] ИГРА УПАДЁТ: {item}")
+    for item in warnings:
+        print(f"[IFP Export] {item}")
+    return fatal, warnings
+
+
 def export_ifp(filepath: str, actions=None, armature=None,
                package_name="ped",
                decimate: bool = False,
                decimate_tol_rot: float = 1e-3,
                decimate_tol_trans: float = 1e-3,
-               format: str = "ANPK"):
+               format: str = "ANPK",
+               target: str = 'SA'):
     """Export Blender Actions as a brand-new IFP file.
 
     Each Action becomes one animation in the IFP. Reads keyframes
@@ -820,7 +846,8 @@ def export_ifp(filepath: str, actions=None, armature=None,
     use ``merge_actions_into_ifp`` to edit a pack in-place.
 
     ``format`` selects the on-disk encoding (``ANPK`` / ``ANP2`` for
-    III/VC/SA chunked float32, ``ANP3`` for SA flat int16-compressed).
+    III/VC/SA chunked float32, ``ANP3`` for SA flat int16-compressed);
+    ``target`` ('III' / 'VC' / 'SA') the game the file is for.
     """
     ifp = build_ifp_from_actions(
         actions, armature, package_name,
@@ -830,7 +857,8 @@ def export_ifp(filepath: str, actions=None, armature=None,
     )
     if not ifp.animations:
         return 0
-    return write_ifp(filepath, ifp, format=format)
+    audit_ifp(ifp, filepath, fmt=format, target=target)
+    return write_ifp(filepath, ifp, format=format, target=target)
 
 
 def merge_actions_into_ifp(filepath: str, actions=None, armature=None,
@@ -838,7 +866,8 @@ def merge_actions_into_ifp(filepath: str, actions=None, armature=None,
                             decimate: bool = False,
                             decimate_tol_rot: float = 1e-3,
                             decimate_tol_trans: float = 1e-3,
-                            format: str = ""):
+                            format: str = "",
+                            target: str = 'SA'):
     """Merge the given Blender Actions into an existing IFP pack.
 
     Animations whose name matches an existing entry (case-insensitive)
@@ -862,5 +891,10 @@ def merge_actions_into_ifp(filepath: str, actions=None, armature=None,
     )
     if not ifp.animations:
         return 0, 0
+    # The block name is only ours to check when the caller overrides it;
+    # otherwise the existing pack keeps its own.
+    audit_ifp(ifp, filepath, fmt=format, target=target,
+              check_stem=bool(package_name))
     return merge_ifp(filepath, ifp.animations,
-                     package_name=package_name, format=format)
+                     package_name=package_name, format=format,
+                     target=target)

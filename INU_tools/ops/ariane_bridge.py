@@ -49,6 +49,85 @@ def inbox_dir() -> str:
     return os.path.join(bridge_base(), 'inbox')
 
 
+# ── game of the bridge ───────────────────────────────────────────
+# The job protocol carries no game (only "#v N"), so the addon decides the
+# file formats itself: RW version of DFF/TXD, COL1 vs COL3, D3D8 vs D3D9
+# textures, LOD naming. Source of truth = the scene's game (same as every
+# other exporter); the exe in the game folder is only used to WARN when
+# it disagrees, so a VC ariane never silently gets SA-format files.
+
+_EXE_GAME = (('gta_sa.exe', 'SA'), ('gta-vc.exe', 'VC'), ('gta3.exe', 'III'))
+
+
+def bridge_game() -> str:
+    """Game the bridge exports for: ``scene.inu_settings.gtatools_game``."""
+    try:
+        import bpy
+        from ..core import game_versions as gv
+        return gv.game_of_scene(bpy.context.scene)
+    except Exception:                       # noqa: BLE001
+        return 'SA'
+
+
+def bridge_game_from_exe():
+    """Game of the ariane install the bridge points at, from the exe next to
+    the ``ariane`` folder (``bridge_base()`` = <game>\\ariane\\bridge). None when
+    the bridge lives in %LOCALAPPDATA% or no known exe is found."""
+    try:
+        game_dir = os.path.dirname(os.path.dirname(bridge_base()))
+        for exe, game in _EXE_GAME:
+            if os.path.isfile(os.path.join(game_dir, exe)):
+                return game
+    except Exception:                       # noqa: BLE001
+        pass
+    return None
+
+
+def bridge_game_mismatch():
+    """Warning text when the exe game differs from the scene game, else None."""
+    exe_game = bridge_game_from_exe()
+    game = bridge_game()
+    if exe_game and exe_game != game:
+        return T("В папке ariane найдена игра {0}, а сцена настроена на {1} — "
+                 "файлы уйдут в формате {1}. Переключи игру во вкладке GTA Tools.").format(exe_game, game)
+    return None
+
+
+def _bridge_formats():
+    """(game, rw_version, col_version) for this export — from the scene game."""
+    from ..core import game_versions as gv
+    game = bridge_game()
+    return game, gv.rw_version_for_game(game), gv.profile_for(game).col_version
+
+
+def _model_name_limit(game: str) -> int:
+    """Longest model name the game accepts (buffer minus the NUL).
+    SA: m_name[24] → 23. III: m_name[24] too, but the COL1 header stores
+    name[22] and the loader memcpy's it together with the u16 model id, so
+    the name must be NUL-terminated within 22 bytes → 21. VC: the model
+    info itself is only MAX_MODEL_NAME=21 (reVC BaseModelInfo.h, strncpy
+    without a forced NUL) → 20."""
+    return {'SA': 23, 'VC': 20}.get(game, 21)
+
+
+def _lod_model_name(name: str, game: str) -> str:
+    """Name of the LOD model paired with ``name``.
+
+    SA links HD↔LOD through the IPL ``lod`` column, so any name works and
+    ariane's convention is ``LOD<name>``. III/VC have no such column: the
+    engine pairs a big building with its LOD by NAME, comparing
+    ``m_name+3`` (CSimpleModelInfo::FindRelatedModel) — the LOD is the HD
+    name with its first three characters replaced by ``LOD``."""
+    if game == 'SA':
+        return ("LOD" + name)[:23]
+    return "LOD" + name[3:]
+
+
+def _rw_text(v: int) -> str:
+    """0x36003 → '3.6.0.3'."""
+    return f"{(v >> 16) & 0xF}.{(v >> 12) & 0xF}.{(v >> 8) & 0xF}.{v & 0xFF}"
+
+
 # bridge job-format version — both sides write/parse "#v N" and warn on mismatch
 _PROTO_VER = 2
 
@@ -426,16 +505,18 @@ def _find_col_object(name: str):
     return None
 
 
-def _export_col_local(src_obj, name: str, outbox: str) -> None:
+def _export_col_local(src_obj, name: str, outbox: str, version: int = 3) -> None:
     """Export ``src_obj``'s collision in LOCAL space. export_col bakes the object's
     matrix_world rotation into the verts, so we hand it a throwaway object at the
     identity transform sharing the same mesh data → ariane gets clean model-local
-    collision (no display rotation baked in), mirroring how export_dff stays local."""
+    collision (no display rotation baked in), mirroring how export_dff stays local.
+    ``version``: 3 (SA) or 1 (III/VC — their loaders assert the 'COLL' ident)."""
     import bpy
     tmp = bpy.data.objects.new(name + "__col_tmp", src_obj.data)
     bpy.context.scene.collection.objects.link(tmp)
     try:
-        export_col(os.path.join(outbox, name + '.col'), [tmp], model_name=name)
+        export_col(os.path.join(outbox, name + '.col'), [tmp],
+                   version=version, model_name=name)
     finally:
         bpy.data.objects.remove(tmp, do_unlink=True)
 
@@ -501,6 +582,11 @@ def send_to_ariane(objects) -> int:
     if not meshes:
         return _created
 
+    _game, _rw_ver, _col_ver = _bridge_formats()
+    _mm = bridge_game_mismatch()
+    if _mm:
+        print(f"[ariane bridge] {_mm}")
+
     def _export_one(obj, name, with_col, do_move):
         """DFF (+TXD always, +COL if asked) → outbox; returns the job line or None."""
         # Меш + прикреплённые 2DFX-пустышки (прямые дети) — ровно как в
@@ -510,7 +596,7 @@ def send_to_ariane(objects) -> int:
                if c.type == 'EMPTY'
                and getattr(getattr(c, 'inu', None), 'type', '') == '2DFX']
         try:
-            export_dff(os.path.join(outbox, name + '.dff'), [obj] + _fx)
+            export_dff(os.path.join(outbox, name + '.dff'), [obj] + _fx, version=_rw_ver)
         except Exception as exc:                          # noqa: BLE001
             print(f"[ariane bridge] export DFF failed for {name}: {exc}")
             return None
@@ -530,7 +616,7 @@ def send_to_ariane(objects) -> int:
             col_src = _find_col_object(name)
             if col_src is not None:
                 try:
-                    _export_col_local(col_src, name, outbox)
+                    _export_col_local(col_src, name, outbox, version=_col_ver)
                     col_ok = 1
                 except Exception as exc:                  # noqa: BLE001
                     print(f"[ariane bridge] export COL failed for {name}: {exc}")
@@ -573,9 +659,10 @@ def send_to_ariane(objects) -> int:
             continue
         lines.append(ln)
         sent.add(name)
-        # LOD counterpart: object whose ariane name is "LOD<name>" (geometry only)
+        # LOD counterpart: object whose ariane name is the LOD name of <name>
+        # (SA: "LOD<name>", III/VC: "LOD"+name[3:]) — geometry only
         if want_lod:
-            lod_name = "LOD" + name
+            lod_name = _lod_model_name(name, _game)
             if lod_name not in sent:
                 lod_obj = next((o for o in bpy.data.objects
                                 if getattr(o, 'type', None) == 'MESH'
@@ -792,15 +879,20 @@ def _start_create_waiter():
 _create_model_tries = 0
 
 
-def _sanitize_model_name(raw: str) -> str:
-    """GTA model name: letters/digits/underscore, ≤23 chars, lowercase."""
+def _sanitize_model_name(raw: str, game: str = 'SA') -> str:
+    """GTA model name: letters/digits/underscore, lowercase, ≤23 chars (SA),
+    ≤21 (III), ≤20 (VC) — see ``_model_name_limit``. III/VC pair LOD↔HD on
+    ``name[3:]``, so a name shorter than 4 chars would match every other
+    short name — pad it."""
     import re
     s = re.sub(r'[^0-9A-Za-z_]', '_', raw or '').strip('_').lower()
     if not s:
         s = 'model'
     if s[0].isdigit():
         s = 'm' + s
-    return s[:23]
+    if game != 'SA':
+        s = s.ljust(4, '0')
+    return s[:_model_name_limit(game)]
 
 
 def _spawn_scene_lod(main, base_name):
@@ -874,6 +966,12 @@ def create_model_in_ariane(objects, auto_lod=True, empty_col=True) -> int:
     prev_active = view.objects.active
     prev_sel = list(bpy.context.selected_objects)
 
+    game, rw_ver, col_ver = _bridge_formats()
+    _mm = bridge_game_mismatch()
+    if _mm:
+        print(f"[ariane bridge] {_mm}")
+    _nlim = _model_name_limit(game)
+
     lines = []
     used = set()
     _spawn = []      # (main, base_name, make_lod, make_col) — создать в сцене
@@ -881,13 +979,13 @@ def create_model_in_ariane(objects, auto_lod=True, empty_col=True) -> int:
         main = models['DFF'] or models['LOD']       # основной меш модели
         if main is None:
             continue
-        name = _sanitize_model_name(base_name)
+        name = _sanitize_model_name(base_name, game)
         base, i = name, 1
         while name in used:
-            name = f"{base[:20]}_{i}"; i += 1
+            name = f"{base[:_nlim - 3]}_{i}"; i += 1
         used.add(name)
         try:
-            export_dff(os.path.join(outbox, name + '.dff'), [main])
+            export_dff(os.path.join(outbox, name + '.dff'), [main], version=rw_ver)
         except Exception as exc:                          # noqa: BLE001
             print(f"[ariane bridge] export DFF failed for {name}: {exc}")
             continue
@@ -911,18 +1009,19 @@ def create_model_in_ariane(objects, auto_lod=True, empty_col=True) -> int:
         _col_mode = None      # что создать в сцене: 'box' | 'copy' | None
         try:
             if col_obj is not None:
-                _export_col_local(col_obj, name, outbox)          # реальный сосед _COL
+                _export_col_local(col_obj, name, outbox, version=col_ver)   # реальный сосед _COL
                 col = 1
             elif empty_col:
                 # bounds от видимого меша (main), чтобы culling-сфера не была
                 # нулевой; сама геометрия пропускается (empty=True).
                 from .col_export import export_col as _export_col
                 _export_col(os.path.join(outbox, name + '.col'), [main],
-                            model_name=name, empty=True, bounds_ref=[main])
+                            version=col_ver, model_name=name, empty=True,
+                            bounds_ref=[main])
                 col = 1
                 _col_mode = 'box'
             else:
-                _export_col_local(main, name, outbox)             # COL из геометрии основной
+                _export_col_local(main, name, outbox, version=col_ver)      # COL из геометрии основной
                 col = 1
                 _col_mode = 'copy'
         except Exception as exc:                              # noqa: BLE001
@@ -930,7 +1029,8 @@ def create_model_in_ariane(objects, auto_lod=True, empty_col=True) -> int:
             col = 0
             _col_mode = None
 
-        # LOD of the group → register a LOD model named LOD<name>. When the DFF
+        # LOD of the group → register a LOD model named LOD<name> (SA) or
+        # LOD+name[3:] (III/VC pair by name, see _lod_model_name). When the DFF
         # is the main mesh: real _LOD sibling if present; else (auto_lod ON) a
         # copy of the main model as the LOD; else no LOD.
         lod = 0
@@ -942,9 +1042,9 @@ def create_model_in_ariane(objects, auto_lod=True, empty_col=True) -> int:
             elif auto_lod:
                 lod_obj = main            # авто-LOD из основной модели
         if lod_obj is not None:
-            lod_name = ("LOD" + name)[:23]
+            lod_name = _lod_model_name(name, game)
             try:
-                export_dff(os.path.join(outbox, lod_name + '.dff'), [lod_obj])
+                export_dff(os.path.join(outbox, lod_name + '.dff'), [lod_obj], version=rw_ver)
                 for o in bpy.data.objects:
                     o.select_set(False)
                 lod_obj.select_set(True)
@@ -989,7 +1089,7 @@ def create_model_in_ariane(objects, auto_lod=True, empty_col=True) -> int:
             if _dl:
                 _o = _spawn_scene_lod(_m, _bn)
                 if _o is not None:
-                    _o['ariane_name'] = ("LOD" + _nm)[:23]
+                    _o['ariane_name'] = _lod_model_name(_nm, game)
                     _o['ariane_companion'] = True
             if _cm:
                 _o = _spawn_scene_col(_m, _bn, box=(_cm == 'box'))
@@ -1114,7 +1214,20 @@ class GTATOOLS_OT_ariane_create_model(bpy.types.Operator):
 
     def invoke(self, context, event):
         from ..tools.model_utils import find_all_selected_model_groups
+        from ..core import game_versions as gv
         self._warn = []
+        game = bridge_game()
+        prof = gv.profile_for(game)
+        self._game_line = T("Игра: {0} — DFF/TXD RW {1}, COL{2}, TXD {3}").format(
+            game, _rw_text(prof.rw_version), prof.col_version,
+            'D3D9' if game == 'SA' else 'D3D8')
+        mm = bridge_game_mismatch()
+        if mm:
+            self._warn.append(mm)
+        if game != 'SA':
+            self._warn.append(T("{0}: id моделей до {1} (сток) — выше нужен limit adjuster; "
+                                "имя модели ≤ {2} символов").format(
+                                    game, prof.model_id_max, _model_name_limit(game)))
         # По группам (123_DFF/123_LOD/123_COL → одна модель «123»), а не по
         # каждому мешу: предупреждаем только если у группы реально нет COL/LOD.
         for base_name, models in find_all_selected_model_groups().items():
@@ -1128,6 +1241,9 @@ class GTATOOLS_OT_ariane_create_model(bpy.types.Operator):
     def draw(self, context):
         col = self.layout.column(align=True)
         col.label(text=T("Продолжить создание модели?"), icon='QUESTION')
+        gl = getattr(self, '_game_line', '')
+        if gl:
+            col.label(text=gl, icon='INFO')
         for w in getattr(self, '_warn', []):
             col.label(text=w, icon='ERROR')
         col.separator()
@@ -1742,8 +1858,10 @@ def _write_cam_blender(eye, tgt, up):
         os.makedirs(d, exist_ok=True)
         tmp = os.path.join(d, 'cam_blender.tmp')
         with open(tmp, 'w', encoding='utf-8') as fh:
-            fh.write(f"cam\t{eye.x:.3f}\t{eye.y:.3f}\t{eye.z:.3f}\t"
-                     f"{tgt.x:.3f}\t{tgt.y:.3f}\t{tgt.z:.3f}\t"
+            # 4 dp: with mm rounding the tiny horizontal part of a near-vertical view
+            # direction is mostly noise, which ariane's roll-free camera turns into roll
+            fh.write(f"cam\t{eye.x:.4f}\t{eye.y:.4f}\t{eye.z:.4f}\t"
+                     f"{tgt.x:.4f}\t{tgt.y:.4f}\t{tgt.z:.4f}\t"
                      # up vector so ariane rebuilds the exact orientation (no roll guessing)
                      f"{up.x:.4f}\t{up.y:.4f}\t{up.z:.4f}\n")
         os.replace(tmp, os.path.join(d, 'cam_blender.txt'))
@@ -1990,10 +2108,7 @@ def push_timecyc_if_live(context=None):
         if cyc is None or not cyc.weathers:
             return
         w = tc.weather_index(props, cyc)
-        try:
-            slot_idx = int(props.slot)
-        except (TypeError, ValueError):
-            slot_idx = 0
+        slot_idx = tc.slot_index(props, cyc)
         slot = cyc.weathers[w].slots[slot_idx]
         vals = getattr(slot, 'values', None)
     except Exception:                                     # noqa: BLE001
@@ -2266,8 +2381,11 @@ def draw_ariane_body(layout, context):
     orow.prop(s, "ariane_send_ide", toggle=True)
     orow.prop(s, "ariane_send_position", toggle=True, text=T("Позиция"))
 
-    # Синхронизация.
-    col.prop(s, "ariane_live_sync", toggle=True)
+    # Синхронизация — все три тумблера одним рядом: Live + удаления + время.
+    _sync = col.row(align=True)
+    _sync.prop(s, "ariane_live_sync", toggle=True)
+    _sync.prop(s, "ariane_sync_deletions", toggle=True)
+    _sync.prop(s, "ariane_sync_time", toggle=True)
     if not getattr(s, 'ariane_live_sync', False):
         col.operator("gtatools.ariane_send_pos", text=T("Обновить позицию"),
                      icon='EMPTY_ARROWS')
@@ -2283,8 +2401,6 @@ def draw_ariane_body(layout, context):
         # моделей, что уже стоят в карте Ariane, но импортнуты из файлов игры.
         col.operator("gtatools.ariane_bind", text=T("Привязать к Ariane"),
                      icon='LINKED')
-        col.prop(s, "ariane_sync_deletions", toggle=True)
-        col.prop(s, "ariane_sync_time", toggle=True)
         col.operator("gtatools.ariane_create_model", text=T("Создать модель"), icon='MESH_DATA')
         col.operator("gtatools.ariane_clear", text=T("Очистить кэш"), icon='TRASH')
 
