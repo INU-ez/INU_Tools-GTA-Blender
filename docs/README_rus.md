@@ -113,6 +113,6 @@
 - **[Itera Tools 3](https://itera.gumroad.com/l/IteraTools3)** — vertex lighting; в аддоне есть подпанель для применения его пресетов.
 - **[ChunkTools](https://github.com/milevskiy27/ChunkTools)** от **[milevskiy](https://github.com/milevskiy27)** (Apache-2.0) — из него адаптирована кнопка «Разделить на чанки».
 
-**Автор:** INU (Discord `1.n.u` · [сервер](https://discord.gg/sqtGAVTGdy)) · зеркало анимаций — **yeezyk** · нарезка карты — **[milevskiy](https://github.com/milevskiy27)**
+**Автор:** INU (Discord `1.n.u` · [сервер](https://discord.gg/sqtGAVTGdy)) · зеркало анимаций — **yeezyk** · нарезка карты — **[milevskiy](https://github.com/milevskiy27)** · фикс тайминга ключей ANP3 — **[sexorcist00](https://github.com/sexorcist00)**
 
 **Лицензия:** [GPL-3.0](LICENSE)

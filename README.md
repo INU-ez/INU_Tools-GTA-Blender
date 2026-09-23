@@ -113,6 +113,6 @@ The full per-game format table is in the **[documentation](docs/DOCS.md)**.
 - **[Itera Tools 3](https://itera.gumroad.com/l/IteraTools3)** — vertex lighting; the addon has a sub-panel to apply its presets.
 - **[ChunkTools](https://github.com/milevskiy27/ChunkTools)** by **[milevskiy](https://github.com/milevskiy27)** (Apache-2.0) — the "Split into chunks" tool is adapted from it.
 
-**Author:** INU (Discord `1.n.u` · [server](https://discord.gg/sqtGAVTGdy)) · animation mirroring — **yeezyk** · map chunking — **[milevskiy](https://github.com/milevskiy27)**
+**Author:** INU (Discord `1.n.u` · [server](https://discord.gg/sqtGAVTGdy)) · animation mirroring — **yeezyk** · map chunking — **[milevskiy](https://github.com/milevskiy27)** · ANP3 keyframe timing fix — **[sexorcist00](https://github.com/sexorcist00)**
 
 **License:** [GPL-3.0](LICENSE)
