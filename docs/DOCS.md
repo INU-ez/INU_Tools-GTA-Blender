@@ -2039,6 +2039,7 @@ The stack reads like Photoshop: the **bottom** layer is the base, layers above b
 | **Thickness** | Multiply | Thickness (inside-AO): thick parts dark, thin parts light. Noisy → uses Samples. |
 | **Grunge** | Multiply | Procedural grunge: 3D noise in object space, seamless across the surface. |
 | **Paint** | Multiply | An empty white layer for hand-painting — never baked, see the **Paint** button below. |
+| **Alpha** | Normal | Material transparency. It does **not** join the RGB stack — it drives the result's alpha channel. This is a **cutout**, not translucency: `>= 0.5` is a solid pixel, below that is a hole (GTA's convention, and the same threshold the bake itself applies). The layer's `opacity` multiplies the finished mask, so you can weaken the whole cutout with it. |
 
 The six Dirt / Edge Wear / Curvature / Height / Thickness / Grunge masks are derived from the
 **geometry**, with no lighting: the object's materials are swapped for an EMIT material for the

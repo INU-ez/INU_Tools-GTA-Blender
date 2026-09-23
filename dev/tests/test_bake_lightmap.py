@@ -146,15 +146,21 @@ def test_alpha_registered():
 
 def test_composite_alpha_channel_from_alpha_map():
     # ALPHA layer feeds the output alpha channel and is EXCLUDED from the RGB
-    # stack (so a red diffuse + 0.5 alpha mask → red RGB, 0.5 alpha).
+    # stack (a red diffuse stays red). The mask is a GTA cutout, not a
+    # translucency ramp: >= 0.5 is solid, anything below it is a hole — the
+    # same threshold bake_nodes applies when baking the map.
     LS = bake_composite.LayerSpec
-    diffuse = np.array([[[1.0, 0.0, 0.0, 1.0]]], np.float32)
-    alpha = np.array([[[0.5, 0.5, 0.5, 1.0]]], np.float32)   # Non-Color mask
+    diffuse = np.array([[[1.0, 0.0, 0.0, 1.0],
+                         [1.0, 0.0, 0.0, 1.0]]], np.float32)
+    alpha = np.array([[[0.5, 0.5, 0.5, 1.0],     # on the threshold → solid
+                       [0.4, 0.4, 0.4, 1.0]]], np.float32)   # Non-Color mask
     pixels = {"DIFFUSE": diffuse, "ALPHA": alpha}
     layers = [LS(map_id="ALPHA"), LS(map_id="DIFFUSE")]      # UI order: alpha on top
-    out = bake_composite.composite_layers(pixels, layers, 1, 1, srgb=False)
-    assert np.allclose(out[0, 0, :3], [1.0, 0.0, 0.0], atol=1e-5)
-    assert abs(out[0, 0, 3] - 0.5) < 1e-5
+    out = bake_composite.composite_layers(pixels, layers, 2, 1, srgb=False)
+    assert np.allclose(out[0, :, :3], [[1.0, 0.0, 0.0],
+                                       [1.0, 0.0, 0.0]], atol=1e-5)
+    assert abs(out[0, 0, 3] - 1.0) < 1e-5
+    assert abs(out[0, 1, 3] - 0.0) < 1e-5
 
 
 def test_composite_alpha_opacity_scales_strength():
@@ -169,13 +175,16 @@ def test_composite_alpha_opacity_scales_strength():
 
 
 def test_composite_alpha_only_gives_black_rgb():
-    # Only an ALPHA layer (e.g. a shadow decal alpha) → RGB black, alpha=mask.
+    # Only an ALPHA layer (e.g. a shadow decal alpha) → RGB black, alpha = the
+    # cutout mask (0.8 is above the 0.5 threshold → solid, 0.2 → hole).
     LS = bake_composite.LayerSpec
-    alpha = np.array([[[0.8, 0.8, 0.8, 1.0]]], np.float32)
+    alpha = np.array([[[0.8, 0.8, 0.8, 1.0],
+                       [0.2, 0.2, 0.2, 1.0]]], np.float32)
     out = bake_composite.composite_layers(
-        {"ALPHA": alpha}, [LS(map_id="ALPHA")], 1, 1, srgb=False)
-    assert np.allclose(out[0, 0, :3], [0.0, 0.0, 0.0], atol=1e-5)
-    assert abs(out[0, 0, 3] - 0.8) < 1e-5
+        {"ALPHA": alpha}, [LS(map_id="ALPHA")], 2, 1, srgb=False)
+    assert np.allclose(out[0, :, :3], 0.0, atol=1e-5)
+    assert abs(out[0, 0, 3] - 1.0) < 1e-5
+    assert abs(out[0, 1, 3] - 0.0) < 1e-5
 
 
 def test_composite_alpha_from_shadow_inverted():
