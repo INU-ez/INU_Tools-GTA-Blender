@@ -1280,10 +1280,22 @@ def _live_frame_transform(obj):
     inverse rotation: every frame with a non-symmetric rotation came out
     rotated the wrong way both in game and on re-import (a door frame
     authored as Rz(+90) landed as Rz(-90), 180° off around its hinge).
+
+    Exception — frames carrying an HAnim bone id (``inu_bone_id``, i.e.
+    Kams empty-rig animobj pivots): those re-import through the armature
+    builder's NON-skin fallback (``dff_import.py`` Path A), which reads
+    ``frame.rotation`` ROW-major (``rot[0], rot[1], rot[2]`` as row 0), NOT
+    transposed. For them we emit row-major so that path round-trips too.
+    Verified in Blender: with this guard both import paths (Path B objects,
+    Path A animobj bones) round-trip at err 0.0.
     """
     ml = obj.matrix_local
     loc = ml.to_translation()
-    m = ml.to_3x3().transposed()
+    m = ml.to_3x3()
+    # Path A (non-skin animobj bones) reads row-major; everything else
+    # (Path B: dummies, atomics, static parts) reads transposed.
+    if 'inu_bone_id' not in obj:
+        m = m.transposed()
     rotation = (
         m[0][0], m[0][1], m[0][2],
         m[1][0], m[1][1], m[1][2],
