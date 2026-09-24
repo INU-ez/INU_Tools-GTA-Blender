@@ -155,6 +155,47 @@ def _img_needs_srgb_encode(image):
     return cs == 'sRGB'
 
 
+def _socket_is_principled_alpha(to_socket):
+    """True, если это вход Alpha у Principled BSDF (учитывая рус. интерфейс:
+    имя «Альфа», но identifier всегда английский 'Alpha')."""
+    to_node = to_socket.node
+    if to_node.type != 'BSDF_PRINCIPLED':
+        return False
+    socket_name = to_socket.name.lower()
+    socket_id = to_socket.identifier.lower() if hasattr(to_socket, 'identifier') else ''
+    return 'alpha' in socket_name or 'alpha' in socket_id or 'альфа' in socket_name
+
+
+def _alpha_output_reaches_principled_alpha(alpha_output, _visited=None, _depth=0):
+    """Пройти ВПЕРЁД от alpha-выхода текстуры по связям и выяснить, доходит
+    ли сигнал до входа Alpha у Principled BSDF.
+
+    Проходим СКВОЗЬ промежуточные ноды (Reroute, Mix/MixRGB, Math, Invert,
+    группы, превью-ноды и т.п.), которые нередко стоят между текстурой и
+    BSDF — иначе прямая проверка «в лоб» их не видит и альфа не пишется.
+    Ветка, упирающаяся в НЕ-alpha вход BSDF, считается тупиком."""
+    if _visited is None:
+        _visited = set()
+    if _depth > 32:
+        return False
+    for link in alpha_output.links:
+        to_socket = link.to_socket
+        to_node = to_socket.node
+        if to_node.type == 'BSDF_PRINCIPLED':
+            if _socket_is_principled_alpha(to_socket):
+                return True
+            continue  # BSDF, но не Alpha — тупик, дальше не идём
+        # Промежуточная нода — трассируем вперёд по всем её выходам
+        if to_node.name in _visited:
+            continue
+        _visited.add(to_node.name)
+        for out in to_node.outputs:
+            if out.is_linked and _alpha_output_reaches_principled_alpha(
+                    out, _visited, _depth + 1):
+                return True
+    return False
+
+
 def is_texture_connected_to_alpha(tex_node):
     # Alpha выход - индекс 1 у TEX_IMAGE
     if len(tex_node.outputs) < 2:
@@ -162,16 +203,8 @@ def is_texture_connected_to_alpha(tex_node):
     alpha_output = tex_node.outputs[1]
     if not alpha_output.is_linked:
         return False
-    # Проверяем что подключено к Principled BSDF (любой вход с alpha в имени)
-    for link in alpha_output.links:
-        to_node = link.to_socket.node
-        if to_node.type == 'BSDF_PRINCIPLED':
-            # Проверяем по индексу или имени (Alpha вход ~индекс 21, но лучше по имени)
-            socket_name = link.to_socket.name.lower()
-            socket_id = link.to_socket.identifier.lower() if hasattr(link.to_socket, 'identifier') else ''
-            if 'alpha' in socket_name or 'alpha' in socket_id or 'альфа' in socket_name:
-                return True
-    return False
+    # Прямая связь Alpha→Alpha ИЛИ через промежуточные ноды.
+    return _alpha_output_reaches_principled_alpha(alpha_output)
 
 
 def check_image_has_transparent_pixels(image):
