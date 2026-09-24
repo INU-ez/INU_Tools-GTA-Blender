@@ -239,8 +239,13 @@ def collect_textures(selected_only=False):
                 has_transparent = check_image_has_transparent_pixels(img)
                 if has_transparent:
                     transparent_textures.add(img.name)
-                # DXT3 только если альфа подключена И есть прозрачные пиксели
-                uses_alpha = alpha_connected and has_transparent
+                # Альфу в TXD (DXT3/8888) пишем СТРОГО если Alpha-выход текстуры
+                # подключён к Principled Alpha (alpha_connected). Решение «есть
+                # ли прозрачность» принимается на ИМПОРТЕ: там альфа
+                # подключается, если у картинки есть прозрачные пиксели
+                # (см. _image_has_transparency в dff_import). Так экспорт
+                # управляется явным подключением, а не угадыванием по пикселям.
+                uses_alpha = alpha_connected
                 if name in textures:
                     existing_alpha = textures[name][1]
                     textures[name] = (img, existing_alpha or uses_alpha)

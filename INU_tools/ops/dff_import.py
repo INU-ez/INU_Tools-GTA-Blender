@@ -124,6 +124,33 @@ def _apply_uv_anim_to_material(mat, dff_mat: DffMaterial, uv_anim_dict):
     inu.uv_anim_speed_v = float(last.trans_v) / dt
 
 
+# Кэш «есть ли у картинки прозрачные пиксели» — по имени картинки. При
+# map-импорте одна текстура делится многими моделями, а чтение всех пикселей
+# (1024²+) дорогое → проверяем каждую картинку один раз. Фильтр по каналу
+# (depth==32) отсекает RGB-текстуры без чтения пикселей.
+_IMG_ALPHA_CACHE = {}
+
+
+def _image_has_transparency(image):
+    """True, если у картинки есть реально прозрачные пиксели (вырезка листвы
+    и т.п.). Кэшируется по имени; RGB-картинки без альфа-канала отсекаются."""
+    if image is None:
+        return False
+    key = image.name
+    cached = _IMG_ALPHA_CACHE.get(key)
+    if cached is not None:
+        return cached
+    result = False
+    try:
+        if getattr(image, 'depth', 0) == 32:          # есть альфа-канал
+            from ..tools.txd_export import check_image_has_transparent_pixels
+            result = bool(check_image_has_transparent_pixels(image))
+    except Exception:                                 # noqa: BLE001
+        result = False
+    _IMG_ALPHA_CACHE[key] = result
+    return result
+
+
 def _create_blender_material(dff_mat: DffMaterial, index: int,
                              material_cache: Optional[dict] = None,
                              uv_anim_dict=None) -> bpy.types.Material:
@@ -240,12 +267,18 @@ def _create_blender_material(dff_mat: DffMaterial, index: int,
     elif 'Specular' in bsdf.inputs:
         bsdf.inputs['Specular'].default_value = 0.0
 
-    # Альфа — подключать только если материал прозрачный.
+    # Альфа — подключать если материал прозрачный (альфа ЦВЕТА материала)
+    # ИЛИ у ТЕКСТУРЫ есть реально прозрачные пиксели (вырезка: листва/забор/
+    # стекло — цвет материала при этом обычно непрозрачный, c.a==255). Без
+    # второго условия альфа-канал текстуры не подключался, и на экспорте
+    # alpha_connected=False → вырезка терялась (TXD без альфы, модель сплошная).
     # Стандарт: Метод рендеринга Смешанный + Перекрытие прозрачности ВЫКЛ
     # (на 4.2+ blend_method сам по себе ничего не делает — см. compat).
-    if c.a < 255:
+    _tex_alpha = _image_has_transparency(tex_node.image) if tex_node else False
+    if c.a < 255 or _tex_alpha:
         compat.make_material_alpha(mat)
-        bsdf.inputs['Alpha'].default_value = c.a / 255.0
+        if c.a < 255:
+            bsdf.inputs['Alpha'].default_value = c.a / 255.0
         # Connect texture alpha to shader alpha
         if tex_node:
             tree.links.new(tex_node.outputs['Alpha'], bsdf.inputs['Alpha'])
