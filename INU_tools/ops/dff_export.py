@@ -1267,16 +1267,23 @@ def _live_frame_transform(obj):
     stores — so for a top-level object it equals its global placement and
     for a parented part it equals the offset under its parent frame.
 
-    Rotation is emitted **row-major** to match the import convention:
-    ``import_dff`` rebuilds ``matrix_basis`` row-by-row from
-    ``frame.rotation`` ([dff_import.py] matrix_basis loop), so reading the
-    live 3×3 row-major round-trips byte-for-byte. (The previous fallback
-    transposed here, which silently mirrored the matrix for any
-    non-identity rotation of a freshly-built object.)
+    A DFF frame stores its rotation as three ROW vectors ``right``, ``up``,
+    ``at`` (RenderWare ``RwMatrix``: ``out = in.x*right + in.y*up + in.z*at
+    + pos``), i.e. the axes of the local space — which are the COLUMNS of
+    ``matrix_local.to_3x3()``. The Blender matrix therefore has to be
+    transposed before its rows are written, exactly like the bone exporter
+    below (``mat.to_3x3().transposed()``), the object importer
+    (``dff_import.py`` builds ``matrix_basis`` from the columns
+    ``rot[0], rot[3], rot[6]``) and DragonFF do.
+
+    Writing ``to_3x3()`` untransposed (previous behaviour) stored the
+    inverse rotation: every frame with a non-symmetric rotation came out
+    rotated the wrong way both in game and on re-import (a door frame
+    authored as Rz(+90) landed as Rz(-90), 180° off around its hinge).
     """
     ml = obj.matrix_local
     loc = ml.to_translation()
-    m = ml.to_3x3()
+    m = ml.to_3x3().transposed()
     rotation = (
         m[0][0], m[0][1], m[0][2],
         m[1][0], m[1][1], m[1][2],
