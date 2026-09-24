@@ -204,9 +204,11 @@ def test_ipl_clean_passes():
     assert L.check_ipl(ipl, {1000, 1001}, filename="x.ipl") == ([], [])
 
 
-def test_ipl_model_id_range_fatal():
+def test_ipl_model_id_range_no_longer_fatal():
+    # Ваниль-лимит id (0..19999) убран — у пользователей Fastman92, высокий
+    # id сам по себе не фатал (проверка «не определён в IDE» — отдельная).
     fatal, _ = L.check_ipl(IplFile(instances=[_inst(20000)]))
-    assert _has(fatal, "DAT-21")
+    assert not _has(fatal, "DAT-21")
 
 
 def test_ipl_undefined_model_fatal_only_with_known_ids():
@@ -451,9 +453,11 @@ def test_ide_clean_passes():
     assert L.check_ide(IdeFile(objects=[_obj(1), _obj(2, time_on=7, time_off=20)])) == ([], [])
 
 
-def test_ide_id_range_and_duplicate():
-    assert _has(L.check_ide(IdeFile(objects=[_obj(20000)]))[0], "DAT-06")
-    assert _has(L.check_ide(IdeFile(objects=[_obj(-1)]))[0], "DAT-06")
+def test_ide_id_range_removed_duplicate_kept():
+    # Ваниль-лимит id (DAT-06) убран (Fastman92) — высокий/отрицательный id
+    # больше не фатал. Проверка дублей id в файле (DAT-07) осталась.
+    assert not _has(L.check_ide(IdeFile(objects=[_obj(20000)]))[0], "DAT-06")
+    assert not _has(L.check_ide(IdeFile(objects=[_obj(96955)]))[0], "DAT-06")
     assert _has(L.check_ide(IdeFile(objects=[_obj(5), _obj(5)]))[1], "DAT-07")
 
 

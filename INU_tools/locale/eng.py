@@ -6073,6 +6073,8 @@ LANG = {
     '{0} / {1}: {2} ключей при {3} у первой кривой — времена общие на все кривые info, хвост читается мусором (DAT-47c).': '{0} / {1}: {2} keys while the first curve has {3} — the times are shared by every curve of the info, the tail reads as garbage (DAT-47c).',
     '{0}: ещё {1} предупреждений — см. консоль': '{0}: {1} more warnings — see the console',
     '{0}: ещё {1} ошибок — см. консоль': '{0}: {1} more errors — see the console',
+    'Проверять модели при экспорте': 'Audit models on export',
+    'После записи каждого DFF прогонять проверку на краши/баги в игре\n(индексы вершин/материалов, dummy машин, скин, 2DFX, имена и т.д.),\nпредупреждения — в консоль и панель.\nОТКЛЮЧИ для МАССОВОГО экспорта тысяч уже проверенных моделей —\nаудит гоняется на каждую модель и заметно замедляет.': "After writing each DFF, run the in-game crash/bug audit\n(vertex/material indices, vehicle dummies, skin, 2DFX, names, etc.),\nwarnings go to the console and the panel.\nTURN OFF for MASS export of thousands of already-checked models —\nthe audit runs on every model and slows it down noticeably.",
     'Игра не примет': 'The game will not accept',
     # ── Vehicle dummy audit (check_vehicle_names) ──
     'ось переднего левого колеса': 'front-left wheel axle',

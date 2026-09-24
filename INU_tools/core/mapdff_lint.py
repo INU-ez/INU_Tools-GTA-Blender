@@ -22,6 +22,8 @@
 
 import math
 
+import numpy as np
+
 from .dff import (
     FRAME_NAME_MAX, TEXTURE_NAME_MAX, EFFECT_NAME_MAX,
     GEOM_MOD_COLOR, Light2dfx, Particle2dfx, PedAttractor2dfx, SunGlare2dfx,
@@ -263,13 +265,18 @@ def _check_geometry(gi, geom, is_mobile, fatal, warnings):
             break
 
     # DFF-20..23: indices are never range-checked by the engine.
-    bad_idx = 0
-    bad_mat = 0
-    for tri in geom.triangles:
-        if tri.a >= nv or tri.b >= nv or tri.c >= nv or tri.a < 0 or tri.b < 0 or tri.c < 0:
-            bad_idx += 1
-        if tri.material >= nm or tri.material < 0:
-            bad_mat += 1
+    # Векторизовано (аудит гоняется на КАЖДЫЙ экспорт; на листве с тысячами
+    # треугольников чистый Python-цикл заметно тормозил).
+    _tris = geom.triangles
+    if _tris:
+        _abc = np.fromiter((v for t in _tris for v in (t.a, t.b, t.c)),
+                           dtype=np.int64, count=len(_tris) * 3).reshape(-1, 3)
+        _mat = np.fromiter((t.material for t in _tris),
+                           dtype=np.int64, count=len(_tris))
+        bad_idx = int((((_abc >= nv) | (_abc < 0)).any(axis=1)).sum())
+        bad_mat = int(((_mat >= nm) | (_mat < 0)).sum())
+    else:
+        bad_idx = bad_mat = 0
     if bad_idx:
         fatal.append(_t(
             "геометрия #{0}: {1} треугольников ссылаются на вершины вне 0..{2} — индексы выходят за вершинный буфер (DFF-23)."
@@ -288,12 +295,13 @@ def _check_geometry(gi, geom, is_mobile, fatal, warnings):
             ).format(gi, bs.radius))
         else:
             r2 = (bs.radius + BSPHERE_TOLERANCE) ** 2
-            worst = 0.0
-            for v in geom.vertices:
-                d = (v[0] - bs.x) ** 2 + (v[1] - bs.y) ** 2 + (v[2] - bs.z) ** 2
-                if d > r2 and d > worst:
-                    worst = d
-            if worst:
+            # Векторизовано: самая дальняя вершина от центра сферы. Если она
+            # внутри r2 — сфера накрывает всё, предупреждения нет.
+            _V = np.asarray(geom.vertices, dtype=np.float64).reshape(-1, 3)
+            _d = ((_V[:, 0] - bs.x) ** 2 + (_V[:, 1] - bs.y) ** 2
+                  + (_V[:, 2] - bs.z) ** 2)
+            worst = float(_d.max()) if _d.size else 0.0
+            if worst > r2:
                 warnings.append(_t(
                     "геометрия #{0}: ограничивающая сфера (r={1:.3f}) не накрывает вершины (самая дальняя на {2:.3f}) — клиппинг у камеры отключится раньше времени (DFF-25)."
                 ).format(gi, bs.radius, math.sqrt(worst)))

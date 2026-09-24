@@ -1790,6 +1790,16 @@ class INUSceneSettings(bpy.types.PropertyGroup):
         description="DFF↔LOD↔COL dashed-link viewport overlay enabled",
         default=False)
 
+    gtatools_audit_on_export: BoolProperty(
+        name=T("Проверять модели при экспорте"),
+        description=T(
+            "После записи каждого DFF прогонять проверку на краши/баги в игре\n"
+            "(индексы вершин/материалов, dummy машин, скин, 2DFX, имена и т.д.),\n"
+            "предупреждения — в консоль и панель.\n"
+            "ОТКЛЮЧИ для МАССОВОГО экспорта тысяч уже проверенных моделей —\n"
+            "аудит гоняется на каждую модель и заметно замедляет."),
+        default=False,
+    )
     gtatools_dxt_backend: EnumProperty(
         name="",
         description=(

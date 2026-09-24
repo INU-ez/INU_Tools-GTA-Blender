@@ -348,11 +348,10 @@ def check_ipl(ipl, known_ids=None, *, filename='', binary=False,
     children = {}
     for idx, i in enumerate(insts):
         label = _t("inst #{0} ({1}, id {2})").format(idx, i.model_name or '?', i.model_id)
-        if not 0 <= i.model_id < IPL_MAX_MODEL_ID:
-            fatal.append(_t(
-                "{0}: id модели вне 0..19999 — чтение за пределами ms_modelInfoPtrs, краш (DAT-21)."
-            ).format(label))
-        elif known_ids is not None and i.model_id not in known_ids:
+        # Ваниль-лимит id (0..19999) НЕ проверяем — у пользователей Fastman92.
+        # Но «id не определён ни в одном IDE» — реальный краш (NULL в LinkLods)
+        # независимо от лимита, его оставляем.
+        if known_ids is not None and i.model_id not in known_ids:
             if known_complete:
                 fatal.append(_t(
                     "{0}: id модели не определён ни в одном IDE — NULL в LinkLods, краш при загрузке (DAT-21)."
@@ -690,11 +689,9 @@ def check_ide(ide, *, anim_groups=None):
     defined = set()
 
     def _id_check(label, mid):
-        if not 0 <= mid < IPL_MAX_MODEL_ID:
-            fatal.append(_t(
-                "{0}: id вне 0..19999 — запись за пределы ms_modelInfoPtrs (DAT-06)."
-            ).format(label))
-            return
+        # Ваниль-лимит id (0..19999) НЕ проверяем: у пользователей стоит
+        # Fastman92 Limit Adjuster, высокие id для них валидны. Оставляем
+        # только проверку дублей id внутри файла (DAT-07).
         if mid in seen:
             warnings.append(_t(
                 "{0}: id уже определён в этом файле ({1}) — вторая запись молча заменяет первую (DAT-07)."

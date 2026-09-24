@@ -5842,6 +5842,8 @@ LANG = {
     '{0}: ещё {1} предупреждений — см. консоль': '{0}: {1} avisos más, ver la consola',
     '{0}: ещё {1} ошибок — см. консоль': '{0}: {1} errores más, ver la consola',
     'Игра не примет': 'El juego no aceptará',
+    'Проверять модели при экспорте': 'Auditar modelos al exportar',
+    'После записи каждого DFF прогонять проверку на краши/баги в игре\n(индексы вершин/материалов, dummy машин, скин, 2DFX, имена и т.д.),\nпредупреждения — в консоль и панель.\nОТКЛЮЧИ для МАССОВОГО экспорта тысяч уже проверенных моделей —\nаудит гоняется на каждую модель и заметно замедляет.': 'Tras escribir cada DFF, ejecutar la auditoría de fallos en el juego\n(índices de vértices/materiales, dummies de coches, skin, 2DFX, nombres, etc.),\nlos avisos van a la consola y al panel.\nDESACTIVA para exportación MASIVA de miles de modelos ya comprobados:\nla auditoría corre por cada modelo y ralentiza mucho.',
     # ── Vehicle dummy audit (check_vehicle_names) ──
     'верхний dummy байка': 'dummy superior de la moto',
     'переднее колесо': 'rueda delantera',

@@ -1612,6 +1612,11 @@ class GTATOOLS_PT_export_panel(bpy.types.Panel):
         row.prop(context.scene.inu_settings, "gtatools_txd_auto_import", text=T("Авто TXD"))
         row.prop(context.scene.inu_settings, "gtatools_dxt_backend", text="")
 
+        # ── Проверка модели после экспорта (аудит на краши/баги в игре).
+        # Для МАССОВОГО экспорта тысяч уже проверенных моделей — снять галку,
+        # чтобы не гонять аудит на каждую (заметно ускоряет). ──
+        io_col.prop(context.scene.inu_settings, "gtatools_audit_on_export")
+
         # ── Pipeline (one row, no info-label clutter — tooltip on each btn) ──
         # «Ped» — это preset для скиннутых персонажей: применяет
         # has_skin=True, отключает day/night vcols + MatFX. На pipeline

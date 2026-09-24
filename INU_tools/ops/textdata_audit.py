@@ -22,7 +22,7 @@ def report_lint(op, label, fatal, warnings):
     """Report ``(fatal, warnings)`` from a ``core.textdata_lint`` check on
     behalf of operator ``op``. Returns True when there were fatals."""
     for item in fatal:
-        print(f"[INU lint] {label}: ИГРА НЕ ПРИМЕТ: {item}")
+        print(f"[INU lint] {label}: {T('Игра не примет')}: {item}")
     for item in warnings:
         print(f"[INU lint] {label}: {item}")
     shown = warnings[:_MAX_WARNINGS]

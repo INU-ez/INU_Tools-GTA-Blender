@@ -9,3 +9,39 @@ INU_tools-*.zip
 # E2E test runner status file — pytest exit code from inside Blender
 dev/tests/.e2e_last_exit
 FEATURES_CHECKLIST.md
+
+# Python (доп. кэш/сборка)
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Локальные venv/окружения
+.venv/
+venv/
+env/
+
+# Редакторы / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ОС-мусор
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Бэкапы Blender (автосейвы — не главный .blend)
+*.blend1
+*.blend2
+*.blend3
+*.blend@
+
+# Логи/временное
+*.log
+*.tmp
+*.bak

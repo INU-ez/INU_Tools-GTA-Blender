@@ -1783,9 +1783,22 @@ New in 2.4.0:
 
 ### Export audits — "Game will crash"
 
-Since 2.4.0 every exporter checks what it is about to write against what `gta_sa.exe` actually reads
+Since 2.4.0 the exporters can check what they are about to write against what `gta_sa.exe` actually reads
 (the rules were taken from the engine's decompilation). DFF (map and skin), COL, TXD, IFP, IDE, IPL,
 `water.dat`, `timecyc.dat`, zones, `plants.dat` and `effects.fxp` all go through it.
+
+**What the DFF (model) audit checks, specifically:** triangle vertex/material indices out of range
+(crash), UV-layer count/length mismatch, a bounding sphere that does not enclose every vertex (viewport
+clipping cuts geometry near the camera), night vertex colours without the day layer, a black material
+colour with the *Modulate* flag (the model renders black in game), an unknown pipeline id, over-long
+model/texture names (24/32-byte engine buffers), missing render flags, and extra/broken atomics.
+**Vehicles** additionally require the wheel/chassis dummy frames (else `GetWheelPosn` crashes);
+**skinned** models require a valid bone/weight (HAnim) setup.
+
+**"Audit models on export" checkbox (Export / Import panel).** The audit runs on **every** model, so a
+mass export of thousands of DFFs (a whole map) spends noticeable time in it. The checkbox controls
+whether it runs — it is **OFF by default** (fast export). Turn it **on** for a one-off check of a model
+or a small batch; leave it **off** when re-exporting a map of already-checked models.
 
 Findings reach the operator report at two levels:
 

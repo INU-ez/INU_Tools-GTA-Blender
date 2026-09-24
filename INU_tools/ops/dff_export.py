@@ -2104,9 +2104,26 @@ def export_dff(filepath: str, objects, version: int = GTA_SA_VERSION,
 
     # Audit before writing, surface after: ``write_dff_file`` clears
     # DFF_EXPORT_WARNINGS on its way in, so anything appended earlier is lost.
-    veh_fatal, veh_warn = _audit_vehicle_frames(clump)
-    skin_fatal, skin_warn = _audit_skin(clump)
-    map_fatal, map_warn = _audit_map(clump, model_name)
+    #
+    # Пост-экспортный аудит модели (проверка на краши/баги в игре) гоняется
+    # на КАЖДУЮ модель — при массовом экспорте (тысячи моделей) это заметно
+    # замедляет. Настройка сцены gtatools_audit_on_export по умолчанию ВЫКЛ
+    # (быстрый экспорт); включить галку в панели экспорта для разовой проверки.
+    # Батч-скрипты без сцены → аудит тоже выключен.
+    _do_audit = False
+    try:
+        import bpy as _bpy
+        _do_audit = bool(getattr(_bpy.context.scene.inu_settings,
+                                 'gtatools_audit_on_export', False))
+    except Exception:                                  # noqa: BLE001
+        _do_audit = False
+    if _do_audit:
+        veh_fatal, veh_warn = _audit_vehicle_frames(clump)
+        skin_fatal, skin_warn = _audit_skin(clump)
+        map_fatal, map_warn = _audit_map(clump, model_name)
+    else:
+        veh_fatal = veh_warn = skin_fatal = skin_warn = []
+        map_fatal = map_warn = []
     for item in veh_fatal:
         print(f"[DFF Export] ИГРА УПАДЁТ: нет дамми {item}")
     for item in veh_warn:
