@@ -2,7 +2,7 @@ schema_version = "1.0.0"
 
 # Unique extension ID — reverse-DNS-style. Must not change between versions.
 id = "inu_tools_gta_sa"
-version = "2.4.0"
+version = "2.4.1"
 name = "INU Tools (GTA SA)"
 tagline = "Full-pipeline toolkit for GTA San Andreas modding"
 maintainer = "INU"
