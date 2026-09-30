@@ -5,6 +5,9 @@
 # Del from another .blend …) the links are re-checked against it
 # (map_link.refresh_links): a model whose row is gone loses its «В IPL» /
 # «В IDE» status. Read-only — files are never written, objects never moved.
+# A file that is missing right now (an editor re-saving it via delete+create,
+# a renamed folder, an unplugged drive) is skipped — its links stay, and it
+# is re-checked once it comes back changed.
 #
 # Cheap by design: every tick only stat()s the known files; the scene is
 # rescanned for linked files every few seconds; a file is parsed only when
@@ -64,6 +67,8 @@ def _tick():
         changed = []
         for p in _files:
             cur = _stat(p)
+            if cur is None:
+                continue      # not there right now: links untouched, old sig kept
             if _sig.get(p, 'x') != cur:
                 _sig[p] = cur
                 changed.append(p)

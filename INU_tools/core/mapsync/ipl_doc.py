@@ -14,7 +14,8 @@ How it works now
   :class:`Anchor` (model id, name, position, rotation). Before every write the
   row is found again by that content.
 * A LOD row is never tracked on its own: it is whatever row the model row's
-  ``lod_index`` points at in the file.
+  ``lod_index`` points at in the file. VC/III rows have no ``lod_index`` —
+  there it is the LOD model's row standing at the model's spot.
 * While editing, ``lod_index`` values are held as references between row
   objects, not numbers. Deleting, appending, reordering can't break them; the
   final numbers are computed once, at :meth:`IplEditor.commit`.
@@ -28,10 +29,12 @@ from __future__ import annotations
 
 import copy
 import os
+import struct
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from ..ipl import IplInstance, _format_inst_line, _parse_inst_line, _tokens
+from ..ipl import (IplInstance, _format_inst_line, _parse_inst_line, _tokens,
+                   is_lod_name, strip_lod_marker)
 from .textfile import TextLines
 
 IPL_SECTIONS = ('inst', 'cull', 'path', 'grge', 'enex', 'pick', 'jump',
@@ -117,6 +120,50 @@ def _rot_diff(inst: IplInstance, rot) -> float:
     d = abs(inst.rot_x * rot[0] + inst.rot_y * rot[1]
             + inst.rot_z * rot[2] + inst.rot_w * rot[3])
     return 1.0 - min(d, 1.0)
+
+
+# Status «В IPL / координаты разошлись»: the scene placement against the
+# anchor it last wrote. Anchors are parsed back from 6-decimal text and kept
+# in float32 props, so the check needs a tolerance, not equality.
+POS_EPS = 1e-4
+ROT_EPS = 1e-5
+
+
+def pos_close(a, b, eps: float = POS_EPS) -> bool:
+    return all(abs(x - y) <= eps for x, y in zip(a, b))
+
+
+def rot_close(q, ref, eps: float = ROT_EPS) -> bool:
+    """Same rotation (x, y, z, w): both normalized (a file may hold 4-digit
+    quaternions), q and −q are one rotation. A zero quaternion never is."""
+    nq = sum(c * c for c in q) ** 0.5
+    nr = sum(c * c for c in ref) ** 0.5
+    if nq < 1e-9 or nr < 1e-9:
+        return False
+    q = [c / nq for c in q]
+    ref = [c / nr for c in ref]
+    if sum(x * y for x, y in zip(q, ref)) < 0.0:
+        q = [-c for c in q]
+    return all(abs(x - y) <= eps for x, y in zip(q, ref))
+
+
+def inst_drifted(inst: IplInstance, anchor: 'Anchor') -> bool:
+    """True when *inst* (what «Add» would write now) is not the row *anchor*
+    last wrote: position, or rotation when the anchor has one."""
+    if not pos_close((inst.pos_x, inst.pos_y, inst.pos_z), anchor.pos):
+        return True
+    return (anchor.rot is not None and not rot_close(
+        (inst.rot_x, inst.rot_y, inst.rot_z, inst.rot_w), anchor.rot))
+
+
+def _is_lod_of(lod_name: str, name: str) -> bool:
+    """III/VC pair a model with its LOD by name (FindRelatedModel: equal
+    after the first 3 characters); «LOD<name>» is the addon's own spelling."""
+    lo, nm = lod_name.lower(), name.lower()
+    if lo == nm or not is_lod_name(lod_name):
+        return False
+    return ((len(lo) > 3 and lo[3:] == nm[3:])
+            or strip_lod_marker(lod_name).lower() == nm)
 
 
 class IplDoc:
@@ -310,6 +357,8 @@ class IplEditor:
         self.removes: List[RemoveResult] = []
         self.messages: List[Message] = []
         self._lod_candidates: list = []   # (RemoveResult, Row)
+        self._lod_grid = None             # 1 m cell -> LOD-named file rows
+        self._detached: set = set()       # ids of rows detach_lod() unlinked
         self._committed = False
 
     # ── lookup on the live (edited) rows ──
@@ -342,6 +391,83 @@ class IplEditor:
         self.rows.append(row)
         return row
 
+    def _lod_rows_near(self, pos):
+        """File rows with a LOD name in the 1 m cells around *pos*."""
+        if self._lod_grid is None:
+            self._lod_grid = {}
+            for r in self.rows:
+                if (r.line is None or r.inst is None
+                        or not is_lod_name(r.inst.model_name)):
+                    continue
+                try:
+                    key = (int(r.inst.pos_x // 1), int(r.inst.pos_y // 1))
+                except (ValueError, OverflowError):
+                    continue
+                self._lod_grid.setdefault(key, []).append(r)
+        try:
+            cx, cy = int(pos[0] // 1), int(pos[1] // 1)
+        except (ValueError, OverflowError):
+            return
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                yield from self._lod_grid.get((cx + dx, cy + dy), ())
+
+    def _lod_taken(self, row: Row, r: Row, d2: float) -> bool:
+        """LOD row *r* belongs to other placements of *row*'s model: as many
+        of them (still without a LOD) stand as close to it as *row* (*d2*)
+        as there are free rows of that LOD at its spot."""
+        p = (r.inst.pos_x, r.inst.pos_y, r.inst.pos_z)
+        lim = max(d2, ANCHOR_TOL * ANCHOR_TOL)
+        others = sum(1 for o in self._by_mid.get(int(row.cur.model_id), ())
+                     if o is not row and not o.deleted and o.lod is None
+                     and id(o) not in self._detached
+                     and _dist2(o.cur, p) <= lim)
+        if not others:
+            return False
+        free = sum(1 for o in self._by_mid.get(int(r.inst.model_id), ())
+                   if not o.deleted and id(o) not in self.claimed
+                   and id(o) not in self.reserved
+                   and _dist2(o.inst, p) <= ANCHOR_TOL * ANCHOR_TOL)
+        return others >= free
+
+    def _lod_by_content(self, row: Row,
+                        lod: Optional[IplInstance] = None) -> Optional[Row]:
+        """VC/III rows have no lod_index, so their LOD row is found by content:
+        a free row of *lod*'s model where *row* stands in the file (a new row:
+        where *lod* goes), else a row the game pairs with *row* by name.
+        A row nearer to another placement of the same model is left to it."""
+        spot = row.inst if row.line is not None else None
+        if lod is not None:
+            for s, tol in ((spot, MATCH_TOL), (lod, ANCHOR_TOL)):
+                if s is None:
+                    continue
+                r = self._find(Anchor(int(lod.model_id), lod.model_name,
+                                      (s.pos_x, s.pos_y, s.pos_z)), tol)
+                if r is not None and s is spot and self._lod_taken(
+                        row, r, _dist2(r.inst, (s.pos_x, s.pos_y, s.pos_z))):
+                    r = None    # a nearer placement of the model owns it
+                if r is not None and s is lod and any(
+                        o is not row and not o.deleted and _dist2(
+                            o.cur, (r.inst.pos_x, r.inst.pos_y, r.inst.pos_z))
+                        <= ANCHOR_TOL * ANCHOR_TOL
+                        for o in self._by_mid.get(int(row.cur.model_id), ())):
+                    r = None    # another placement stands there: its LOD
+                if r is not None:
+                    return r
+        if spot is None:
+            return None
+        p = (spot.pos_x, spot.pos_y, spot.pos_z)
+        best, best_d = None, MATCH_TOL * MATCH_TOL
+        for r in self._lod_rows_near(p):
+            if (r.deleted or id(r) in self.claimed or id(r) in self.reserved
+                    or int(r.inst.model_id) == int(spot.model_id)
+                    or not _is_lod_of(r.inst.model_name, spot.model_name)):
+                continue
+            d2 = _dist2(r.inst, p)
+            if d2 <= best_d and not self._lod_taken(row, r, d2):
+                best, best_d = r, d2
+        return best
+
     # ── public operations ──
     def reserve(self, anchor: Anchor) -> bool:
         """Mark the row of an object NOT in this batch as taken, so nothing
@@ -356,7 +482,9 @@ class IplEditor:
               lod: Optional[IplInstance] = None) -> PlaceResult:
         """Add or update one placement (and its LOD row when *lod* is given).
 
-        *lod* None keeps whatever LOD link the row already has."""
+        *lod* None keeps whatever LOD link the row already has. An existing
+        III/VC row keeps its own scale — the game doesn't apply it (re3/reVC
+        LoadObjectInstance); a new row gets *dff*'s."""
         res = PlaceResult(tag)
         row = None
         if anchor is not None:
@@ -378,6 +506,10 @@ class IplEditor:
             row = self._append(new)
             res.action = 'add'
         else:
+            # III/VC scale: the row's own (SA rows parse as 1.0, not written).
+            if row.inst is not None:
+                new.scale_x, new.scale_y, new.scale_z = (
+                    row.inst.scale_x, row.inst.scale_y, row.inst.scale_z)
             row.new_inst = new
             res.action = 'update'
         self.claimed.add(id(row))
@@ -387,6 +519,8 @@ class IplEditor:
             lod_new = copy.copy(lod)
             lod_new.lod_index = -1
             cur = row.lod
+            if cur is None and row.style != 'SA':
+                cur = self._lod_by_content(row, lod_new)
             if (cur is not None and not cur.deleted and cur.inst is not None
                     and id(cur) not in self.claimed
                     and id(cur) not in self.reserved
@@ -395,6 +529,15 @@ class IplEditor:
                 # name (vanilla LODs aren't always «LOD<base>»).
                 if int(cur.inst.model_id) == int(lod_new.model_id):
                     lod_new.model_name = cur.inst.model_name
+                # q and −q are one rotation: keep the row's own sign.
+                n, c = lod_new, cur.inst
+                if (n.rot_x * c.rot_x + n.rot_y * c.rot_y
+                        + n.rot_z * c.rot_z + n.rot_w * c.rot_w) < 0:
+                    n.rot_x, n.rot_y, n.rot_z, n.rot_w = (
+                        -n.rot_x, -n.rot_y, -n.rot_z, -n.rot_w)
+                # III/VC scale: the row's own (the game doesn't apply it).
+                lod_new.scale_x, lod_new.scale_y, lod_new.scale_z = (
+                    cur.inst.scale_x, cur.inst.scale_y, cur.inst.scale_z)
                 cur.new_inst = lod_new
                 res.lod_action = 'update'
             else:
@@ -422,8 +565,13 @@ class IplEditor:
             return res
         row.deleted = True
         self.claimed.add(id(row))
-        if with_lod and row.lod is not None:
-            self._lod_candidates.append((res, row.lod))
+        lod = row.lod
+        if with_lod and lod is None and row.style != 'SA':
+            lod = self._lod_by_content(row)
+            if lod is not None:
+                self.claimed.add(id(lod))   # not the LOD of the next removal
+        if with_lod and lod is not None:
+            self._lod_candidates.append((res, lod))
         res.removed = True
         res._row = row
         self.removes.append(res)
@@ -433,13 +581,28 @@ class IplEditor:
         """Unlink a placement from its LOD and drop the LOD row if unused."""
         res = RemoveResult(tag)
         row = self._find(anchor, ANCHOR_TOL)
-        if row is None or row.lod is None:
+        if row is None:
+            self.messages.append(Message(
+                'WARNING', "«{0}»: строка не найдена в файле — удалять нечего",
+                anchor.model_name or anchor.model_id, tag=tag))
             self.removes.append(res)
             return res
-        self._lod_candidates.append((res, row.lod))
-        row.new_inst = copy.copy(row.cur)
-        row.lod = None
-        self.claimed.add(id(row))
+        self.claimed.add(id(row))      # a stacked twin's anchor takes the other row
+        self._detached.add(id(row))    # its LOD isn't left to it (_lod_taken)
+        lod = row.lod
+        if lod is None and row.style != 'SA':
+            lod = self._lod_by_content(row)     # VC/III: no lod_index column
+        if lod is None or lod.deleted:
+            self.messages.append(Message(
+                'INFO', "«{0}»: у строки нет LOD — отвязывать нечего",
+                anchor.model_name or anchor.model_id, tag=tag))
+            self.removes.append(res)
+            return res
+        self._lod_candidates.append((res, lod))
+        self.claimed.add(id(lod))
+        if row.lod is not None:        # SA: the model row loses its lod_index
+            row.new_inst = copy.copy(row.cur)
+            row.lod = None
         res._row = row
         self.removes.append(res)
         return res
@@ -554,6 +717,26 @@ class IplEditor:
         return [m for m in self.messages if m.level in ('WARNING', 'ERROR')]
 
 
+_F32 = struct.Struct('<f')
+
+
+def _same_number(x: float, y: float) -> bool:
+    """Numbers the game can't tell apart: within the %.6f step of
+    _format_inst_line (1e-6: 14.1015625 is written 14.101562; float32
+    2796.9453125 is written 2796.945312 where R* wrote 2796.945313), or the
+    same float32 — CFileLoader reads inst/objs with sscanf("%f"). Whole
+    numbers (id, interior, lod_index, flags) must match exactly: past 2^24
+    two of them share a float32."""
+    if abs(x - y) <= 1e-6:
+        return True
+    if x.is_integer() and y.is_integer():
+        return False
+    try:
+        return _F32.unpack(_F32.pack(x)) == _F32.unpack(_F32.pack(y))
+    except (OverflowError, struct.error):
+        return False
+
+
 def _same_values(a: str, b: str) -> bool:
     """True when two inst lines carry the same numbers (formatting aside)."""
     pa, pb = _tokens(a), _tokens(b)
@@ -563,9 +746,11 @@ def _same_values(a: str, b: str) -> bool:
         if x == y:
             continue
         try:
-            if abs(float(x) - float(y)) > 5e-7:
-                return False
+            fx, fy = float(x), float(y)
         except ValueError:
             if x.lower() != y.lower():
                 return False
+            continue
+        if not _same_number(fx, fy):
+            return False
     return True

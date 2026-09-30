@@ -41,11 +41,11 @@ def _map_region_changed_proxy(self, context):
     """Смена района карты → сбрасываем отсканированные списки IPL.
 
     Списки `gtatools_text_ipls` / `gtatools_binary_ipls` собираются Scan'ом
-    под КОНКРЕТНЫЙ район и работают как allowlist. Если оставить их при
-    переключении на другой район, ни один их пункт не совпадёт с новым
-    набором → импорт молча отбросит ВСЁ («not in Scan selection», 0
-    instances). Поэтому чистим: пустой список = грузить всё, что проходит
-    фильтр района; при желании пользователь сканирует заново под новый."""
+    под КОНКРЕТНЫЙ район: галочкой в них выключают отдельные файлы. Import
+    Map слушает их только в районе из scene['gtatools_binary_ipls_region']
+    (enum района может сдвинуться и без этого колбэка), а список чужого
+    района в панели только путал бы. Поэтому чистим: пустой список =
+    грузить все файлы района; при желании пользователь сканирует заново."""
     try:
         self.gtatools_text_ipls.clear()
         self.gtatools_binary_ipls.clear()
@@ -136,7 +136,7 @@ def _lightcut_rebuild_proxy(self, context):
 
 
 def _col_light_invalidate_preview_proxy(self, context):
-    from . import _col_light_invalidate_preview
+    from .tools.col_light import _col_light_invalidate_preview
     _col_light_invalidate_preview(self, context)
 
 
@@ -884,7 +884,7 @@ _export_img_items_root = None
 
 
 def _export_img_target_items(self, context):
-    """Items для выбора целевого IMG при экспорте: «родной IMG модели» +
+    """Items для выбора IMG моделей без своего: «IMG из настроек» +
     все .img из папки игры. Кэш по корню (пересканит только при смене папки)
     — enum-callback зовётся на каждый draw дропдауна, os.walk каждый раз дорог.
     Список пиним в модульной переменной, иначе GC съедает строки (известный
@@ -897,8 +897,8 @@ def _export_img_target_items(self, context):
         root = ''
     if root == _export_img_items_root and _export_img_items_cache:
         return _export_img_items_cache
-    items = [('SELF', T("Родной IMG модели"),
-              T("IMG, откуда пришла модель (img_target_file)"))]
+    items = [('SELF', T("IMG из настроек"),
+              T("Модели без своего IMG — в архив из настроек аддона"))]
     if root and os.path.isdir(root):
         seen = set()
         for dirpath, _dirs, files in os.walk(root):
@@ -1320,7 +1320,7 @@ class INUSceneSettings(bpy.types.PropertyGroup):
         update=_col_light_invalidate_preview_proxy)
     gtatools_col_light_threshold: IntProperty(
         name="Threshold",
-        description=T("Порог яркости"),
+        description=T("Порог яркости (учитывается и при запекании — результат совпадает с превью)"),
         default=0, min=0, max=100,
         update=_col_light_invalidate_preview_proxy)
     gtatools_col_light_contrast: FloatProperty(
@@ -1346,10 +1346,11 @@ class INUSceneSettings(bpy.types.PropertyGroup):
         update=_save_paths_proxy)
     gtatools_export_img_target: EnumProperty(
         name=T("IMG для экспорта"),
-        description=T("В какой IMG писать при «Экспорт в IMG»: родной IMG "
-                      "модели (img_target_file) или конкретный архив из папки "
-                      "игры. Обновляет запись, если модель там есть, иначе "
-                      "добавляет"),
+        description=T("Куда писать при «Экспорт в IMG» модели без своего "
+                      "IMG: архив из настроек или конкретный архив из папки "
+                      "игры. Модель со своим IMG (img_target_file) всегда "
+                      "пишется в него — игра берёт первую копию. Обновляет "
+                      "запись, если модель там есть, иначе добавляет"),
         items=_export_img_target_items)
     gtatools_fx_txd_path: StringProperty(
         name=T("TXD эффектов"),
@@ -1943,8 +1944,8 @@ class INUSceneSettings(bpy.types.PropertyGroup):
         name="Radar Output", subtype='DIR_PATH', default="",
         description=T("Папка для сохранения тайлов радара"))
     gtatools_radar_grid: IntProperty(
-        name="Radar Grid", default=8, min=1, max=16,
-        description=T("Размер сетки (8 = 64 тайла)"))
+        name="Radar Grid", default=0, min=0, max=16,
+        description=T("Размер сетки: 0 — по игре (SA 12 = 144 тайла, III/VC 8 = 64)"))
     gtatools_radar_size: IntProperty(
         name="Radar Tile Size", default=256, min=64, max=4096,
         description=T("Размер тайла в пикселях"))
@@ -1960,21 +1961,29 @@ class INUSceneSettings(bpy.types.PropertyGroup):
         name="Show IMG List", default=False)
     gtatools_show_preset_dir: BoolProperty(
         name="Show Preset Folder", default=False)
-    gtatools_col_auto_light: BoolProperty(
-        name="Auto COL Light",
-        description=(T("Заполнять байт освещения коллизии у фейсов, где он "
-                     "равен 0 (нет COL-материала / day+night не заданы). "
-                     "Повторяет поведение Kam's CST-экспорта (light=78), "
-                     "иначе коллизия в игре остаётся неосвещённой. "
-                     "Заданные вручную и импортированные значения не "
-                     "трогаются")),
-        default=True)
-    gtatools_col_auto_light_value: IntProperty(
-        name="COL Light",
-        description=(T("Значение байта освещения для незаполненных фейсов. "
-                     "78 = день≈15 / ночь 4 (дефолт Kam). Упаковка: "
-                     "день = младший ниббл, ночь = старший ниббл")),
-        default=78, min=0, max=255)
+    gtatools_col_light_mode: EnumProperty(
+        name="COL Light Mode",
+        description=T("Откуда брать освещение коллизии (день/ночь) при экспорте"),
+        items=[
+            ('MATERIAL', T("Из материала"),
+             T("Брать день/ночь, заданные на COL-материалах модели "
+               "(поля «Дневной свет» / «Ночной свет»). Фейсы без настройки "
+               "остаются с нулём. Сохраняет импортированные значения")),
+            ('AUTO', T("Авто: день + ночь"),
+             T("Выставить единые день/ночь на ВСЮ коллизию, перезаписав "
+               "материалы. Стандарт Kam (день 14 / ночь 4 = старое 78)")),
+        ],
+        default='AUTO')
+    gtatools_col_auto_day: IntProperty(
+        name="COL Day Light",
+        description=T("Дневной свет коллизии для режима «Авто». 0–15 "
+                      "(младший ниббл байта освещения). 14 = стандарт (старое 78)"),
+        default=14, min=0, max=15)
+    gtatools_col_auto_night: IntProperty(
+        name="COL Night Light",
+        description=T("Ночной свет коллизии для режима «Авто». 0–15 "
+                      "(старший ниббл байта освещения). 4 = стандарт (старое 78)"),
+        default=4, min=0, max=15)
     gtatools_img_entries_index: IntProperty(default=0)
     gtatools_id_search: StringProperty(
         name="ID Search",

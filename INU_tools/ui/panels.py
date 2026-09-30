@@ -1119,41 +1119,13 @@ class GTATOOLS_PT_ide_ipl_export(bpy.types.Panel):
             # IDE-состояние + кнопка «обновить параметры в своих IDE» (↑).
             _sr = _inner.row(align=True)
             _sr.scale_y = 0.85
-            # Скопировал модель и сменил Model ID → привязка к старой строке
-            # IDE неактуальна (новый ID в том IDE отсутствует).
-            _ide_id_changed = (
-                _iao.ide_linked and _iao.ide_last_model_id > 0
-                and int(_iao.model_id) != int(_iao.ide_last_model_id))
-            if _ide_id_changed:
-                _sr.label(
-                    text=T("Не в IDE — сменился ID (был {0})").format(
-                        _iao.ide_last_model_id),
-                    **inu_icon(safe_icon('DUPLICATE')))
-            elif not _iao.ide_linked or _iao.model_id <= 0:
-                _sr.label(text=T("Не в IDE"),
-                          **inu_icon(safe_icon('RADIOBUT_OFF')))
-            else:
-                # Что именно разошлось с IDE — перечисляем в предупреждении.
-                _ide_diff = []
-                from ..tools.model_utils import get_model_type_cached
-                _dd_cur = (_iao.lod_draw_distance
-                           if get_model_type_cached(ao)[0] == 'LOD'
-                           else _iao.draw_distance)
-                if abs(_dd_cur - _iao.ide_last_draw_distance) > 1e-3:
-                    _ide_diff.append("DrawDist")
-                if (_iao.txd_name or '') != (_iao.ide_last_txd_name or ''):
-                    _ide_diff.append("TXD")
-                if int(_iao.ide_flags) != int(_iao.ide_last_flags):
-                    _ide_diff.append("Flags")
-                _drift_ide = bool(_ide_diff)
-                if _drift_ide:
-                    _sr.label(text=T("В IDE, изменено: {0}").format(
-                        ", ".join(_ide_diff)),
-                              **inu_icon(safe_icon('ERROR')))
-                else:
-                    _t = os.path.basename(_iao.ide_target_file or '') or '?'
-                    _sr.label(text=T("В IDE ({0})").format(_t),
-                              **inu_icon(safe_icon('CHECKMARK')))
+            # Сравнение — с тем, что «Add» запишет в файл (TXD по имени
+            # модели, переведённые флаги, ID LOD-а = ID модели + 1), а не с
+            # сырыми полями. Сменился Model ID → привязка к старой строке
+            # неактуальна (🗑 выключена).
+            from ..ops.map_link import ide_status as _ide_status
+            _st, _sa, _si, _ide_id_changed = _ide_status(ao)
+            _sr.label(text=T(_st).format(_sa), **inu_icon(safe_icon(_si)))
             _sre = _sr.row(align=True)
             _sre.alignment = 'RIGHT'
             _sre.enabled = has_sel
@@ -1183,46 +1155,27 @@ class GTATOOLS_PT_ide_ipl_export(bpy.types.Panel):
             # IPL-состояние + кнопка «обновить координаты в своих IPL» (↑).
             _sr2 = _inner.row(align=True)
             _sr2.scale_y = 0.85
-            if not _iao.ipl_uuid:
-                # LOD своей привязки не имеет: его строка пишется и удаляется
-                # вместе с моделью (lod_index модели в файле).
-                from ..tools.model_utils import get_model_type_cached
-                if get_model_type_cached(ao)[0] == 'LOD':
-                    _sr2.label(text=T("LOD — пишется вместе с моделью"),
-                               **inu_icon(safe_icon('LINKED')))
-                else:
-                    _sr2.label(text=T("Не в IPL"),
-                               **inu_icon(safe_icon('RADIOBUT_OFF')))
-            else:
-                from ..ops.map_link import is_copy as _is_copy
-                _new_copy = _is_copy(ao, cached=False)
-                _cp = ao.matrix_world.translation
-                _lp = _iao.ipl_last_pos
-                _drift_ipl = (abs(_cp.x - _lp[0]) > 1e-4
-                              or abs(_cp.y - _lp[1]) > 1e-4
-                              or abs(_cp.z - _lp[2]) > 1e-4)
-                if _new_copy:
-                    _sr2.label(text=T("Копия — добавится новым инстансом"),
-                               **inu_icon(safe_icon('DUPLICATE')))
-                elif _drift_ipl:
-                    _sr2.label(text=T("В IPL, координаты разошлись"),
-                               **inu_icon(safe_icon('ERROR')))
-                else:
-                    _t2 = os.path.basename(_iao.ipl_target_file or '') or '?'
-                    _sr2.label(text=T("В IPL ({0})").format(_t2),
-                               **inu_icon(safe_icon('CHECKMARK')))
+            # LOD своей привязки не имеет (пишется вместе с моделью); копия
+            # добавится новой строкой; «разошлись» — позиция ИЛИ поворот.
+            # Меш модели из нескольких мешей в одной точке (…_L0 + …_dam) —
+            # одна расстановка: строка и кнопки её главного меша.
+            from ..ops.map_link import ipl_status as _ipl_status, panel_main
+            _ipo = panel_main(ao)
+            _ipi = _ipo.inu
+            _st2, _sa2, _si2 = _ipl_status(_ipo)
+            _sr2.label(text=T(_st2).format(_sa2), **inu_icon(safe_icon(_si2)))
             _sre2 = _sr2.row(align=True)
             _sre2.alignment = 'RIGHT'
             _sre2.enabled = has_sel
             # 📄 открыть IPL-файл этой модели во внешнем редакторе.
             _oipl = _sre2.row(align=True)
-            _oipl.enabled = bool(_iao.ipl_target_file)
+            _oipl.enabled = bool(_ipi.ipl_target_file)
             _oipl.operator("gtatools.open_text_file", text="",
                            **inu_icon(safe_icon('TEXT'))).filepath = (
-                               _iao.ipl_target_file or "")
+                               _ipi.ipl_target_file or "")
             # ▶ вернуть координаты из IPL (в слот-иконку, как ▶ у IDE).
             _rc2 = _sre2.row(align=True)
-            _rc2.enabled = bool(_iao.ipl_uuid)
+            _rc2.enabled = bool(_ipi.ipl_uuid)
             _rc2.operator("gtatools.ipl_restore_coords", text="",
                           **inu_icon(safe_icon('FORWARD')))
             # ↑ обновить координаты в IPL + 🗑 удалить инстанс.
@@ -1231,13 +1184,13 @@ class GTATOOLS_PT_ide_ipl_export(bpy.types.Panel):
             _sre2_ex.operator("gtatools.ipl_sync_export", text="Add",
                               translate=False, **inu_icon(safe_icon('EXPORT')))
             _dtipl = _sre2.row(align=True)
-            _dtipl.enabled = bool(_iao.ipl_uuid)
+            _dtipl.enabled = bool(_ipi.ipl_uuid)
             _dtipl.operator("gtatools.ipl_remove_link", text="",
                             **inu_icon(safe_icon('TRASH'))
-                            ).target_file = _iao.ipl_target_file or ""
-            # IMG-статус (по img_target_file) + кнопка ↑: экспорт модели в
-            # выбранный IMG (по умолчанию — родной IMG модели, иначе выбранный
-            # в дропдауне «Экспорт в IMG» ниже). Обновит или добавит модель.
+                            ).target_file = _ipi.ipl_target_file or ""
+            # IMG-статус (по img_target_file) + кнопка ↑: экспорт в IMG —
+            # модель со своим IMG пишется в него, без своего — в архив,
+            # выбранный в окне, иначе в IMG из настроек. Обновит или добавит.
             _sr3 = _inner.row(align=True)
             _sr3.scale_y = 0.85
             _img_tgt = _iao.img_target_file
@@ -1274,6 +1227,12 @@ class GTATOOLS_PT_ide_ipl_export(bpy.types.Panel):
             _op3 = _upimg.operator("gtatools.export_to_img", text="Export",
                                    translate=False, **inu_icon(safe_icon('EXPORT')))
             _op3.target_img = _res3 or ""
+            # 📦 пересобрать (сжать) IMG модели, иначе IMG из настроек — с вопросом.
+            _rbt = _img_tgt or scn.inu_settings.gtatools_img_path
+            _rbimg = _sre3.row(align=True)
+            _rbimg.enabled = bool(_rbt)
+            _rbimg.operator("gtatools.rebuild_img", text="",
+                            **inu_icon(safe_icon('PACKAGE'))).target_img = _rbt or ""
             # 🗑 удалить DFF/TXD/COL модели из её IMG.
             _dtimg = _sre3.row(align=True)
             _dtimg.enabled = bool(_img_tgt)
@@ -5257,7 +5216,11 @@ class GTATOOLS_PT_zon_panel(bpy.types.Panel):
         for key, label in (('zon_name', T("Имя")), ('zon_type', T("Тип")),
                            ('zon_level', T("Уровень")), ('zon_gxt', "GXT")):
             if key in obj:
-                box.prop(obj, f'["{key}"]', text=label)
+                if key == 'zon_name':
+                    # Через свойство с set — правка переименовывает и бокс.
+                    box.prop(obj.inu, 'zon_name_edit', text=label)
+                else:
+                    box.prop(obj, f'["{key}"]', text=label)
             if key == 'zon_type':
                 box.label(text=self._TYPES.get(int(obj.get('zon_type', 0)),
                                                T("свой тип")))
@@ -5914,6 +5877,12 @@ class GTATOOLS_PT_radar_panel(bpy.types.Panel):
         col.prop(scn.inu_settings, "gtatools_radar_grid", text=T("Сетка"))
         col.prop(scn.inu_settings, "gtatools_radar_size", text=T("Размер"))
         col.prop(scn.inu_settings, "gtatools_radar_height", text=T("Высота"))
+        if scn.inu_settings.gtatools_radar_grid == 0:
+            # 0 = the active game's own radar grid — show what that is.
+            from ..core import game_versions as _gv
+            _g, _half = _gv.radar_layout(_gv.game_of_scene(scn))
+            layout.label(text=T("Сетка по игре: {0}×{0}, охват ±{1} м").format(
+                _g, int(_half)), **inu_icon(safe_icon('INFO')))
 
         layout.separator()
 

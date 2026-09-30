@@ -101,37 +101,74 @@ def audit_col(models, filepath: str = '', target_game: str = ''):
     return fatal, warnings
 
 
-def _auto_light_settings():
-    """Read the scene's auto collision-light setting.
+def _col_light_settings():
+    """Read the scene's collision-light setting.
 
-    Returns ``(enabled, value)``. Kam's CST exporter hard-writes a face
-    light byte of 78 (day≈15 / night 4) so collision is lit in-game;
-    INU mirrors that by filling faces whose light byte is 0 (no COL
-    material / unconfigured) with a configurable default. Returns
-    ``(False, 0)`` when no scene is available (e.g. unit tests) so the
-    behaviour is opt-in to a live Blender session only.
+    Returns ``(mode, day, night)``:
+      * ``'MATERIAL'`` — use per-material day/night as configured on the
+        model (``col_day_light`` / ``col_night_light``); no override.
+      * ``'AUTO'`` — force ``day``/``night`` (0–15 each) onto EVERY face /
+        primitive of the whole collision. Default 14/4 reproduces Kam's
+        old single light byte 78 (``0x4E`` → day = low nibble 14,
+        night = high nibble 4).
+
+    Returns ``('MATERIAL', 0, 0)`` when no scene is available (e.g. unit
+    tests), so exports fall back to material-only, non-destructive.
     """
     try:
-        scn = bpy.context.scene
-        st = scn.inu_settings
-        return bool(getattr(st, 'gtatools_col_auto_light', False)), \
-            int(getattr(st, 'gtatools_col_auto_light_value', 78))
+        st = bpy.context.scene.inu_settings
+        return (getattr(st, 'gtatools_col_light_mode', 'AUTO'),
+                int(getattr(st, 'gtatools_col_auto_day', 14)),
+                int(getattr(st, 'gtatools_col_auto_night', 4)))
     except Exception:
-        return False, 0
+        return 'MATERIAL', 0, 0
+
+
+def _pack_light(day: int, night: int) -> int:
+    """Pack day/night (0–15) into the COL light byte: day = low nibble,
+    night = high nibble — matches the importer and the per-material path."""
+    return (day & 0xF) | ((night & 0xF) << 4)
+
+
+def _u8(v) -> int:
+    """Clamp a surface byte to 0..255. The writer packs material / flags /
+    brightness / light with '<4B', so an out-of-range IntProperty (they have
+    no min/max) would abort the whole export with struct.error."""
+    return max(0, min(255, int(v)))
+
+
+def _apply_auto_light(surface, version: int = 3):
+    """In 'AUTO' mode overwrite a sphere/box surface's day/night with the
+    scene's; in 'MATERIAL' mode leave whatever the object provided.
+
+    The day/night goes into the byte SA loads as CColSphere/CColBox
+    m_nLighting (read by gta_sa 0x412AA0 / 0x416450 / 0x412130 / 0x413100):
+    COL2/COL3 records are copied as is, so that is the 3rd byte
+    (``brightness``); the COL1 loader (0x537580) takes it from the 4th
+    (``light``). The other byte is left as the object has it. III/VC
+    ignore both bytes."""
+    mode, day, night = _col_light_settings()
+    if mode == 'AUTO':
+        if version == 1:
+            surface.light = _pack_light(day, night)
+        else:
+            surface.brightness = _pack_light(day, night)
 
 
 def _draw_col_auto_light(layout, context):
-    """Shared UI block for the auto collision-light setting — used by the
-    COL and CST export dialogs and the N-panel so the control looks the
-    same everywhere."""
+    """Shared UI block for the collision-light setting — used by the COL
+    and CST export dialogs and the N-panel so the control looks the same
+    everywhere."""
     st = getattr(context.scene, 'inu_settings', None)
     if st is None:
         return
     box = layout.box()
-    box.prop(st, 'gtatools_col_auto_light', text=T("Авто-свет коллизии"))
-    row = box.row()
-    row.enabled = st.gtatools_col_auto_light
-    row.prop(st, 'gtatools_col_auto_light_value', text=T("Значение"))
+    box.label(text=T("Свет коллизии"))
+    box.prop(st, 'gtatools_col_light_mode', text="")
+    if st.gtatools_col_light_mode == 'AUTO':
+        row = box.row(align=True)
+        row.prop(st, 'gtatools_col_auto_day', text=T("День"))
+        row.prop(st, 'gtatools_col_auto_night', text=T("Ночь"))
 
 
 def _vec3(v) -> Vec3:
@@ -162,9 +199,9 @@ def _get_surface_from_material(mat, target_game: str = '') -> Surface:
         if target_game and source and source != target_game:
             from ..core.surface_translate import translate_surface
             sid = translate_surface(sid, source, target_game)
-        surface.material = sid
-        surface.flags = getattr(inu, 'col_flags', 0)
-        surface.brightness = getattr(inu, 'col_brightness', 0)
+        surface.material = _u8(sid)
+        surface.flags = _u8(getattr(inu, 'col_flags', 0))
+        surface.brightness = _u8(getattr(inu, 'col_brightness', 0))
         day = getattr(inu, 'col_day_light', 0)
         night = getattr(inu, 'col_night_light', 0)
         surface.light = (day & 0xF) | ((night & 0xF) << 4)
@@ -217,7 +254,8 @@ def _collect_mesh(obj, model: ColModel):
     """Triangulate a mesh object and add its vertices/faces to the model."""
     mesh = obj.data
     target_game = _COL_VERSION_TO_GAME.get(model.version, 'SA')
-    auto_light, auto_light_val = _auto_light_settings()
+    light_mode, auto_day, auto_night = _col_light_settings()
+    auto_light_byte = _pack_light(auto_day, auto_night)
     bm = bmesh.new()
     try:
         bm.from_mesh(mesh)
@@ -225,7 +263,8 @@ def _collect_mesh(obj, model: ColModel):
         # — это РАЗМЕЩЕНИЕ модели (уходит в IPL/frame), в геометрию коллизии
         # его запекать нельзя: иначе COL двоит поворот с размещением и уезжает
         # относительно модели. Геометрия остаётся в модель-локале, как в DFF.
-        # Примитивы (сфера/бокс) поворот тоже не берут.
+        # Примитивы (сфера/бокс) меряются от этого же меша (_prim_anchor) —
+        # его позиция и поворот в них тоже не попадают.
         import mathutils
         sx, sy, sz = obj.matrix_world.to_scale()
         if (sx, sy, sz) != (1.0, 1.0, 1.0):
@@ -248,10 +287,11 @@ def _collect_mesh(obj, model: ColModel):
                 mat = obj.data.materials[face.material_index]
                 surface = _get_surface_from_material(mat, target_game)
 
-            # Auto collision light (Kam parity): fill faces whose light
-            # byte is still 0 (no COL material / unconfigured day+night).
-            if auto_light and surface.light == 0:
-                surface.light = auto_light_val
+            # 'AUTO' mode: force the scene's day/night onto every face of
+            # the whole collision (overrides material). 'MATERIAL' mode:
+            # keep the per-material day/night the surface already carries.
+            if light_mode == 'AUTO':
+                surface.light = auto_light_byte
 
             # Swap verts[1] and verts[2] for GTA winding order
             verts = list(face.verts)
@@ -280,6 +320,86 @@ def _is_shadow_mesh(obj) -> bool:
     if name.endswith('_sha') or '_sha.' in name:  # .001 suffix variants
         return True
     return False
+
+
+# ── Сферы/боксы — в системе модели, относительно COL-меша ────────────────
+# _collect_mesh пишет меш в его локале (позиция/поворот объекта = расстановка
+# модели), поэтому примитивы меряются от того же меша: сдвинули коллизию
+# целиком — файл не меняется, как в Max. Без меша — старое obj.location.
+
+def _prim_anchor(objects):
+    """Object the sphere/box empties are measured from: the model's COL mesh
+    (first non-shadow mesh, else the first shadow mesh); None without a mesh."""
+    meshes = [o for o in objects if getattr(o, 'type', None) == 'MESH']
+    for o in meshes:
+        if not _is_shadow_mesh(o):
+            return o
+    return meshes[0] if meshes else None
+
+
+def _refresh_for_prims(objects, anchor):
+    """Objects made by bpy.data.objects.new keep an identity matrix_world
+    until the depsgraph runs, and the COL paths don't evaluate it (the DFF one
+    does) — refresh before primitives are measured from matrix_world."""
+    if anchor is None or not any(getattr(o, 'type', None) == 'EMPTY'
+                                 for o in objects):
+        return
+    try:
+        bpy.context.view_layer.update()
+    except Exception:
+        pass
+
+
+def _anchor_frame(anchor):
+    """(translation, rotation rows) of the anchor's world matrix, scale
+    dropped — the mesh exporter keeps the scale in the verts."""
+    t, q, _s = anchor.matrix_world.decompose()
+    return tuple(t), [tuple(r) for r in q.to_matrix()]
+
+
+def _prim_local_xyz(p, t, rot):
+    """R^T·(p − t) — a world point into anchor space (scale NOT removed:
+    mesh verts keep it)."""
+    d = (p[0] - t[0], p[1] - t[1], p[2] - t[2])
+    return tuple(rot[0][i] * d[0] + rot[1][i] * d[1] + rot[2][i] * d[2]
+                 for i in range(3))
+
+
+def _prim_box_local(center, axes, t, rot):
+    """(min, max) in anchor space of a box empty: ``center`` = its world
+    position, ``axes`` = the three world half-axes (matrix_world columns —
+    the box is ±1 in its own space, scale carries the size). AABB of the 8
+    corners, so a box turned against the model still gets a box around it."""
+    lo = [float('inf')] * 3
+    hi = [float('-inf')] * 3
+    for a in (-1.0, 1.0):
+        for b in (-1.0, 1.0):
+            for c in (-1.0, 1.0):
+                q = _prim_local_xyz(
+                    tuple(center[k] + a * axes[0][k] + b * axes[1][k]
+                          + c * axes[2][k] for k in range(3)), t, rot)
+                for k in range(3):
+                    lo[k] = min(lo[k], q[k])
+                    hi[k] = max(hi[k], q[k])
+    return tuple(lo), tuple(hi)
+
+
+def _prim_base_name(name):
+    """'<model>_sphere_N' / '<model>_box_N' (+ .001) → '<model>' (the names
+    col_import gives primitives)."""
+    import re
+    if '.' in name and name.rsplit('.', 1)[1].isdigit():
+        name = name.rsplit('.', 1)[0]
+    return re.sub(r'_(sphere|box)_\d+$', '', name, flags=re.IGNORECASE)
+
+
+def _is_import_prim(obj):
+    """Empty named the way col_import names primitives ('<model>_sphere_N' /
+    '<model>_box_N', + .001) — a model's sphere/box, not a stray empty."""
+    import re
+    return (getattr(obj, 'type', None) == 'EMPTY'
+            and re.search(r'_(sphere|box)_\d+(\.\d+)?$', obj.name,
+                          re.IGNORECASE) is not None)
 
 
 def _collect_shadow_mesh(obj, model: ColModel):
@@ -320,23 +440,34 @@ def _collect_shadow_mesh(obj, model: ColModel):
         bm.free()
 
 
-def _collect_sphere(obj, model: ColModel):
-    """Convert an Empty (sphere display) to ColSphere."""
-    radius = max(s * obj.empty_display_size for s in obj.scale)
-    center = Vec3(obj.location.x, obj.location.y, obj.location.z)
+def _collect_sphere(obj, model: ColModel, anchor=None):
+    """Convert an Empty (sphere display) to ColSphere.
+
+    With ``anchor`` (see _prim_anchor) the centre is taken relative to it and
+    the radius from the empty's world scale; without — raw location/scale."""
+    if anchor is not None:
+        t, rot = _anchor_frame(anchor)
+        mw = obj.matrix_world
+        center = _vec3(_prim_local_xyz(tuple(mw.translation), t, rot))
+        # to_scale() flips all three signs when det < 0 (mirrored S X -1)
+        radius = obj.empty_display_size * max(abs(s) for s in mw.to_scale())
+    else:
+        radius = max(s * obj.empty_display_size for s in obj.scale)
+        center = Vec3(obj.location.x, obj.location.y, obj.location.z)
 
     surface = Surface()
     inu = getattr(obj, 'inu', None)
     if inu is not None:
-        surface.material = getattr(inu, 'col_material', 0)
-        surface.flags = getattr(inu, 'col_flags', 0)
-        surface.brightness = getattr(inu, 'col_brightness', 0)
-        surface.light = getattr(inu, 'col_light', 0)
+        surface.material = _u8(getattr(inu, 'col_material', 0))
+        surface.flags = _u8(getattr(inu, 'col_flags', 0))
+        surface.brightness = _u8(getattr(inu, 'col_brightness', 0))
+        surface.light = _u8(getattr(inu, 'col_light', 0))
+    _apply_auto_light(surface, model.version)
 
     model.spheres.append(ColSphere(center=center, radius=radius, surface=surface))
 
 
-def _collect_box(obj, model: ColModel):
+def _collect_box(obj, model: ColModel, anchor=None):
     """Convert an Empty (cube display) to ColBox primitive.
 
     Inverse of `_create_box` in col_import: Blender's location is the
@@ -344,35 +475,48 @@ def _collect_box(obj, model: ColModel):
     fall out as `loc ± scale`. `abs()` on scale defends against the
     user mirroring an empty to a negative scale — the game stores an
     unordered AABB and a min > max box is silently dropped at load.
+    With ``anchor`` (see _prim_anchor) the box is measured from it
+    (_prim_box_local).
     """
-    cx, cy, cz = obj.location
-    sx, sy, sz = abs(obj.scale.x), abs(obj.scale.y), abs(obj.scale.z)
+    if anchor is not None:
+        t, rot = _anchor_frame(anchor)
+        mw = obj.matrix_world
+        m3 = mw.to_3x3()
+        bb_min, bb_max = _prim_box_local(
+            tuple(mw.translation), [tuple(m3.col[i]) for i in range(3)],
+            t, rot)
+    else:
+        cx, cy, cz = obj.location
+        sx, sy, sz = abs(obj.scale.x), abs(obj.scale.y), abs(obj.scale.z)
+        bb_min = (cx - sx, cy - sy, cz - sz)
+        bb_max = (cx + sx, cy + sy, cz + sz)
 
     surface = Surface()
     inu = getattr(obj, 'inu', None)
     if inu is not None:
-        surface.material   = getattr(inu, 'col_material', 0)
-        surface.flags      = getattr(inu, 'col_flags', 0)
-        surface.brightness = getattr(inu, 'col_brightness', 0)
-        surface.light      = getattr(inu, 'col_light', 0)
+        surface.material   = _u8(getattr(inu, 'col_material', 0))
+        surface.flags      = _u8(getattr(inu, 'col_flags', 0))
+        surface.brightness = _u8(getattr(inu, 'col_brightness', 0))
+        surface.light      = _u8(getattr(inu, 'col_light', 0))
+    _apply_auto_light(surface, model.version)
 
     model.boxes.append(ColBox(
-        bb_min=Vec3(cx - sx, cy - sy, cz - sz),
-        bb_max=Vec3(cx + sx, cy + sy, cz + sz),
+        bb_min=_vec3(bb_min),
+        bb_max=_vec3(bb_max),
         surface=surface,
     ))
 
 
-def _collect_empty(obj, model: ColModel):
+def _collect_empty(obj, model: ColModel, anchor=None):
     """Dispatch an Empty to the right collector based on its display
     type. `'SPHERE'` → sphere primitive; `'CUBE'` → box primitive.
     Any other display type (`ARROWS`, `PLAIN_AXES`, …) is treated as
     sphere for backward compat with files imported by older versions
     that only knew about sphere empties."""
     if obj.empty_display_type == 'CUBE':
-        _collect_box(obj, model)
+        _collect_box(obj, model, anchor)
     else:
-        _collect_sphere(obj, model)
+        _collect_sphere(obj, model, anchor)
 
 
 def _compute_bounds(model: ColModel) -> Bounds:
@@ -502,6 +646,8 @@ def export_col(filepath: str, objects, version: int = 3, model_name: str = "",
     model = ColModel(version=version, model_name=model_name)
 
     if not empty:
+        anchor = _prim_anchor(objects)
+        _refresh_for_prims(objects, anchor)
         for obj in objects:
             if obj.type == 'MESH':
                 if _is_shadow_mesh(obj):
@@ -510,7 +656,7 @@ def export_col(filepath: str, objects, version: int = 3, model_name: str = "",
                     _collect_mesh(obj, model)
 
             elif obj.type == 'EMPTY':
-                _collect_empty(obj, model)
+                _collect_empty(obj, model, anchor)
         model.bounds = _compute_bounds(model)
         saved = _stored_bounds(objects)
         if saved is not None:
@@ -540,6 +686,8 @@ def build_col_model(objects, version: int = 3, model_name: str = "",
     model = ColModel(version=version, model_name=model_name)
 
     if not empty:
+        anchor = _prim_anchor(objects)
+        _refresh_for_prims(objects, anchor)
         for obj in objects:
             if obj.type == 'MESH':
                 if _is_shadow_mesh(obj):
@@ -548,7 +696,7 @@ def build_col_model(objects, version: int = 3, model_name: str = "",
                     _collect_mesh(obj, model)
 
             elif obj.type == 'EMPTY':
-                _collect_empty(obj, model)
+                _collect_empty(obj, model, anchor)
         model.bounds = _compute_bounds(model)
         saved = _stored_bounds(objects)
         if saved is not None:
@@ -578,7 +726,8 @@ def _group_objects_by_base(objects) -> dict:
         (honours suffix/prefix settings — ``_COL``, ``_SHA``, etc.).
       - EMPTY objects (collision spheres/boxes) inherit the base name from
         their parent mesh when possible, otherwise use their own name with
-        any Blender ``.001`` duplicate suffix stripped.
+        any Blender ``.001`` duplicate suffix and the importer's
+        ``_sphere_N`` / ``_box_N`` stripped (:func:`_prim_base_name`).
       - If an object exposes a non-empty ``inu.model_name``, that wins over
         the derived base so re-exported COLs keep their original library
         key even if the Blender object was renamed.
@@ -607,6 +756,9 @@ def _group_objects_by_base(objects) -> dict:
             return base or _clean(obj.name)
         if obj.type == 'EMPTY' and obj.parent is not None:
             return _base_for(obj.parent)
+        if obj.type == 'EMPTY':
+            # «x_sphere_0» из импорта — сфера модели x, не своя запись.
+            return _prim_base_name(obj.name)
         return _clean(obj.name)
 
     for obj in objects:
@@ -632,10 +784,13 @@ def export_col_library(filepath: str, objects, version: int = 3,
     Returns the number of records written.
     """
     groups = _group_objects_by_base(objects)
+    if not empty:
+        _refresh_for_prims(objects, _prim_anchor(objects))
     models = []
     for base_name, objs in groups.items():
         model = ColModel(version=version, model_name=base_name)
         if not empty:
+            anchor = _prim_anchor(objs)
             for obj in objs:
                 if obj.type == 'MESH':
                     if _is_shadow_mesh(obj):
@@ -643,7 +798,7 @@ def export_col_library(filepath: str, objects, version: int = 3,
                     else:
                         _collect_mesh(obj, model)
                 elif obj.type == 'EMPTY':
-                    _collect_empty(obj, model)
+                    _collect_empty(obj, model, anchor)
             model.bounds = _compute_bounds(model)
         else:
             # Empty COL: bounds from the group's meshes so GTA doesn't cull it.
@@ -692,19 +847,6 @@ class GTATOOLS_OT_export_col(bpy.types.Operator, ExportHelper):
         from ..tools.prelight import setup_prelight_preview
         import os
 
-        # Common COL-name suffixes the importer / Map Import may attach.
-        # Stripped from object names to derive a per-mesh filename in
-        # the multi-select branch.
-        SUFFIXES = ('_col', '.col', '_dff', '.dff', '_lod', '_dam', '_ok')
-
-        def _basename_for(obj):
-            n = obj.name
-            ln = n.lower()
-            for s in SUFFIXES:
-                if ln.endswith(s):
-                    return n[:-len(s)]
-            return n
-
         prelight_was_on = []
         COL_EXPORT_FATAL.clear()
         COL_EXPORT_WARNINGS.clear()
@@ -721,36 +863,41 @@ class GTATOOLS_OT_export_col(bpy.types.Operator, ExportHelper):
                         prelight_was_on.append(obj)
                         setup_prelight_preview(obj, enable=False)
 
-            # COL is always exported around (0,0,0) — temporarily move
-            original_locations = {}
-            for obj in context.selected_objects:
-                if obj.type == 'MESH':
-                    original_locations[obj.name] = obj.location.copy()
-                    obj.location = (0, 0, 0)
-
+            # COL geometry is written in the mesh's local space (location
+            # ignored by _collect_mesh) and spheres/boxes relative to the
+            # mesh — no temporary move to (0,0,0) needed.
             col_objects = [o for o in context.selected_objects
                            if o.type in ('MESH', 'EMPTY')]
-            mesh_objects = [o for o in col_objects if o.type == 'MESH']
 
             col_ver = _resolve_col_version(context)
 
-            # ── Per-mesh split ────────────────────────────────────────
-            # `library_mode=False` + multiple selected meshes → one .col
-            # per mesh, named after each mesh (suffix-stripped). Default
-            # behaviour previously bundled them all into one file which
-            # mismatched user expectation and the rest of the toolset
-            # (TXD now does per-mesh too).
-            if not self.library_mode and len(mesh_objects) > 1:
+            # ── Per-model split ───────────────────────────────────────
+            # `library_mode=False` + several models selected → one .col
+            # per model (its mesh + _sha + spheres/boxes, grouped as in
+            # library mode), named after the model. Default behaviour
+            # previously bundled them all into one file which mismatched
+            # user expectation and the rest of the toolset (TXD now does
+            # per-mesh too). Groups without a mesh are stray empties —
+            # the old per-mesh split never wrote those either — unless
+            # they carry import names («lamp_box_0»): a spheres/boxes-only
+            # model gets its own .col instead of silently dropping out.
+            groups = _group_objects_by_base(col_objects)
+            model_groups = [(b, objs) for b, objs in groups.items()
+                            if any(o.type == 'MESH' for o in objs)]
+            if not self.library_mode and len(model_groups) > 1:
+                model_groups += [
+                    (b, objs) for b, objs in groups.items()
+                    if not any(o.type == 'MESH' for o in objs)
+                    and any(_is_import_prim(o) for o in objs)]
                 out_dir = os.path.dirname(self.filepath) or '.'
                 written = []
                 errors = []
-                for obj in mesh_objects:
-                    base = _basename_for(obj)
+                for base, objs in model_groups:
                     col_path = os.path.join(out_dir, f"{base}.col")
                     try:
                         export_col(
                             filepath=col_path,
-                            objects=[obj],
+                            objects=objs,
                             version=col_ver,
                             model_name=base,
                             empty=self.empty_col,
@@ -759,11 +906,6 @@ class GTATOOLS_OT_export_col(bpy.types.Operator, ExportHelper):
                     except Exception as e:
                         errors.append(f"{base}.col: {e}")
 
-                # Restore positions before reporting so user can re-export
-                # without picking up zeroed transforms on failure paths.
-                for obj in context.selected_objects:
-                    if obj.name in original_locations:
-                        obj.location = original_locations[obj.name]
                 for obj in prelight_was_on:
                     setup_prelight_preview(obj, enable=True)
 
@@ -795,11 +937,6 @@ class GTATOOLS_OT_export_col(bpy.types.Operator, ExportHelper):
                     empty=self.empty_col,
                 )
                 msg = f"Exported COL{col_ver}: {self.filepath}"
-
-            # Restore original positions
-            for obj in context.selected_objects:
-                if obj.name in original_locations:
-                    obj.location = original_locations[obj.name]
 
             for obj in prelight_was_on:
                 setup_prelight_preview(obj, enable=True)

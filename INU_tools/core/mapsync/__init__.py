@@ -5,6 +5,8 @@
 * :mod:`.ide_doc` — ``objs``/``tobj`` rows keyed by id, guarded by name.
 * :mod:`.textfile` — byte-exact line storage, atomic write, one ``.bak`` per
   file per session.
+* :mod:`.groups` — the meshes of one placement (a model of several meshes:
+  one row, one name).
 
 Typical use::
 
@@ -22,11 +24,17 @@ Typical use::
 from .textfile import TextLines, write_atomic, backup_path
 from .ipl_doc import (Anchor, IplDoc, IplEditor, IplBinaryError, PlaceResult,
                       RemoveResult, Message, ANCHOR_TOL, RELINK_TOL, MATCH_TOL)
+from .ipl_doc import POS_EPS, ROT_EPS, pos_close, rot_close, inst_drifted
 from .ide_doc import IdeDoc, IdeEditor, IdeResult
+from .groups import (SPOT_POS_TOL, SPOT_DOT_MIN, group_instances,
+                     game_model_name, is_damage_part)
 
 __all__ = [
     'TextLines', 'write_atomic', 'backup_path',
     'Anchor', 'IplDoc', 'IplEditor', 'IplBinaryError', 'PlaceResult',
     'RemoveResult', 'Message', 'ANCHOR_TOL', 'RELINK_TOL', 'MATCH_TOL',
+    'POS_EPS', 'ROT_EPS', 'pos_close', 'rot_close', 'inst_drifted',
     'IdeDoc', 'IdeEditor', 'IdeResult',
+    'SPOT_POS_TOL', 'SPOT_DOT_MIN', 'group_instances', 'game_model_name',
+    'is_damage_part',
 ]

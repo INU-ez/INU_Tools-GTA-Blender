@@ -140,6 +140,36 @@ class GTATOOLS_OT_text_ipl_toggle_all(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _region_file_set(scene, game_root, info, errors=None):
+    """IPL files of the picked region — the one set Scan lists, Import Map
+    reads and Extract takes TXDs for (core/map_files.region_files, as the
+    game links them): text IPLs of gta.dat in maps/<region>/ (or named
+    after it) + their <stem>_stream<N>.ipl from every archive of the game
+    folder in load order (gta_int.img included; a name in two archives is
+    taken from the first). Returns (text [path], binary [(entry name,
+    archive, entry)], archives); unreadable archives go to ``errors``."""
+    from ..core.img import read_directory
+    from ..core.map_files import game_archives, region_files
+    s = scene.inu_settings
+    region = getattr(s, 'gtatools_map_region', 'ALL')
+    archives = game_archives(game_root, info.img_paths,
+                             bpy.path.abspath(s.gtatools_img_path))
+
+    def _entries(ip):
+        try:
+            return read_directory(ip)
+        except Exception as ex:
+            print(f"[MAP] {ip}: {ex}")
+            if errors is not None:
+                errors.append(f"{os.path.basename(ip)}: {ex}")
+            return []
+
+    text, binary = region_files(
+        [p for p in info.ipl_paths if os.path.isfile(p)], archives, region,
+        _entries, game_root)
+    return text, binary, archives
+
+
 class GTATOOLS_OT_scan_binary_ipls(bpy.types.Operator):
     """Сканировать IMG архивы и собрать список бинарных IPL для выбранного района. После скана можно галочками включать/выключать конкретные файлы"""
     bl_idname = "gtatools.scan_binary_ipls"
@@ -148,7 +178,6 @@ class GTATOOLS_OT_scan_binary_ipls(bpy.types.Operator):
 
     def execute(self, context):
         from ..core.gta_dat import find_all_resources
-        from ..core.img import read_directory
         scene = context.scene
 
         game_root = bpy.path.abspath(getattr(scene.inu_settings, 'gtatools_game_root', ''))
@@ -157,16 +186,17 @@ class GTATOOLS_OT_scan_binary_ipls(bpy.types.Operator):
             return {'CANCELLED'}
 
         region = getattr(scene.inu_settings, 'gtatools_map_region', 'ALL')
-        region_u = region.upper() if region != 'ALL' else 'ALL'
 
+        # The same files Import Map and Extract read for this region:
+        # text IPLs of gta.dat + their <stem>_stream<N>.ipl from the
+        # archives. Mission IPLs of gta3.img (barriers1, crack…) are not
+        # linked to a text IPL — the game loads them from a script only.
         info = find_all_resources(game_root)
-        img_paths = []
-        std = os.path.join(game_root, 'models', 'gta3.img')
-        if os.path.isfile(std):
-            img_paths.append(std)
-        for p in info.img_paths:
-            if os.path.isfile(p) and p not in img_paths:
-                img_paths.append(p)
+        errors = []
+        text, binary, archives = _region_file_set(scene, game_root, info,
+                                                  errors)
+        for msg in errors:
+            self.report({'WARNING'}, msg)
 
         # Remember previously enabled entries so rescans don't lose user picks
         prev_bin = {i.name.lower(): i.enabled
@@ -176,122 +206,27 @@ class GTATOOLS_OT_scan_binary_ipls(bpy.types.Operator):
 
         scene.inu_settings.gtatools_binary_ipls.clear()
         scene.inu_settings.gtatools_text_ipls.clear()
-        total_checked = 0
-        for ip in img_paths:
-            try:
-                for e in read_directory(ip):
-                    nm = e.name.lower()
-                    if not nm.endswith('.ipl'):
-                        continue
-                    total_checked += 1
-                    # Peek first 4 bytes — bnry → binary; anything else
-                    # → treat as text IPL.
-                    try:
-                        from ..core.img import extract_file
-                        head = extract_file(ip, e.name)
-                    except Exception:
-                        continue
-                    if not head:
-                        continue
-                    is_binary = head[:4] == b'bnry'
-                    # IMG entry names have no path — region match falls
-                    # back to basename prefix only.  Mod IPLs inside IMG
-                    # rarely use region prefixes, so consider "ALL" the
-                    # safer default for the IMG path; users still pick
-                    # individual files via the checkbox list.
-                    if region_u != 'ALL' and not e.name.upper().startswith(region_u):
-                        continue
-                    if is_binary:
-                        item = scene.inu_settings.gtatools_binary_ipls.add()
-                        item.name = e.name
-                        item.img_source = ip
-                        item.enabled = prev_bin.get(nm, True)
-                    else:
-                        item = scene.inu_settings.gtatools_text_ipls.add()
-                        item.name = e.name
-                        item.path = e.name  # name inside IMG
-                        item.img_source = ip
-                        item.enabled = prev_txt.get(nm, True)
-            except Exception as ex:
-                self.report({'WARNING'}, f"{os.path.basename(ip)}: {ex}")
-
-        # Loose text IPLs — collected from two sources:
-        #   1. ``info.ipl_paths`` (gta.dat references)
-        #   2. Recursive disk scan of <game_root> for *.ipl files
-        # Both sources are de-duped by absolute path; the recursive
-        # walk catches mods that don't register in gta.dat or have
-        # gta.dat in a non-standard location.
-        loose_paths = set()
-        from_gta_dat = 0
-        for tp in info.ipl_paths:
-            if os.path.isfile(tp):
-                loose_paths.add(os.path.normcase(os.path.abspath(tp)))
-                from_gta_dat += 1
-        print(f"[Scan IPL] game_root: {game_root!r}")
-        print(f"[Scan IPL] info.ipl_paths from gta.dat: {len(info.ipl_paths)}")
-        print(f"[Scan IPL] found on disk via gta.dat refs: {from_gta_dat}")
-
-        # Recursive disk fallback over the whole game_root.  Mod packs
-        # drop IPLs in arbitrary places: data/maps/<custom>, models/,
-        # CleanIDE/, custom roots.  We aggressively walk the whole
-        # tree and only skip housekeeping dirs (.git etc.) — false
-        # positives are basically free (regex match on extension).
-        from_disk = 0
-        before = len(loose_paths)
-        # Folders that NEVER contain IPLs and would just slow us down.
-        # NB: ``models/`` is NOT skipped — some mods store loose IPLs
-        # there alongside their DFFs.
-        SKIP_DIRS = {'.git', '.svn', '__pycache__',
-                     'audio', 'movies', 'anim', 'text', 'fonts'}
-        for dirpath, dirnames, filenames in os.walk(game_root):
-            dirnames[:] = [d for d in dirnames
-                           if d.lower() not in SKIP_DIRS]
-            for fn in filenames:
-                if not fn.lower().endswith('.ipl'):
-                    continue
-                full = os.path.normcase(os.path.abspath(
-                    os.path.join(dirpath, fn)))
-                if full not in loose_paths:
-                    loose_paths.add(full)
-                    from_disk += 1
-        print(f"[Scan IPL] additionally found on disk: {from_disk}")
-        print(f"[Scan IPL] total unique loose IPLs: {len(loose_paths)}")
-
-        # Region filter: matches either by ``MAPS/<region>/`` segment
-        # in the path (handles ``data/maps/Props_obj/foo.ipl`` where
-        # the region is "PROPS_OBJ" picked from the folder name) OR
-        # by basename prefix (handles ``LAn.ipl`` for region "LA").
-        # The basename-only check used previously dropped 100% of mod
-        # IPLs whose region is encoded in the folder path, not the name.
-        def _matches_region(p: str) -> bool:
-            if region_u == 'ALL':
-                return True
-            parts = p.replace('\\', '/').upper().split('/')
-            for i, part in enumerate(parts):
-                if part == 'MAPS' and i + 1 < len(parts):
-                    return parts[i + 1] == region_u
-            return os.path.basename(p).upper().startswith(region_u)
-
-        region_filtered = 0
-        for tp in sorted(loose_paths):
+        for n, ip, _e in binary:
+            item = scene.inu_settings.gtatools_binary_ipls.add()
+            item.name = n
+            item.img_source = ip
+            item.enabled = prev_bin.get(n.lower(), True)
+        for tp in text:
             base = os.path.basename(tp)
-            nm = base.lower()
-            if not _matches_region(tp):
-                region_filtered += 1
-                continue
             item = scene.inu_settings.gtatools_text_ipls.add()
             item.name = base
             item.path = tp        # absolute loose path
             item.img_source = ""  # empty → loose file marker
-            item.enabled = prev_txt.get(nm, True)
-        if region_filtered:
-            print(f"[Scan IPL] region '{region}' filtered out: {region_filtered}")
+            item.enabled = prev_txt.get(base.lower(), True)
+        print(f"[Scan IPL] game_root: {game_root!r}, region {region!r}: "
+              f"{len(text)} text IPL(s) of gta.dat, {len(binary)} streamed "
+              f"from {len(archives)} archive(s)")
 
         scene['gtatools_binary_ipls_region'] = region
         self.report({'INFO'},
                     f"{len(scene.inu_settings.gtatools_binary_ipls)} binary + "
                     f"{len(scene.inu_settings.gtatools_text_ipls)} text IPL(s) "
-                    f"for region '{region}' (scanned {total_checked} IMG-entries)")
+                    f"for region '{region}' (scanned {len(archives)} IMG archive(s))")
         return {'FINISHED'}
 
 
@@ -578,10 +513,11 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
 
     def invoke(self, context, event):
         from ..core.gta_dat import find_all_resources
-        from ..core.img import extract_file, read_directory
         from ..core.ide import read_ide
-        from ..core.ipl import read_ipl, _read_binary_ipl
-        from .ipl_sections import import_ipl_sections
+        from ..core.ipl import read_ipl
+        from ..core.map_files import (binary_stem, read_entry, read_ipl_bytes,
+                                      rebase_binary_lod)
+        from .ipl_sections import import_ipl_sections, _existing_rows
 
         scene = context.scene
         game_root = bpy.path.abspath(scene.inu_settings.gtatools_game_root)
@@ -631,57 +567,53 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
         info = find_all_resources(game_root)
 
         # Read all IDE files
+        from .map_link import norm
         ide_models = {}
+        # model_id → IDE file of the row in ide_models (same «last wins»):
+        # the placed model gets linked to it, as on the Import tab.
+        ide_source = {}
         for p in info.ide_paths:
             if os.path.isfile(p):
+                pn = norm(p)
                 try:
                     ide = read_ide(p)
                     for obj in ide.objects:
                         ide_models[obj.model_id] = obj
+                        ide_source[obj.model_id] = pn
                     for anim in ide.anims:
                         if anim.model_id not in ide_models:
                             ide_models[anim.model_id] = anim
+                            ide_source[anim.model_id] = pn
                 except Exception:
                     pass
 
         # Region filter
         region = getattr(scene.inu_settings, 'gtatools_map_region', 'ALL')
 
-        def _ipl_folder_matches_region(path: str) -> bool:
-            """Vanilla rule: IPL physically lives in ``maps/<region>/`` (or,
-            when the path has no MAPS folder, its basename starts with the
-            region name)."""
-            parts = path.replace('\\', '/').upper().split('/')
-            for i, part in enumerate(parts):
-                if part == 'MAPS' and i + 1 < len(parts):
-                    return parts[i + 1] == region
-            name = path.replace('\\', '/').rsplit('/', 1)[-1].upper()
-            return name.startswith(region)
+        # IPL files of the region — the same set Scan lists and Extract
+        # reads: text IPLs of gta.dat in maps/<region>/ + their
+        # <stem>_stream<N>.ipl from the archives (as the game links them).
+        text_ipls, bin_ipls, _archives = _region_file_set(
+            scene, game_root, info)
 
-        # First pass: basenames of every IPL whose FOLDER is the region.
-        # Streamed / child IPLs (``countn2_stream3``, ``countryw_stream8``)
-        # usually live OUTSIDE ``maps/<region>/`` but are named
-        # ``<base>_<suffix>`` after one of these base IPLs — so a plain
-        # folder filter silently drops whole streamed chunks of the
-        # district. We pull them back in by that name relationship.
-        region_stems = set()
-        if region != 'ALL':
-            for _p in info.ipl_paths:
-                if _ipl_folder_matches_region(_p):
-                    _bn = os.path.splitext(os.path.basename(_p))[0].lower()
-                    if _bn:
-                        region_stems.add(_bn)
+        # Archive each cached DFF came from (Extract's index) → «В IMG» and
+        # the default target of Export to IMG, as the Import tab sets them.
+        # A DFF the index lacks (cache of an older Extract, or one stopped
+        # by ESC) → the game's winner in the archive directories.
+        from ..core.map_files import extract_winners, load_index
+        src_arch = {k: v[0] for k, v in
+                    load_index(cache_dir).get('files', {}).items()
+                    if isinstance(v, list) and v and k.endswith('.dff')}
+        from ..core.img import read_directory
 
-        def _ipl_matches_region(path: str) -> bool:
-            if region == 'ALL':
-                return True
-            if _ipl_folder_matches_region(path):
-                return True
-            # ``<base>_<suffix>`` child of a base region IPL (e.g.
-            # ``countn2`` → ``countn2_stream3``). The ``_`` guard keeps
-            # ``countn`` from greedily matching ``countnXYZ`` unrelated.
-            bn = os.path.splitext(os.path.basename(path))[0].lower()
-            return any(bn.startswith(stem + '_') for stem in region_stems)
+        def _dir(ip):
+            try:
+                return read_directory(ip)
+            except Exception:
+                return []
+        for k, (a, _e) in extract_winners(_archives, _dir,
+                                          exts=('.dff',)).items():
+            src_arch.setdefault(k, a)
 
         # Read text IPL files.
         #
@@ -690,54 +622,43 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
         # instances from many IPLs into one list, we MUST rebase each
         # lod_index onto the merged list, otherwise Map_LOD gets filled
         # with wrong models (indices from one file pointing into another
-        # file's region). Do the same below for binary IPLs.
+        # file's region). Streamed IPLs below point into their text IPL.
         #
         # Each instance gets ``_source_ipl`` (basename without extension)
         # tagged on so the optional Group-by-IPL collection scheme can
         # bin them later — this metadata is throwaway, dropped after
         # the import loop completes.
         #
-        # ``gtatools_text_ipls`` (when the user populated it via Scan)
-        # acts as a per-file allowlist: only loose IPL paths whose
-        # basename appears as enabled in the collection are processed.
-        # Empty collection = take everything that passes the region
-        # filter (preserves the old behaviour for users who skip Scan).
-        ti_entries = scene.inu_settings.gtatools_text_ipls
-        ti_enabled_loose = {i.name.lower() for i in ti_entries
-                            if i.enabled and not i.img_source}
-        ti_enabled_img = {i.name.lower() for i in ti_entries
-                          if i.enabled and i.img_source}
-        ti_use_selection = len(ti_entries) > 0
+        # Scan checkboxes (``gtatools_text_ipls`` / ``gtatools_binary_ipls``)
+        # switch single files off: a file missing from the list stays ON,
+        # and lists scanned for another region are ignored (the dynamic
+        # region enum can shift without calling its update callback).
+        use_lists = scene.get('gtatools_binary_ipls_region', '') == region
+        ti_off = {i.name.lower() for i in scene.inu_settings.gtatools_text_ipls
+                  if not i.enabled} if use_lists else set()
+        bi_off = {i.name.lower() for i in scene.inu_settings.gtatools_binary_ipls
+                  if not i.enabled} if use_lists else set()
 
         instances = []
+        # IPL sections already in the scene — one snapshot for the whole
+        # run: a re-import adds nothing, equal lines of two files both stay
+        _sec_existing = None
+        # Where each text IPL landed in ``instances``: (first index, rows).
+        text_base = {}
         # Diagnostic: report which IPLs are dropped and why, so a district
         # that «didn't fully load» can be traced to the region filter or the
         # Scan selection rather than guessed at.
         _ipl_total = len(info.ipl_paths)
-        _ipl_loaded = _ipl_skip_region = _ipl_skip_sel = 0
-        print(f"[MAP] region filter = {region!r}; text-IPL selection "
-              f"{'ON' if ti_use_selection else 'off'}; {_ipl_total} IPL paths")
-        for p in info.ipl_paths:
-            if not os.path.isfile(p):
+        _ipl_loaded = _ipl_skip_sel = 0
+        _ipl_skip_region = _ipl_total - len(text_ipls)
+        print(f"[MAP] region filter = {region!r}; Scan checkboxes "
+              f"{'ON' if use_lists else 'off'}; {_ipl_total} IPL paths")
+        for p in text_ipls:
+            if os.path.basename(p).lower() in ti_off:
+                _ipl_skip_sel += 1
+                print(f"[MAP] IPL dropped (unchecked in Scan): "
+                      f"{os.path.basename(p)}")
                 continue
-            if not _ipl_matches_region(p):
-                _ipl_skip_region += 1
-                # Show WHAT got dropped and from where — so a missing
-                # district chunk can be traced to the region filter's
-                # folder rule vs the mod's actual IPL layout.
-                try:
-                    _rel = os.path.relpath(p, game_root)
-                except Exception:
-                    _rel = p
-                print(f"[MAP] IPL dropped by region {region!r}: {_rel}")
-                continue
-            if ti_use_selection:
-                base_lc = os.path.basename(p).lower()
-                if base_lc not in ti_enabled_loose:
-                    _ipl_skip_sel += 1
-                    print(f"[MAP] IPL dropped (not in Scan selection): "
-                          f"{os.path.basename(p)}")
-                    continue
             _ipl_loaded += 1
             if True:
                 try:
@@ -745,6 +666,7 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
                     base = len(instances)
                     n_local = len(ipl.instances)
                     ipl_basename = os.path.splitext(os.path.basename(p))[0]
+                    text_base[ipl_basename.lower()] = (base, n_local)
                     for inst in ipl.instances:
                         if 0 <= inst.lod_index < n_local:
                             inst.lod_index = base + inst.lod_index
@@ -758,7 +680,12 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
                         instances.append(inst)
                     if any([ipl.culls, ipl.garages, ipl.enexs, ipl.pickups,
                             ipl.cars, ipl.jumps, ipl.auzos, ipl.occls]):
-                        import_ipl_sections(ipl)
+                        if _sec_existing is None:
+                            _sec_existing = _existing_rows()
+                        from ..core import game_versions as gv
+                        import_ipl_sections(
+                            ipl, existing=_sec_existing,
+                            game=gv.game_of_scene(scene))
                 except Exception:
                     pass
 
@@ -767,90 +694,41 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
               f"dropped by selection={_ipl_skip_sel} "
               f"→ {len(instances)} instances")
 
-        # Binary IPLs still live inside IMG archives — one-time scan
-        # at invoke (NOT in the hot loop) to pull out their instance
-        # lists. This doesn't count as "hitting IMG during import": it's
-        # metadata gathering before the actual model import begins.
-        bi_entries = scene.inu_settings.gtatools_binary_ipls
-        bi_enabled = {i.name.lower() for i in bi_entries if i.enabled}
-        bi_use_selection = len(bi_entries) > 0
-
-        img_paths = []
-        for p in info.img_paths:
-            if os.path.isfile(p) and p not in img_paths:
-                img_paths.append(p)
-        std = os.path.join(game_root, 'models', 'gta3.img')
-        if os.path.isfile(std) and std not in img_paths:
-            img_paths.insert(0, std)
-        fallback = bpy.path.abspath(scene.inu_settings.gtatools_img_path)
-        if fallback and os.path.isfile(fallback) and fallback not in img_paths:
-            img_paths.append(fallback)
-
-        for ip in img_paths:
+        # Streamed IPLs live inside the archives — one-time read at invoke
+        # (NOT in the hot loop), grouped per archive. Their lod_index
+        # points into the text IPL they belong to (CIplStore::LoadIpl takes
+        # the LOD from the related text IPL's rows), not into themselves:
+        # rebase it onto that text IPL; text IPL unchecked → no LOD.
+        # Read by directory record (the one the game streams), not by name.
+        by_arch = {}
+        for n, ip, e in bin_ipls:
+            if n.lower() not in bi_off:
+                by_arch.setdefault(ip, []).append((n, e))
+        n_bin_lod = n_bin_lost = 0
+        for ip, recs in by_arch.items():
             try:
-                for e in read_directory(ip):
-                    key = e.name.lower()
-                    if not key.endswith('.ipl'):
-                        continue
-                    # Format auto-detect happens below; first apply the
-                    # right allowlist depending on whether THIS entry
-                    # turns out binary or text.  We peek the file once
-                    # and reuse the bytes to avoid double IMG read.
-                    try:
-                        ipl_data = extract_file(ip, e.name)
-                    except Exception:
-                        continue
-                    if not ipl_data:
-                        continue
-                    is_binary = ipl_data[:4] == b'bnry'
-
-                    # Per-format allowlist (if user populated the lists);
-                    # otherwise fall back to region filter alone.
-                    if is_binary and bi_use_selection:
-                        if key not in bi_enabled:
+                with open(ip, 'rb') as fh:
+                    for n, e in recs:
+                        try:
+                            ipl_parsed = read_ipl_bytes(read_entry(fh, e))
+                        except Exception:
                             continue
-                    elif (not is_binary) and ti_use_selection:
-                        if key not in ti_enabled_img:
-                            continue
-                    elif not _ipl_matches_region(key):
-                        continue
-
-                    try:
-                        if is_binary:
-                            ipl_parsed = _read_binary_ipl(ipl_data)
-                        else:
-                            # Text IPL inside IMG — decode and parse via
-                            # the same loose-file path.  IPL parser
-                            # accepts text body; we use a temp file to
-                            # keep the public API single-purpose.
-                            import tempfile
-                            with tempfile.NamedTemporaryFile(
-                                    mode='wb', suffix='.ipl',
-                                    delete=False) as tf:
-                                tf.write(ipl_data)
-                                tmp_path = tf.name
-                            try:
-                                ipl_parsed = read_ipl(tmp_path)
-                            finally:
-                                try:
-                                    os.unlink(tmp_path)
-                                except OSError:
-                                    pass
-
-                        base = len(instances)
-                        n_local = len(ipl_parsed.instances)
-                        ipl_basename = os.path.splitext(e.name)[0]
+                        tb = text_base.get(binary_stem(n) or '')
+                        ipl_basename = os.path.splitext(n)[0]
                         for inst in ipl_parsed.instances:
-                            if 0 <= inst.lod_index < n_local:
-                                inst.lod_index = base + inst.lod_index
-                            else:
-                                inst.lod_index = -1
+                            li = inst.lod_index
+                            inst.lod_index = rebase_binary_lod(li, tb)
+                            if inst.lod_index >= 0:
+                                n_bin_lod += 1
+                            elif li >= 0:
+                                n_bin_lost += 1
                             inst._source_ipl = ipl_basename
                             instances.append(inst)
-                    except Exception:
-                        pass
             except Exception:
                 pass
+        if n_bin_lost:
+            print(f"[MAP] streamed IPL rows whose LOD row is in an unloaded "
+                  f"text IPL: {n_bin_lost}")
 
         if not instances:
             self.report({'WARNING'}, T("IPL файл пуст или не указан"))
@@ -899,6 +777,8 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
         # Store state
         self._instances = instances
         self._ide_models = ide_models
+        self._ide_source = ide_source
+        self._src_arch = src_arch
         self._skip_lod = skip_lod
         # Что уже стоит в сцене: (ID модели, позиция с точностью до
         # сантиметра). Имя объекта для этого не годится — Blender вешает
@@ -946,6 +826,7 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
         self._skip_error = 0    # DFF parse raised
         self._skip_lodname = 0  # detected as LOD name + «Skip LOD» is on
         self._skip_dupe = 0     # размещение уже есть в сцене
+        self._n_bin_lod = n_bin_lod  # streamed rows linked to their LOD
         self._progress = 0
         self._total = len(instances)
         self._scene = scene
@@ -1048,36 +929,39 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
         return self._map_col_collection
 
     def _work(self, context):
-        from ..core.ipl import is_lod_name
+        from ..core.ipl import is_lod_name, lod_instance_indices
         from ..core.dff import read_dff
         from ..core.col import read_col
         from .dff_import import import_dff_from_clump
         from .col_import import import_col_from_models
+        from . import map_link
         from mathutils import Quaternion
         from concurrent.futures import ThreadPoolExecutor
 
         instances = self._instances
         ide_models = self._ide_models
+        ide_source = self._ide_source
+        src_arch = self._src_arch
         skip_lod = self._skip_lod
         skip_2dfx = self._skip_2dfx
         scene = self._scene
         prof = self._profiler
         load_col = bool(getattr(scene.inu_settings, 'gtatools_map_load_col', False))
-        # LOD detection by name only. ``is_lod_name`` already handles
-        # all 4 vanilla naming patterns (LODfoo / foo_LOD / foo1LOD /
-        # modeLODlaett). The IPL ``lod_index`` cross-reference used to
-        # be an additional signal here, but vanilla IPL data turned out
-        # noisy — it classified non-LOD models as LOD (see issue where
-        # Map_LOD filled with airuntest_las, arhang_LAS etc.).
+        # LOD = a row another row points at through ``lod_index`` (as the
+        # game counts LOD children), or a LOD name — ``is_lod_name``
+        # handles all 4 vanilla patterns (LODfoo / foo_LOD / foo1LOD /
+        # modeLODlaett). The lod_index signal was once dropped as «noisy»
+        # (Map_LOD filled with airuntest_las, arhang_LAS etc.): that noise
+        # came from rebasing streamed IPLs' lod_index inside their own
+        # file — they point into their text IPL (see invoke).
 
         # Cache-only import. Extract Resources must have run first;
         # anything not in the cache is counted as skipped. No IMG
         # reads, no disk round-trips beyond the cache itself.
         imported_models = {}
-        # Per-model cache of imported COL objects, mirrors
-        # imported_models. One unique model → one COL geometry,
-        # copied per IPL instance.
-        imported_col_models: dict = {}
+        # Models whose COL is already built (lower-case, as col_by_name):
+        # one collision per model, at its first placement — like Max.
+        col_done: set = set()
         # Shared material cache for COL bulk import — same surface
         # tuple across many models reuses one datablock. See
         # _create_mesh_from_col / project_col_import_perf.
@@ -1186,6 +1070,7 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
         # the re-export's IPL writes lod_index = -1 for every entry and
         # SA stops swapping in low-poly LODs at long range.
         instance_to_main_obj: list = [None] * len(instances)
+        lod_refs = lod_instance_indices(instances)
 
         for idx, inst in enumerate(instances):
             with prof.stage('loop iter'):
@@ -1196,7 +1081,7 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
                     self._skip_noname += 1
                     _need_yield = (idx % 32 == 0)
                 else:
-                    is_lod = is_lod_name(model_name)
+                    is_lod = idx in lod_refs or is_lod_name(model_name)
                     _dupe = False
                     if self._skip_dupes:
                         _mk = _map_key(model_name, inst)
@@ -1226,6 +1111,13 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
                                 for src in imported_models[model_name]:
                                     o = src.copy()
                                     o.data = src.data
+                                    # The copy carries the first placement's
+                                    # IPL link (uuid, file, raw lod_index):
+                                    # drop it — a text IPL row stamps its own
+                                    # below, a streamed one stays unlinked.
+                                    if hasattr(o, 'inu'):
+                                        map_link.clear_ipl(o)
+                                        o.inu.lod_object = None
                                     target.objects.link(o)
                                     new_objs.append(o)
                         else:
@@ -1326,11 +1218,12 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
                                             # карты в следующий раз, даже
                                             # если ID модели не проставлен.
                                             o.inu.map_key = _mk_now
-                                            if inst.model_id in ide_models:
-                                                ide_obj = ide_models[inst.model_id]
-                                                o.inu.draw_distance = ide_obj.draw_distance
-                                                o.inu.ide_flags = ide_obj.flags
-                                                o.inu.txd_name = ide_obj.txd_name
+                                            map_link.stamp_map_import(
+                                                o, is_lod,
+                                                ide_models.get(inst.model_id),
+                                                ide_source.get(inst.model_id, ''),
+                                                src_arch.get(dff_fn.lower(), ''),
+                                                model_name)
                                 # Stash reference for the post-loop LOD
                                 # wire-up pass; first MESH child stands
                                 # in for the whole instance.
@@ -1344,40 +1237,33 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
                                               _li - inst._source_base
                                               if _li >= 0 else -1, fresh=True)
 
-                            # COL: build/copy + place at the same
-                            # transform as the DFF instance. Default mode
-                            # uses one global Map_COL (lazy-created on
-                            # first match); group-by-IPL routes the
-                            # collision into the IPL's own Map_<ipl>_COL
-                            # sub-collection.
-                            if load_col:
-                                col_model = col_by_name.get(model_name.lower())
+                            # COL: built once per model, at its first
+                            # placement (like Max) — the mesh plus the
+                            # spheres/boxes as its children, so they
+                            # follow it; later placements get no copy.
+                            # Default mode uses one global Map_COL
+                            # (lazy-created on first match); group-by-IPL
+                            # routes the collision into the IPL's own
+                            # Map_<ipl>_COL sub-collection.
+                            _cn = model_name.lower()
+                            if load_col and _cn not in col_done:
+                                col_model = col_by_name.get(_cn)
                                 if col_model is not None:
+                                    col_done.add(_cn)
                                     map_col = self._pick_col_collection(inst)
 
-                                    col_src = imported_col_models.get(model_name)
-                                    if col_src is None:
-                                        with prof.stage('build COL', note=model_name):
-                                            col_src = import_col_from_models(
-                                                [col_model],
-                                                bulk_mode=True,
-                                                target_collection=map_col,
-                                                material_cache=col_material_cache,
-                                            )
-                                            imported_col_models[model_name] = col_src
-                                        col_new = col_src
-                                    else:
-                                        with prof.stage('reuse COL'):
-                                            col_new = []
-                                            for src in col_src:
-                                                co = src.copy()
-                                                co.data = src.data
-                                                map_col.objects.link(co)
-                                                col_new.append(co)
+                                    with prof.stage('build COL', note=model_name):
+                                        col_new = import_col_from_models(
+                                            [col_model],
+                                            bulk_mode=True,
+                                            target_collection=map_col,
+                                            material_cache=col_material_cache,
+                                            with_prims=True,
+                                        )
 
                                     with prof.stage('COL transform'):
                                         for co in col_new:
-                                            if co.type == 'MESH':
+                                            if co.parent is None:
                                                 co.location = pos
                                                 co.rotation_mode = 'QUATERNION'
                                                 co.rotation_quaternion = rot
@@ -1406,6 +1292,14 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
                     if lod_obj is not None and hasattr(main_obj, 'inu'):
                         try:
                             main_obj.inu.lod_object = lod_obj
+                            # LOD Dist of the model = its LOD's (from the
+                            # LOD's IDE row above), as on the Import tab; a
+                            # LOD row pointing at a super-LOD keeps its own.
+                            if hasattr(lod_obj, 'inu') and not (
+                                    idx in lod_refs
+                                    or is_lod_name(inst.model_name)):
+                                main_obj.inu.lod_draw_distance = \
+                                    lod_obj.inu.lod_draw_distance
                         except Exception:
                             pass
 
@@ -1458,6 +1352,9 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
                         reasons.append(f"{self._skip_error} {T('ошибка DFF')}")
                     if reasons:
                         msg += " (" + ", ".join(reasons) + ")"
+                if self._n_bin_lod:
+                    msg += (f", {T('строк бинарных IPL связано с LOD своего текстового IPL:')} "
+                            f"{self._n_bin_lod}")
                 self.report({'INFO'}, msg)
                 return {'FINISHED'}
 

@@ -230,7 +230,7 @@ class GTATOOLS_OT_upsert_ide(ConfirmOnProblems, bpy.types.Operator):
 
 
 class GTATOOLS_OT_upsert_ipl(ConfirmOnProblems, bpy.types.Operator):
-    """Add: записать/обновить РАССТАНОВКУ выделенных моделей в ВЫБРАННЫЙ .ipl (позиция + поворот). Перемещённую модель обновляет на месте (не плодит дубли); LOD модели ставится вместе с ней, у каждой копии — свой LOD в её точке. Отличие от Export: пишет в уже выбранный файл, а не создаёт новый"""
+    """Add: записать/обновить РАССТАНОВКУ выделенных моделей в ВЫБРАННЫЙ .ipl (позиция + поворот). Перемещённую модель обновляет на месте (не плодит дубли); LOD модели ставится вместе с ней, у каждой копии — свой LOD в её точке. Модель из другого IPL переносится: её строка и LOD уходят из старого файла. Отличие от Export: пишет в уже выбранный файл, а не создаёт новый"""
     bl_idname = "gtatools.upsert_ipl"
     bl_label = "INU: Add to IPL"
     bl_options = {'REGISTER'}
@@ -240,7 +240,8 @@ class GTATOOLS_OT_upsert_ipl(ConfirmOnProblems, bpy.types.Operator):
     def _run(self, context, dry_run):
         picked = context.scene.inu_settings.gtatools_ipl_path
         objs = _sel_meshes(context)
-        rep = map_link.ipl_write(context, objs, picked=picked, dry_run=dry_run)
+        rep = map_link.ipl_write(context, objs, picked=picked, dry_run=dry_run,
+                                 move=True)
         if picked and not picked.lower().endswith('.ipl'):
             rep.msg('WARNING', T("Путь IPL — не .ipl файл, проверь бокс IPL"))
         _id_warnings(rep, objs)
@@ -701,6 +702,7 @@ lod_index всех остальных строк пересчитывается"
     bl_options = {'REGISTER'}
 
     last_message = ""
+    _always_confirm = True      # корзина: список удаляемого и вопрос всегда
 
     # Оставлено для совместимости вызовов из панели: каждая модель и так
     # удаляется из СВОЕГО IPL; пустой — то же самое.
@@ -725,9 +727,10 @@ lod_index всех остальных строк пересчитывается"
 class GTATOOLS_OT_ipl_verify_links(bpy.types.Operator):
     """Проверить IPL-привязки, ничего не двигая.
 
-Привязанные модели ищут свою строку; если её больше нет — привязка снимается.
-Непривязанные узнаются по строке своей модели рядом (0.5 м) или по
-единственной свободной строке этой модели. Пустое выделение — вся сцена"""
+Привязанные модели ищут свою строку; если её больше нет — привязка снимается
+(файла нет — привязка остаётся). Непривязанные узнаются по строке своей модели
+рядом (0.5 м) или по единственной свободной строке этой модели в пределах 2 м.
+Пустое выделение — вся сцена"""
     bl_idname = "gtatools.ipl_verify_links"
     bl_label = "INU: Verify IPL Links"
     bl_options = {'REGISTER'}
@@ -745,6 +748,24 @@ class GTATOOLS_OT_ipl_verify_links(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _ide_sync_targets(s):
+    """IDE files for «Sync from IDE»: the list «IDE для экспорта» first, then
+    every IDE of the game folder (gta.dat / scan), then the picked file —
+    always, last (unlike Max, where it is only a fallback: without a game
+    folder a picked IDE outside the list must still be read).
+    Returns ``(valid, missing)``."""
+    from .sync_files import merge_targets
+    front = [bpy.path.abspath(it.path) for it in s.gtatools_ide_sync_list
+             if it.path]
+    root = bpy.path.abspath(s.gtatools_game_root or '')
+    game = []
+    if root and os.path.isdir(root):
+        from ..core.gta_dat import list_ide_files
+        game = [p for p in list_ide_files(root) if os.path.isfile(p)]
+    picked = bpy.path.abspath(s.gtatools_ide_path) if s.gtatools_ide_path else ''
+    return merge_targets(front, game, picked)
+
+
 class GTATOOLS_OT_ide_sync_from_file(bpy.types.Operator):
     """Синхронизация Blender ↔ IDE.
 
@@ -760,112 +781,38 @@ class GTATOOLS_OT_ide_sync_from_file(bpy.types.Operator):
     bl_label = "INU: Sync from IDE"
     bl_options = {'REGISTER', 'UNDO'}
 
+    last_message = ""
+
     def execute(self, context):
-        from ..core.ide import read_ide
         s = context.scene.inu_settings
-        root = bpy.path.abspath(s.gtatools_game_root)
-        single = bpy.path.abspath(s.gtatools_ide_path)
-        # Все IDE: если задана папка игры — ВСЕ .ide из неё (по gta.dat/скан);
-        # иначе — один выбранный файл.
-        ide_files = []
-        if root and os.path.isdir(root):
-            from ..core.gta_dat import list_ide_files
-            ide_files = [p for p in list_ide_files(root) if os.path.isfile(p)]
-        if not ide_files and single and os.path.isfile(single):
-            ide_files = [single]
+        # Все IDE: список «IDE для экспорта», ВСЕ .ide папки игры (по
+        # gta.dat/скан) и выбранный файл.
+        ide_files, missing = _ide_sync_targets(s)
         if not ide_files:
             self.report({'ERROR'}, T("Нет IDE: укажи файл или папку игры"))
             return {'CANCELLED'}
-
-        # model_id → (entry, файл-источник). objs+anims в одном id-пространстве.
-        # Первый источник побеждает.
-        # Матч и по id, и по ИМЕНИ модели: объект без Model ID тоже подтянется,
-        # если его имя есть в IDE (заодно проставим ему id из IDE).
-        from .. import _clean_model_name_ide
-        from ..core.ipl import is_lod_name, strip_lod_marker
-        from ..tools.model_utils import get_model_type
-        by_id = {}
-        by_name = {}
-        lod_by_base = {}     # LOD-строки IDE по базовому имени модели
-        for fp in ide_files:
-            try:
-                ide = read_ide(fp)
-            except Exception:
-                continue
-            for e in list(ide.objects) + list(ide.anims):
-                by_id.setdefault(int(e.model_id), (e, fp))
-                nm = (getattr(e, 'model_name', '') or '').strip().lower()
-                if nm:
-                    by_name.setdefault(nm, (e, fp))
-                    if is_lod_name(nm):
-                        lod_by_base.setdefault(
-                            strip_lod_marker(nm).lower(), (e, fp))
 
         sel = [o for o in context.selected_objects if o.type == 'MESH']
         if not sel:
             sel = [o for o in context.scene.objects if o.type == 'MESH']
 
-        linked = 0
-        skipped = 0
-        skip_reasons = {'not_found': 0}
-        for obj in sel:
-            inu = getattr(obj, 'inu', None)
-            if inu is None:
-                skipped += 1
+        # Сначала своя связанная IDE модели; имя в нескольких IDE с разными
+        # ID — не связывается (map_link.ide_sync_from_file). LOD-объект
+        # сопоставляется ТОЛЬКО со строкой LOD.
+        linked, skipped, rep = map_link.ide_sync_from_file(sel, ide_files)
+        if missing:
+            rep.msg('WARNING', T("файлов не найдено: {0}").format(len(missing)))
+        seen = set()
+        for level, text in rep.messages:
+            if (level, text) in seen:
                 continue
-            mid = int(inu.model_id) if inu.model_id else 0
-            cname = _clean_model_name_ide(obj.name).lower()
-            is_lod_obj = get_model_type(obj)[0] == 'LOD'
-            # Имя — стабильный ключ (ловит ИЗМЕНЁННЫЙ в IDE id); id — запасной
-            # (если объект переименован в Blender, а имя уже не совпадает).
-            # LOD-объект сопоставляется ТОЛЬКО со строкой LOD (раньше базовое
-            # имя «rialto_3_LOD» → «rialto_3» цепляло строку самой модели, и
-            # LOD получал её ID/имя → в IPL вместо LOD писалась копия модели).
-            if is_lod_obj:
-                entry_src = (by_name.get('lod' + cname)
-                             or lod_by_base.get(cname))
-            else:
-                entry_src = by_name.get(cname)
-            if entry_src is None and mid > 0:
-                entry_src = by_id.get(mid)
-            if entry_src is not None:
-                _enm = str(getattr(entry_src[0], 'model_name', '') or '')
-                if is_lod_name(_enm) != is_lod_obj:
-                    entry_src = None      # модель ↔ LOD-строка: не пара
-            if entry_src is None:
-                skipped += 1
-                skip_reasons['not_found'] += 1
-                continue
-            entry, src_file = entry_src
-            # Файл — источник истины: подтягиваем Model ID из IDE (в т.ч. если
-            # его поменяли в файле или у объекта его не было).
-            _eid = int(getattr(entry, 'model_id', 0))
-            if _eid > 0 and _eid != mid:
-                inu.model_id = _eid
-            # Pull file → Blender. У LOD дистанция из IDE — это его LOD Dist.
-            _dd = float(getattr(entry, 'draw_distance', 0.0))
-            if is_lod_obj:
-                inu.lod_draw_distance = _dd
-            else:
-                inu.draw_distance = _dd
-            inu.txd_name = str(getattr(entry, 'txd_name', '') or '')
-            inu.ide_flags = int(getattr(entry, 'flags', 0))
-            inu.ide_target_file = src_file
-            inu.ide_last_draw_distance = _dd
-            inu.ide_last_txd_name = inu.txd_name
-            inu.ide_last_flags = inu.ide_flags
-            inu.ide_last_model_id = int(getattr(inu, 'model_id', 0) or 0)
-            inu.ide_last_name = str(getattr(entry, 'model_name', '') or '')
-            inu.ide_linked = True
-            linked += 1
-
-        if skipped:
-            print(f"[IDE Sync] skipped (нет ни по id, ни по имени): "
-                  f"{skip_reasons['not_found']}")
+            seen.add((level, text))
+            self.report({level if level in ('WARNING', 'ERROR') else 'INFO'},
+                        text)
         msg = T("Sync IDE: linked {0}, пропущено {1} ({2} IDE)").format(
             linked, skipped, len(ide_files))
         GTATOOLS_OT_ide_sync_from_file.last_message = msg
-        _pub(self, 'INFO', msg)
+        _pub(self, 'WARNING' if rep.problems() else 'INFO', msg)
         return {'FINISHED'}
 
 
@@ -878,6 +825,7 @@ class GTATOOLS_OT_ide_remove_link(ConfirmOnProblems, bpy.types.Operator):
     bl_options = {'REGISTER'}
 
     last_message = ""
+    _always_confirm = True      # корзина: список удаляемого и вопрос всегда
 
     # Совместимость с панелью: каждая модель удаляется из СВОЕГО IDE.
     target_file: StringProperty(default="", options={'HIDDEN'})
@@ -974,7 +922,7 @@ def _run_with_override(context, op_callable):
     """Invoke ``op_callable`` via ``bpy.ops`` with the wrapper's live
     context explicitly forwarded.
 
-    Wrappers (link_sync / link_unlink / link_verify) are invoked from
+    Wrappers (link_sync / link_verify) are invoked from
     the floater through ``bpy.app.timers``.  The timer callback runs
     on an idle tick — by then Blender's ``context`` for ``bpy.ops``
     has been reset to a stripped-down "background" form that no
@@ -1078,31 +1026,39 @@ class GTATOOLS_OT_link_sync(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class GTATOOLS_OT_link_unlink(bpy.types.Operator):
+class GTATOOLS_OT_link_unlink(ConfirmOnProblems, bpy.types.Operator):
     """Unlink из обоих файлов: IDE + IPL для выделенных объектов."""
     bl_idname = "gtatools.link_unlink"
     bl_label = "INU: Unlink IDE+IPL"
     bl_options = {'REGISTER'}
 
+    # Корзина у имени модели: строки уходят из обоих файлов только после окна
+    # со списком (вложенный EXEC_DEFAULT раньше обходил вопрос).
+    _always_confirm = True
+
+    def _run(self, context, dry_run):
+        s = context.scene.inu_settings
+        sel = _sel_meshes(context)
+        rep = map_link.ide_remove(context, sel, picked=s.gtatools_ide_path,
+                                  dry_run=dry_run)
+        rep.merge(map_link.ipl_remove(context, sel, picked=s.gtatools_ipl_path,
+                                      dry_run=dry_run))
+        return rep
+
     def execute(self, context):
-        GTATOOLS_OT_ide_remove_link.last_message = ""
-        GTATOOLS_OT_ipl_remove_link.last_message = ""
-        try:
-            _run_with_override(context, bpy.ops.gtatools.ide_remove_link)
-        except Exception as ex:
-            GTATOOLS_OT_ide_remove_link.last_message = str(ex)
-        try:
-            _run_with_override(context, bpy.ops.gtatools.ipl_remove_link)
-        except Exception as ex:
-            GTATOOLS_OT_ipl_remove_link.last_message = str(ex)
-        parts = [m for m in (
-            GTATOOLS_OT_ide_remove_link.last_message,
-            GTATOOLS_OT_ipl_remove_link.last_message,
-        ) if m]
-        if parts:
-            msg = "  |  ".join(parts)
-            _pub(self, 'INFO', msg)
-            _show_status_text(context, msg)
+        sel = _sel_meshes(context)
+        if not sel:
+            self.report({'ERROR'}, T("Выделите меш объекты"))
+            return {'CANCELLED'}
+        s = context.scene.inu_settings
+        # Итоги IDE и IPL раздельно: общий Report сложил бы их «удалено N».
+        a = map_link.report_to(self, "IDE", map_link.ide_remove(
+            context, sel, picked=s.gtatools_ide_path), pub=_pub)
+        b = map_link.report_to(self, "IPL", map_link.ipl_remove(
+            context, sel, picked=s.gtatools_ipl_path), pub=_pub)
+        msg = a + "  |  " + b
+        _pub(self, 'INFO', msg)
+        _show_status_text(context, msg)
         return {'FINISHED'}
 
 
@@ -1225,6 +1181,9 @@ class GTATOOLS_OT_export_ide(bpy.types.Operator):
             from .textdata_audit import audit_ide_file
             audit_ide_file(self, self.filepath)
             self.report({'INFO'}, f"Exported IDE: {self.filepath}")
+            from .map_link import lod_name_notes
+            for note in lod_name_notes(objs):       # III/VC: LOD won't pair
+                self.report({'WARNING'}, note)
             return {'FINISHED'}
         except Exception as e:
             self.report({'ERROR'}, f"IDE export error: {str(e)}")
@@ -1265,6 +1224,9 @@ class GTATOOLS_OT_export_ipl(bpy.types.Operator):
             from .textdata_audit import audit_ipl_file
             audit_ipl_file(self, self.filepath, context, binary=self.binary)
             self.report({'INFO'}, f"Exported IPL: {self.filepath}")
+            from .map_link import lod_name_notes
+            for note in lod_name_notes(objs):       # III/VC: LOD won't pair
+                self.report({'WARNING'}, note)
             return {'FINISHED'}
         except Exception as e:
             self.report({'ERROR'}, f"IPL export error: {str(e)}")
@@ -1289,10 +1251,17 @@ class GTATOOLS_OT_import_ipl_sections(bpy.types.Operator):
         from .ipl_sections import import_ipl_sections
         try:
             ipl = read_ipl(self.filepath)
-            result = import_ipl_sections(ipl)
+            from ..core import game_versions as gv
+            result = import_ipl_sections(
+                ipl, game=(gv.detect_game_from_ipl(self.filepath)
+                           or gv.game_of_scene(context.scene)))
+            skipped = result.pop('_skipped', 0)
             total = sum(len(v) for v in result.values())
             sections = ", ".join(f"{k}: {len(v)}" for k, v in result.items() if v)
-            self.report({'INFO'}, f"{T('Импортировано:')} {total} ({sections})")
+            msg = f"{T('Импортировано:')} {total} ({sections})"
+            if skipped:
+                msg += f" · {T('уже в сцене:')} {skipped}"
+            self.report({'INFO'}, msg)
             return {'FINISHED'}
         except Exception as e:
             self.report({'ERROR'}, f"IPL sections import: {str(e)}")
@@ -1318,8 +1287,9 @@ class GTATOOLS_OT_export_ipl_sections(bpy.types.Operator):
         from ..core.ipl import IplFile, write_ipl
         from .ipl_sections import export_ipl_sections
         self.filepath = _ensure_extension(self.filepath, ".ipl")
+        from ..core import game_versions as gv
         try:
-            sections = export_ipl_sections()
+            sections = export_ipl_sections(gv.game_of_scene(context.scene))
             ipl = IplFile(
                 culls=sections.get('cull', []),
                 garages=sections.get('grge', []),
@@ -1331,7 +1301,6 @@ class GTATOOLS_OT_export_ipl_sections(bpy.types.Operator):
                 occls=sections.get('occl', []),
                 zones=sections.get('zone', []),
             )
-            from ..core import game_versions as gv
             write_ipl(self.filepath, ipl,
                       game=gv.game_of_scene(context.scene))
             from .textdata_audit import audit_ipl_file
@@ -1427,6 +1396,9 @@ class GTATOOLS_OT_replace_ipl_placeholders(bpy.types.Operator):
         replaced = 0
         # Build lookup from scene meshes
         mesh_lookup = {}
+        # mesh → its objects; a model already on an IPL row (and its LOD)
+        # stays there — its placeholders get copies
+        by_data, used = {}, set()
         for obj in bpy.data.objects:
             if obj.type == 'MESH':
                 from .. import _clean_name_typed_ipl
@@ -1436,8 +1408,16 @@ class GTATOOLS_OT_replace_ipl_placeholders(bpy.types.Operator):
                     mesh_lookup[low] = {}
                 if stype not in mesh_lookup[low]:
                     mesh_lookup[low][stype] = obj
+                by_data.setdefault(obj.data, []).append(obj)
+                if obj.inu.ipl_uuid:
+                    used.add(obj)
+                    if obj.inu.lod_object is not None:
+                        used.add(obj.inu.lod_object)
 
-        for obj in list(bpy.data.objects):
+        from ..core.ipl import is_lod_name
+        # LOD placeholders after the models' ones (see the LOD case below)
+        for obj in sorted(bpy.data.objects, key=lambda o: is_lod_name(
+                o.get('ipl_model_name', o.name.replace('_empty', '')))):
             if obj.type != 'EMPTY' or not obj.get('ipl_placeholder'):
                 continue
 
@@ -1459,7 +1439,21 @@ class GTATOOLS_OT_replace_ipl_placeholders(bpy.types.Operator):
             if not mesh_obj:
                 continue
 
-            # Move existing model to placeholder position
+            # A LOD placeholder that found only its model, and that model
+            # already stands here (its own placeholder put it): nothing to add.
+            if is_lod and not variants.get('LOD') and any(
+                    (o.location - obj.location).length < 1e-3
+                    for o in by_data.get(mesh_obj.data, ())):
+                bpy.data.objects.remove(obj, do_unlink=True)
+                replaced += 1
+                continue
+
+            # Move existing model to the first placeholder of it; every
+            # further placeholder gets its own copy (shared mesh)
+            from .ipl_import import _row_target, _linked_copy
+            if _row_target(mesh_obj, (), used) is None:
+                mesh_obj = _linked_copy(mesh_obj)
+                by_data.setdefault(mesh_obj.data, []).append(mesh_obj)
             mesh_obj.location = obj.location.copy()
             mesh_obj.rotation_mode = 'QUATERNION'
             mesh_obj.rotation_quaternion = obj.rotation_quaternion.copy()

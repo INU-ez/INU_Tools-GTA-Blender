@@ -267,6 +267,17 @@ def _refresh_preview(context):
     if tex is None or not tex.pixels:
         return
 
+    # R<->B swap, same rule as TXD import (txd_import.py): paletted
+    # (PAL8/PAL4) D3D8 textures (GTA III) come out of the decoder with
+    # R and B swapped. Without it the preview showed them in different
+    # colours than after import.
+    px = tex.pixels
+    if (getattr(tex, 'platform_id', 0) == 8
+            and getattr(tex, 'raster_format', 0) & 0x6000):  # PAL8|PAL4
+        buf = bytearray(px)
+        buf[0::4], buf[2::4] = px[2::4], px[0::4]
+        px = bytes(buf)
+
     # Build / resize the preview Image. Blender requires a fresh
     # Image when dimensions change — scale() trims/extends pixel
     # buffer but the pixel layout is float[width*height*4] which
@@ -286,7 +297,7 @@ def _refresh_preview(context):
     # Blender expects float [0..1] bottom-to-top.
     try:
         import numpy as np
-        arr = np.frombuffer(tex.pixels, dtype=np.uint8).astype(np.float32) / 255.0
+        arr = np.frombuffer(px, dtype=np.uint8).astype(np.float32) / 255.0
         arr = arr.reshape((h, w, 4))[::-1]   # flip Y
         img.pixels.foreach_set(arr.ravel())
     except Exception:
@@ -295,7 +306,7 @@ def _refresh_preview(context):
         flat = []
         row_bytes = w * 4
         for y in range(h - 1, -1, -1):
-            row = tex.pixels[y * row_bytes : (y + 1) * row_bytes]
+            row = px[y * row_bytes : (y + 1) * row_bytes]
             for b in row:
                 flat.append(b / 255.0)
         img.pixels = flat

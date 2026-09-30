@@ -59,12 +59,18 @@ class GTATOOLS_OT_export_water(bpy.types.Operator):
                 col = bpy.data.collections.get("Water")
                 if col:
                     objects = [o for o in col.objects if o.type == 'MESH']
-            count = export_water(filepath=self.filepath, objects=objects)
+            count, skipped = export_water(filepath=self.filepath, objects=objects)
             # DAT-43..45 audit of what landed on disk (counts 301/6/1021,
             # ±3000, flow range, axis-aligned quads, 500-block grid).
             from .textdata_audit import audit_water_file
             audit_water_file(self, self.filepath)
             self.report({'INFO'}, f"Water: {count} polygons exported")
+            # Last report → it is the one the status bar shows.
+            if skipped:
+                self.report({'WARNING'}, T(
+                    "Вода: пропущено граней с >4 вершинами: {0} — в water.dat "
+                    "только треугольники и квады, триангулируйте их (Ctrl+T)"
+                ).format(skipped))
             return {'FINISHED'}
         except Exception as e:
             self.report({'ERROR'}, f"Water export error: {str(e)}")
@@ -242,26 +248,19 @@ class GTATOOLS_OT_export_nodes(bpy.types.Operator):
             except Exception as e:
                 self.report({'WARNING'}, f"{fname}: {e}")
 
-        # Auto-split objects by zone (8x8 grid)
+        # Auto-split objects by zone (8x8 grid, same area formula as the game)
         if auto_split:
-            from ..core.paths import NodesFile, PathNode, write_nodes
-            zones = {}  # zone_idx → NodesFile
-            for obj in auto_split:
-                path_type = obj.get('path_type', '')
-                mat_w = obj.matrix_world
-                for vert in obj.data.vertices:
-                    co = mat_w @ vert.co
-                    gx = max(0, min(7, int((co.x + 3000) / 750)))
-                    gy = max(0, min(7, int((3000 - co.y) / 750)))
-                    zone = gy * 8 + gx
-                    if zone not in zones:
-                        zones[zone] = NodesFile()
-                        zones[zone].fla4 = self.fla4
-                    node = PathNode(x=co.x, y=co.y, z=co.z)
-                    if path_type == 'nodes_vehicle':
-                        zones[zone].vehicle_nodes.append(node)
-                    elif path_type == 'nodes_ped':
-                        zones[zone].ped_nodes.append(node)
+            from ..core.paths import split_nodes_by_area, write_nodes
+
+            def _points():
+                for obj in auto_split:
+                    path_type = obj.get('path_type', '')
+                    mat_w = obj.matrix_world
+                    for vert in obj.data.vertices:
+                        co = mat_w @ vert.co
+                        yield path_type, co.x, co.y, co.z
+
+            zones = split_nodes_by_area(_points(), fla4=self.fla4)
 
             for zone_idx, nf in zones.items():
                 fname = f"nodes{zone_idx}.dat"

@@ -23,7 +23,7 @@ from typing import List, Optional
 
 from ..ide import (IdeObject, _format_obj_line, _format_tobj_line,
                    _parse_obj_line, _tokens)
-from .ipl_doc import Message
+from .ipl_doc import Message, _same_number
 from .textfile import TextLines
 
 IDE_SECTIONS = ('objs', 'tobj', 'anim', 'weap', 'cars', 'peds', 'hier',
@@ -120,6 +120,29 @@ class IdeDoc:
 
     def ids(self) -> set:
         return {r.model_id for r in self.rows}
+
+    def file_game(self, default: str = 'SA') -> str:
+        """The game whose ``objs`` / ``tobj`` layout this file uses.
+
+        III/VC read the 4th field as the mesh count, so an SA single-mesh
+        row (objs: 5 fields, tobj: 7) breaks the definition in their file;
+        SA reads both forms. SA-form rows are no proof of an SA file — an
+        SA scene used to write them into III/VC files — so a III/VC scene
+        (*default*) keeps the count form unless every row is SA-form; else
+        the majority decides, a tie → the count form ('VC'). No objs/tobj
+        rows → *default*."""
+        sa = other = 0
+        for r in self.rows:
+            if r.section in OBJ_SECTIONS:
+                if len(_tokens(r.text)) == (5 if r.section == 'objs' else 7):
+                    sa += 1
+                else:
+                    other += 1
+        if default in ('VC', 'III'):
+            return 'SA' if sa and not other else default
+        if sa > other:
+            return 'SA'
+        return 'VC' if other else default
 
     def editor(self, *, game: str = 'SA') -> 'IdeEditor':
         return IdeEditor(self, game=game)
@@ -318,9 +341,11 @@ def _same_values(a: str, b: str) -> bool:
         if x == y:
             continue
         try:
-            if abs(float(x) - float(y)) > 5e-7:
-                return False
+            fx, fy = float(x), float(y)
         except ValueError:
             if x != y:
                 return False
+            continue
+        if not _same_number(fx, fy):
+            return False
     return True

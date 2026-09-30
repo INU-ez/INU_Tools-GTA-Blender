@@ -125,6 +125,14 @@ def _foliage_restore(obj):
     return True, T("Прилайт сброшен к состоянию до «Запечь цвет»")
 
 
+def _srgb3_to_linear(c):
+    """RGB свотча палитры (COLOR_GAMMA = sRGB) → линейный. Слой пишется
+    через .color (линейный): без перевода палитра 0.5 давала байт 188
+    вместо 128 — цвет в игре светлее выбранного."""
+    from ..core.timecyc import srgb_to_linear
+    return tuple(srgb_to_linear(float(x)) for x in tuple(c)[:3])
+
+
 class GTATOOLS_OT_prelight_foliage(bpy.types.Operator):
     """Прилайт листвы: темнее в центре кроны, светлее на периферии,
     + опциональная смена цвета листвы (tint). Геометрический градиент,
@@ -188,8 +196,8 @@ class GTATOOLS_OT_prelight_foliage(bpy.types.Operator):
                 top_bright=s.gtatools_foliage_top_bright,
                 top_height=s.gtatools_foliage_top_height,
                 variation=s.gtatools_foliage_variation,
-                light_tint=tuple(s.gtatools_foliage_light_tint),
-                shadow_tint=tuple(s.gtatools_foliage_shadow_tint),
+                light_tint=_srgb3_to_linear(s.gtatools_foliage_light_tint),
+                shadow_tint=_srgb3_to_linear(s.gtatools_foliage_shadow_tint),
                 tint_strength=s.gtatools_foliage_tint_strength,
                 metric=s.gtatools_foliage_metric,
                 blend=s.gtatools_foliage_blend,
@@ -872,6 +880,24 @@ def _prelight_allowed_types(st):
     return allowed
 
 
+def _bake_ambient(ambient, has_base):
+    """Ambient для быстрого запекания. «Запечь поверх» прибавляет только
+    лампы: Ambient уже есть в прилайте-основе (has_base), иначе каждое
+    нажатие поднимало всю модель ещё на Ambient. Без основы (нет активного
+    канала — обычный bake) Ambient нужен."""
+    return 0.0 if has_base else float(ambient)
+
+
+def _bake_fail_text(message):
+    """Предупреждение, когда не запёкся ни один объект: причина из
+    bake_vertex_colors_* вместо общего «Нет vertex colors»."""
+    if message == "No visible lights in scene!":
+        return T("Нечего запекать: в сцене нет видимых ламп")
+    if message == "Mesh has no loops":
+        return T("У меша нет граней")
+    return T("Нет vertex colors")
+
+
 class GTATOOLS_OT_bake_vertex_colors(bpy.types.Operator):
     """Запечь освещение от Point источников в vertex colors"""
     bl_idname = "gtatools.bake_vertex_colors"
@@ -908,6 +934,17 @@ class GTATOOLS_OT_bake_vertex_colors(bpy.types.Operator):
             _pub(self, {'ERROR'}, T("Выделите меш объекты"))
             return {'CANCELLED'}
 
+        # Все тумблеры Point/Sun/Spot/Area выкл. = ламп нет (только HDRI
+        # ещё может запечься), а не «все лампы».
+        _st = context.scene.inu_settings
+        allowed = _prelight_allowed_types(_st)
+        use_hdri = getattr(_st, 'gtatools_prelight_use_hdri', False)
+        if not allowed and not use_hdri:
+            _pub(self, {'WARNING'}, T("Все типы ламп выключены "
+                                      "(Point / Sun / Spot / Area) — "
+                                      "запекать нечего"))
+            return {'CANCELLED'}
+
         # Loop normals are read from EVALUATED mesh inside the bake
         # function — respects «Smooth by Angle» modifier and sharp
         # marks. No pre-bake topology mangling needed.
@@ -916,13 +953,12 @@ class GTATOOLS_OT_bake_vertex_colors(bpy.types.Operator):
         prev_mode, prev_obj = _force_object_mode(context)
         try:
             baked = 0
+            last_msg = None
             for obj in mesh_objects:
                 snap = _bake_snapshot_active(obj) if self.over else None
-                _st = context.scene.inu_settings
                 success, message = bake_vertex_colors_from_lights(
                     obj, self.use_shadows,
-                    allowed_types=_prelight_allowed_types(_st),
-                    use_hdri=getattr(_st, 'gtatools_prelight_use_hdri', False))
+                    allowed_types=allowed, use_hdri=use_hdri)
                 if success:
                     if self.over and snap is not None:
                         # Add bake on top of the snapshot — no v_offset reset.
@@ -941,6 +977,8 @@ class GTATOOLS_OT_bake_vertex_colors(bpy.types.Operator):
                             elif attr_name == "Night" and obj.gtatools_v_offset_night != 0.0:
                                 apply_brightness_offset(obj, obj.gtatools_v_offset_night)
                     baked += 1
+                else:
+                    last_msg = message
         finally:
             _restore_mode(prev_mode, prev_obj)
 
@@ -948,7 +986,7 @@ class GTATOOLS_OT_bake_vertex_colors(bpy.types.Operator):
             _pub(self, {'INFO'}, f"Baked from lights: {baked} objects")
             return {'FINISHED'}
         else:
-            _pub(self, {'WARNING'}, T("Нет vertex colors"))
+            _pub(self, {'WARNING'}, _bake_fail_text(last_msg))
             return {'CANCELLED'}
 
 
@@ -983,6 +1021,16 @@ class GTATOOLS_OT_bake_vertex_colors_simple(bpy.types.Operator):
             _pub(self, {'ERROR'}, T("Выделите меш объекты"))
             return {'CANCELLED'}
 
+        # Все тумблеры Point/Sun/Spot/Area выкл. = ламп нет (см. выше).
+        allowed = _prelight_allowed_types(scene.inu_settings)
+        use_hdri = getattr(scene.inu_settings,
+                           'gtatools_prelight_use_hdri', False)
+        if not allowed and not use_hdri:
+            _pub(self, {'WARNING'}, T("Все типы ламп выключены "
+                                      "(Point / Sun / Spot / Area) — "
+                                      "запекать нечего"))
+            return {'CANCELLED'}
+
         # Get settings from panel. "Запечь" — быстрый режим без теней;
         # для теней нужно жать кнопку «С тенями» рядом.
         ambient = scene.inu_settings.gtatools_bake_ambient
@@ -997,13 +1045,14 @@ class GTATOOLS_OT_bake_vertex_colors_simple(bpy.types.Operator):
         prev_mode, prev_obj = _force_object_mode(context)
         try:
             baked = 0
+            last_msg = None
             for obj in mesh_objects:
                 snap = _bake_snapshot_active(obj) if self.over else None
+                # Поверх снимка — без Ambient (он уже в прилайте).
+                amb = _bake_ambient(ambient, self.over and snap is not None)
                 success, message = bake_vertex_colors_simple(
-                    obj, ambient, intensity, gamma, use_shadows,
-                    allowed_types=_prelight_allowed_types(scene.inu_settings),
-                    use_hdri=getattr(scene.inu_settings,
-                                     'gtatools_prelight_use_hdri', False))
+                    obj, amb, intensity, gamma, use_shadows,
+                    allowed_types=allowed, use_hdri=use_hdri)
                 if success:
                     if self.over and snap is not None:
                         _bake_add_over(obj, snap)
@@ -1019,6 +1068,8 @@ class GTATOOLS_OT_bake_vertex_colors_simple(bpy.types.Operator):
                             elif attr_name == "Night" and obj.gtatools_v_offset_night != 0.0:
                                 apply_brightness_offset(obj, obj.gtatools_v_offset_night)
                     baked += 1
+                else:
+                    last_msg = message
         finally:
             _restore_mode(prev_mode, prev_obj)
 
@@ -1028,7 +1079,7 @@ class GTATOOLS_OT_bake_vertex_colors_simple(bpy.types.Operator):
             _pub(self, {'INFO'}, f"Baked to '{attr_name}' from {baked} objects")
             return {'FINISHED'}
         else:
-            _pub(self, {'WARNING'}, T("Нет vertex colors"))
+            _pub(self, {'WARNING'}, _bake_fail_text(last_msg))
             return {'CANCELLED'}
 
 
@@ -2717,10 +2768,15 @@ class GTATOOLS_OT_scatter_color(bpy.types.Operator):
             if vp and getattr(vp, 'brush', None) is not None:
                 c = vp.brush.color
                 color = (c[0], c[1], c[2])
+                # Цвет кисти в sRGB (COLOR_GAMMA) → линейный, как палитра;
+                # сборка, где он уже линейный, не переводится дважды.
+                p = vp.brush.bl_rna.properties.get('color')
+                if p is not None and p.subtype == 'COLOR_GAMMA':
+                    color = _srgb3_to_linear(color)
         except (AttributeError, RuntimeError):
             pass
         if color is None:
-            color = tuple(scene.inu_settings.gtatools_scatter_color_color)
+            color = _srgb3_to_linear(scene.inu_settings.gtatools_scatter_color_color)
 
         strength = float(scene.inu_settings.gtatools_scatter_color_strength)
         distance = float(scene.inu_settings.gtatools_scatter_color_distance)

@@ -18,6 +18,7 @@ import struct
 from typing import List, Literal
 
 from . import lint_profile
+from .texture_index import dxt_fourcc
 
 
 Severity = Literal['ERROR', 'WARN', 'INFO']
@@ -947,14 +948,17 @@ def _scan_txd_natives(raw: bytes) -> list:
             if ct_st == _RW_CHUNK_STRUCT and chunk_payload + 12 + 92 <= n:
                 base = chunk_payload + 12
                 # Layout: platform_id u32, filter_flags u32,
-                # name(32), mask(32), raster_format u32, fourcc u32,
+                # name(32), mask(32), raster_format u32,
+                # d3d_format/has_alpha u32 (see texture_index.dxt_fourcc),
                 # width u16, height u16, depth u8, num_levels u8,
                 # raster_type u8, compression_flag u8.
                 platform_id = struct.unpack_from('<I', raw, base)[0]
                 name_bytes = raw[base + 8 : base + 8 + 32]
                 name = name_bytes.split(b'\x00', 1)[0].decode('ascii', errors='replace')
                 raster_fmt = struct.unpack_from('<I', raw, base + 72)[0]
-                fourcc     = struct.unpack_from('<I', raw, base + 76)[0]
+                fourcc     = dxt_fourcc(platform_id,
+                                        struct.unpack_from('<I', raw, base + 76)[0],
+                                        raw[base + 87])
                 width      = struct.unpack_from('<H', raw, base + 80)[0]
                 height     = struct.unpack_from('<H', raw, base + 82)[0]
                 depth      = raw[base + 84]

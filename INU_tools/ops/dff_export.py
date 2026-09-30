@@ -456,6 +456,17 @@ def _collect_uv_anim_dict(materials) -> "UVAnimDict | None":
     return UVAnimDict(anims=anims)
 
 
+def _uv_anim_dropped_names(clump, version):
+    """Имена UV-анимаций, которые писатель молча пропустит: словарь 0x2B и
+    PLG 0x135 пишутся только при RW 3.5+ (SA). В III/VC плагина RpUVAnim нет
+    (re3/reVC PluginAttach), поэтому там анимацию не пишем — только сообщаем.
+    """
+    d = getattr(clump, 'uv_anim_dict', None)
+    if version >= 0x35000 or not d or not d.anims:
+        return []
+    return [a.name for a in d.anims]
+
+
 # ── Export flags from DragonFF properties ────────────────────────
 
 def _get_obj_export_flags(obj) -> dict:
@@ -2157,6 +2168,14 @@ def export_dff(filepath: str, objects, version: int = GTA_SA_VERSION,
         print(f"[DFF Export] модель: {item}")
 
     write_dff_file(filepath, clump)
+
+    # III/VC: UV-анимация не пишется (нет плагина) — раньше терялась молча.
+    _uv = _uv_anim_dropped_names(clump, version)
+    if _uv:
+        from .. import T
+        from ..core.dff import DFF_EXPORT_WARNINGS
+        DFF_EXPORT_WARNINGS.append(
+            T('UV-анимация не записана: в GTA III/VC её нет ({0})').format(', '.join(_uv)))
 
     if veh_fatal or veh_warn or skin_fatal or skin_warn or map_fatal or map_warn:
         from .. import T

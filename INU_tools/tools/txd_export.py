@@ -113,6 +113,15 @@ def _resolve_platform_for_scene(scene) -> int:
         return PLATFORM_D3D9
 
 
+def mobile_txd_warning(platform, n_txd):
+    """Платформа MOBILE, а TXD записан (n_txd > 0) — текст предупреждения:
+    мобильный TXD (PVRTC/ETC1) аддон не пишет, уходит PC-формат. Иначе None.
+    Общий для Export All / Один DFF / INU Export / Export to IMG / карты."""
+    if platform == 'MOBILE' and n_txd:
+        return T("TXD сохранён в PC формате. Для mobile конвертируй через TxdGen (PVRTC/ETC1).")
+    return None
+
+
 def make_filter_flags(mip_count=1):
     """Флаги фильтра+адресации текстуры. При наличии мип-цепочки (mip_count>1)
     ставим LINEARMIPLINEAR (трилинейный) — иначе движок мипы игнорирует и вдали
@@ -228,13 +237,15 @@ def is_node_connected(node):
     return False
 
 
-def collect_textures(selected_only=False):
+def collect_textures(selected_only=False, objects=None):
     textures = {}
     transparent_textures = set()
 
-    if selected_only:
+    # ``objects`` — an explicit list (Export Map: a model / its LOD, hidden
+    # ones too — a hidden object is never in selected_objects).
+    if objects is not None or selected_only:
         materials = set()
-        for obj in bpy.context.selected_objects:
+        for obj in (objects if objects is not None else bpy.context.selected_objects):
             if hasattr(obj, 'material_slots'):
                 for slot in obj.material_slots:
                     if slot.material:
@@ -833,16 +844,20 @@ def compress_textures_gpu(dxt1_data, dxt3_data, wm, total, dxt1_count):
     return results
 
 
-def export_txd(filepath, context, selected_only=False, backend=None, **_legacy):
+def export_txd(filepath, context, selected_only=False, backend=None, objects=None,
+               **_legacy):
     """Export textures to a .txd archive.
 
     ``backend``: 'numpy' (vectorized CPU, default) or 'gpu' (bpy.gpu
     compute shader, WIP). Anything else routes to numpy.
 
+    ``objects``: take the textures of these objects instead of the
+    selection / the whole file (see ``collect_textures``).
+
     ``**_legacy`` swallows obsolete kwargs like ``use_gpu`` from older
     callers we haven't migrated yet — keeps things from breaking.
     """
-    textures, transparent_list = collect_textures(selected_only)
+    textures, transparent_list = collect_textures(selected_only, objects)
     if not textures:
         msg = "No textures found on selected objects" if selected_only else "No textures found in scene"
         return {'CANCELLED'}, msg, []
@@ -1067,7 +1082,7 @@ def _assemble_txd_file(filepath, lib_id, sections):
         _active_lib_id = saved
 
 
-def update_txd(filepath, context, selected_only=True, backend=None):
+def update_txd(filepath, context, selected_only=True, backend=None, objects=None):
     """Merge the scene's textures INTO an existing TXD.
 
     Same-named textures are REPLACED with the freshly-encoded ones, brand-new
@@ -1083,14 +1098,15 @@ def update_txd(filepath, context, selected_only=True, backend=None):
 
     if not os.path.isfile(filepath):
         # Nothing to merge into — behave like a plain export.
-        return export_txd(filepath, context, selected_only, backend=backend)
+        return export_txd(filepath, context, selected_only, backend=backend,
+                          objects=objects)
 
     # 1. Encode the scene's textures into a TEMP TXD (reuse the full
     #    encoder so DXT/alpha handling is identical), then read it back.
     tmp = filepath + ".inu_tmp"
     try:
         result, message, transparent = export_txd(
-            tmp, context, selected_only, backend=backend)
+            tmp, context, selected_only, backend=backend, objects=objects)
         if result != {'FINISHED'}:
             return result, message, transparent
         with open(tmp, 'rb') as f:

@@ -11,11 +11,14 @@ def export_water(filepath: str, objects=None):
     Reads water parameters from vertex custom float layers.
     Each face becomes a water polygon (3 or 4 vertices).
     Water flag from object custom property 'water_flag'.
+    Returns ``(count, skipped)`` — polygons written and faces dropped
+    because water.dat holds only triangles and quads.
     """
     if objects is None:
         objects = [o for o in bpy.context.selected_objects if o.type == 'MESH']
 
     water = WaterFile()
+    skipped = 0
 
     for obj in objects:
         flag = obj.get('water_flag', 1)
@@ -35,6 +38,7 @@ def export_water(filepath: str, objects=None):
 
         for face in bm.faces:
             if len(face.verts) not in (3, 4):
+                skipped += 1
                 continue
 
             poly = WaterPolygon(flag=flag)
@@ -63,4 +67,4 @@ def export_water(filepath: str, objects=None):
         bm.free()
 
     count = write_water(filepath, water)
-    return count
+    return count, skipped

@@ -386,7 +386,6 @@ LANG = {
     "Удалить слой": "Delete layer",
     # ── end raw-descriptions audit ──
     # ── Added by locale audit: strings that were missing from EN ──
-    "В какой IMG писать при «Экспорт в IMG»: родной IMG модели (img_target_file) или конкретный архив из папки игры. Обновляет запись, если модель там есть, иначе добавляет": "Which IMG to write to on 'Export to IMG': the model's own IMG (img_target_file) or a specific archive from the game folder. Updates the entry if the model is already there, otherwise adds it",
     "Live: синхронизация удалений в обе стороны. Удалил в Blender → мягкое удаление инстанса в ariane; удалил в ariane → объект СКРЫВАЕТСЯ в Blender (обратимо — undelete в ariane его показывает). Выключено по умолчанию, чтобы можно было удалять свободно, не трогая другую сторону": "Live: two-way deletion sync. Delete in Blender → soft-delete the instance in ariane; delete in ariane → the object is HIDDEN in Blender (reversible — undelete in ariane brings it back). Off by default so you can delete freely without touching the other side",
     "Bevel только вдоль ВЫДЕЛЕННЫХ рёбер: маска по вершинам выделенных рёбер домножается на маску кромок. Действует ТОЛЬКО на Bevel. Переход у ребра мягкий (интерполяция по граням). Выдели рёбра в Edit Mode перед запеканием": "Bevel only along SELECTED edges: a mask over the vertices of the selected edges is multiplied by the edge mask. Affects ONLY Bevel. The transition at the edge is soft (interpolated across faces). Select the edges in Edit Mode before baking",
     "Изолировать объект": "Isolate object",
@@ -394,7 +393,6 @@ LANG = {
     "Показать ползунки визуальной коррекции превью прилайта (яркость/контраст/гамма/насыщенность). Только вьюпорт — на экспорт не влияет": "Show the sliders for visual correction of the prelight preview (brightness/contrast/gamma/saturation). Viewport only — does not affect export",
     "Пересобрать после экспорта": "Rebuild after export",
     "После записи сжать (компактнуть) IMG-архив — убрать мёртвое место от старых версий моделей": "After writing, compact the IMG archive — remove the dead space left by old versions of the models",
-    "IMG архив": "IMG archive",
     "LOD: основная модель (заглушка)": "LOD: main model (stub)",
     "COL: пустая заглушка": "COL: empty stub",
     "Открыть наш форк Ariane (GitHub) — редактор карт для round-trip с аддоном (временно, до релиза Ariane)": "Open our Ariane fork (GitHub) — a map editor for round-trip with the addon (temporary, until Ariane's release)",
@@ -1427,6 +1425,9 @@ LANG = {
     "COL light материалов:": "COL light materials:",
     "Дневной свет": "Day Light",
     "Ночной свет": "Night Light",
+    "Свет коллизии": "Collision light",
+    "Из материала": "From material",
+    "Авто: день + ночь": "Auto: day + night",
 
     # Scatter Light
     "Рассеянный свет:": "Scatter Light:",
@@ -2065,7 +2066,7 @@ LANG = {
     "Укажите папку для сохранения": "Specify output folder",
     "Укажите индексы тайлов (например 0,1,8,9)": "Specify tile indices (e.g. 0,1,8,9)",
     "Папка для сохранения тайлов радара": "Folder for saving radar tiles",
-    "Размер сетки (8 = 64 тайла)": "Grid size (8 = 64 tiles)",
+    "Размер сетки: 0 — по игре (SA 12 = 144 тайла, III/VC 8 = 64)": "Grid size: 0 = the game's (SA 12 = 144 tiles, III/VC 8 = 64)",
     "Размер тайла в пикселях": "Tile size in pixels",
     "Высота камеры": "Camera height",
     "Индексы тайлов через запятую (0,1,5,63)": "Tile indices comma-separated (0,1,5,63)",
@@ -2215,8 +2216,6 @@ LANG = {
         "Uniform scale factor applied to positions and vertices",
     "Двигать только дамми-Empty, меши не трогать":
         "Move only the dummy empties, leave meshes untouched",
-    "Первый ID для DFF у которых inu.model_id == 0":
-        "First ID assigned to DFFs that have inu.model_id == 0",
     "Применять только анимации, имя которых начинается с этого префикса (регистронезависимо)":
         "Only apply animations whose name starts with this prefix (case-insensitive)",
     "Уложить клипы на один NLA-трек с зазором":
@@ -2690,8 +2689,6 @@ LANG = {
     "Создать Actions, без NLA": "Create Actions only, no NLA",
     "Создать подпапку на каждый txd_name (читается с mesh-объектов)":
         "Create a subfolder per txd_name (read from mesh objects)",
-    "Первый ID для DFF у которых inu.model_id == 0":
-        "Starting ID for DFFs whose inu.model_id == 0",
     "Множитель равномерного масштаба — применяется к позициям и вершинам":
         "Uniform scale factor — applied to positions and vertices",
     "Двигать только дамми-Empty, меши не трогать":
@@ -2741,8 +2738,8 @@ LANG = {
         "Set IDE properties (distances, Model ID, TXD, Interior, flags, COL Library) on every selected MESH object.\n\nFields are prefilled from the active object — tweak and apply to the entire selection in one action. The left-hand checkboxes pick which fields to overwrite (handy for changing only one)",
     "Применить Model ID": "Apply Model ID",
     "По порядку (+1)": "Sequential (+1)",
-    "Первому объекту — указанный ID, каждому следующему +1 (объекты идут по имени). Снято — один и тот же ID всем":
-        "First object gets the given ID, each next one +1 (objects sorted by name). Unchecked — the same ID for all",
+    "Первой модели — указанный ID, каждой следующей +1 (по имени объекта). Копии одной модели (tree, tree.001) получают один ID, LOD — свой. Снято — один и тот же ID всем":
+        "First model gets the given ID, each next one +1 (sorted by object name). Copies of one model (tree, tree.001) share one ID, a LOD gets its own. Unchecked — the same ID for all",
     "Применить TXD": "Apply TXD",
     "Применить Interior": "Apply Interior",
     "Применить IDE Flags": "Apply IDE Flags",
@@ -2782,7 +2779,6 @@ LANG = {
     "Имя TXD архива для этой модели. Модели с одинаковым именем попадут в один .txd (textures merged)":
         "TXD archive name for this model. Models sharing a name merge into one .txd (textures combined)",
     "Включить модель в экспорт": "Include this model in the export",
-    "IMG:": "IMG:",
     "Моделей:": "Models:",
     "TXD имя на модель:": "TXD name per model:",
     "Общий TXD включён — список игнорируется":
@@ -3355,8 +3351,6 @@ LANG = {
     "Меш без текстур (COL)": "Untextured mesh (COL)",
     "Имя содержит не-латинские символы (напр. кириллицу) — GTA SA не примет. Переименуй латиницей (a-z, 0-9, _)":
         "Name has non-Latin characters (e.g. Cyrillic) — GTA SA won't accept it. Rename using Latin (a-z, 0-9, _)",
-    "Имя для IMG длиннее 23 символов — обрежется и не совпадёт с IDE/IPL: {0}. Укороти имя модели.":
-        "IMG entry name longer than 23 characters — it will be truncated and won't match IDE/IPL: {0}. Shorten the model name.",
     "IPL: пропущены строки с model_id 0 (задай ID): ":
         "IPL: rows with model_id 0 skipped (assign an ID): ",
     "LOD без main DFF — engine не сможет переключиться между ближним и дальним LOD":
@@ -4560,8 +4554,6 @@ LANG = {
     "Не в IDE — сменился ID (был {0})": "Not in IDE — Model ID changed (was {0})",
     "IDE Verify: есть {0}, нет {1}, снято {3}, без ID {2}": "IDE Verify: present {0}, missing {1}, cleared {3}, no ID {2}",
     "Удалено из IPL: {0} (+ {1} LOD), осталось: {2}": "Removed from IPL: {0} (+ {1} LOD), left: {2}",
-    "Родной IMG модели": "Model's own IMG",
-    "IMG, откуда пришла модель (img_target_file)": "The IMG the model came from (img_target_file)",
     "IMG для экспорта": "IMG to export to",
     "В IMG": "To IMG",
     "У модели нет своего IMG — выбери IMG в списке": "The model has no IMG of its own — pick one from the list",
@@ -5129,7 +5121,6 @@ LANG = {
     "Форма": "Shape",
     "Цвет листвы (свет / тень):": "Foliage color (light / shadow):",
     "Что сделать с активным меш-объектом после Setup:\n  Pivot — припарентить к pivot (будет крутиться вместе с rig'ом)\n  Root  — припарентить к root (останется статичным как 'основание')\n  Нет   — не трогать": "What to do with the active mesh object after Setup:\n  Pivot — parent to the pivot (will spin together with the rig)\n  Root  — parent to the root (stays static as a 'base')\n  None  — leave untouched",
-    "Экспортировать прямо в .img архив, путь к которому задан в настройках аддона. Выбор папки при этом игнорируется": "Export directly into the .img archive whose path is set in the addon preferences. The folder selection is ignored",
     "Эта карта ещё не запечена": "This map is not baked yet",
     "Эффект машины (спец. использование)": "Vehicle effect (special use)",
     "Яркость солнца (≈ среднему 8 точек)": "Sun brightness (≈ average of 8 points)",
@@ -6162,7 +6153,7 @@ LANG = {
     'Экспорт «каждая модель в свой IDE»: обновляет строки выделенных моделей\n    в тех IDE, к которым они привязаны (импортом или прошлым Add). Модели без\n    своего IDE не пишутся — добавь их через «Add» в выбранный IDE.': 'Export «each model to its own IDE»: updates the rows of the selected models in the IDEs they are linked to (by import or a previous Add). Models without an IDE of their own are not written — add them with «Add» to the chosen IDE.',
     'Обновить координаты выделенных моделей в их родных IPL.\n\nКаждая модель пишется в тот IPL, к которому привязана (импортом или прошлым\nAdd) — новая позиция и поворот, LOD переезжает вместе с ней. Файл, выбранный в\nбоксе IPL, при этом не используется': 'Update the coordinates of the selected models in their own IPLs.\n\nEach model is written to the IPL it is linked to (by import or a previous Add) — new position and rotation, its LOD moves along. The file chosen in the IPL box is not used',
     'Удалить выделенные объекты из их IPL и снять привязку.\n\nОбъекты остаются в Blender, их inst-строки удаляются из того IPL, к которому\nони привязаны. LOD модели удаляется тоже (если он не нужен другой модели).\nlod_index всех остальных строк пересчитывается': "Remove the selected objects from their IPL and unlink them.\n\nThe objects stay in Blender; their inst rows are removed from the IPL they are linked to. The model's LOD is removed too (unless another model needs it). lod_index of all other rows is recomputed",
-    'Проверить IPL-привязки, ничего не двигая.\n\nПривязанные модели ищут свою строку; если её больше нет — привязка снимается.\nНепривязанные узнаются по строке своей модели рядом (0.5 м) или по\nединственной свободной строке этой модели. Пустое выделение — вся сцена': 'Check IPL links without moving anything.\n\nLinked models look for their row; if it is gone, the link is removed. Unlinked ones are recognised by a row of their model nearby (0.5 m) or by the only free row of that model. Empty selection = the whole scene',
+    'Проверить IPL-привязки, ничего не двигая.\n\nПривязанные модели ищут свою строку; если её больше нет — привязка снимается\n(файла нет — привязка остаётся). Непривязанные узнаются по строке своей модели\nрядом (0.5 м) или по единственной свободной строке этой модели в пределах 2 м.\nПустое выделение — вся сцена': 'Check IPL links without moving anything.\n\nLinked models look for their row; if it is gone, the link is removed (if the file is missing, the link stays). Unlinked ones are recognised by a row of their model nearby (0.5 m) or by the only free row of that model within 2 m. Empty selection = the whole scene',
     'Удалить выделенные модели из их IDE и снять привязку.\n    Строка удаляется, только если под этим ID в файле именно эта модель.\n    LOD модели удаляется вместе с ней.': "Remove the selected models from their IDE and unlink them.\nA row is removed only if that ID in the file really is this model.\nThe model's LOD is removed with it.",
     'Verify обоих: IDE-ссылок (по model_id) + IPL-ссылок (строка ищется по содержимому).': 'Verify both: IDE links (by model_id) + IPL links (the row is found by content).',
     'Del: удалить строки ВЫДЕЛЕННЫХ моделей (и их LOD) из выбранного .ide. Удаляет только если под этим ID в файле именно эта модель': 'Del: remove the rows of the SELECTED models (and their LODs) from the chosen .ide. Removes only if that ID in the file really is this model',
@@ -6207,4 +6198,160 @@ LANG = {
     'Реальная геометрия': 'Real geometry',
     'Тротуаров в сцене:': 'Pavements in the scene:',
     'У меша нет граней': 'The mesh has no faces',
+    'Импортированный файл = {0}, но активная игра сцены = {1}. Переключи вкладку GTA Tools на «{0}» — иначе экспорт пойдёт в неправильном формате.': 'Imported file = {0}, but the scene\'s active game = {1}. Switch the GTA Tools tab to «{0}», otherwise export will use the wrong format.',
+    # Prelight Bake (ops/light_ops.py): why nothing was baked
+    'Все типы ламп выключены (Point / Sun / Spot / Area) — запекать нечего': 'All light types are off (Point / Sun / Spot / Area) — nothing to bake',
+    'Нечего запекать: в сцене нет видимых ламп': 'Nothing to bake: no visible lights in the scene',
+    # COL Light (tools/col_light.py): threshold is applied by the bake too
+    'Порог яркости (учитывается и при запекании — результат совпадает с превью)': 'Brightness threshold (also used by Bake COL Light, so the result matches the preview)',
+    "Сжать {0} (записей: {1}) — убрать мёртвое место от заменённых записей; записи и их порядок сохраняются": "Compact {0} ({1} entries) — dead space left by replaced entries is removed; entries and their order stay",
+    "Файл .img занят — закрой игру: {0}": "The .img file is locked — close the game: {0}",
+    # Remove from IMG (ops/img_ops.py, core/img_remove.py)
+    'Удалить выделенные модели из IMG — каждую из её архива (статус «В IMG»):\nDFF, TXD — только если он больше никому не нужен (IDE игры и списков, модели\nсцены), коллизию — записью из .col архива. LOD удаляется, только если выделен.\nПеред удалением — список и вопрос': 'Remove the selected models from IMG — each from its own archive (the «In IMG» status):\nthe DFF, the TXD only if nothing else needs it (game and list IDEs, scene\nmodels), the collision as its record in the archive\'s .col. A LOD is removed only when selected.\nShows the list and asks before removing',
+    '«{0}»: не в IMG — нажмите «Проверить IMG»': '«{0}»: not in an IMG — press «Verify IMG»',
+    '«{0}»: нет в {1} — нажмите «Проверить IMG»': '«{0}»: not in {1} — press «Verify IMG»',
+    'Папка игры не задана — TXD сверены только со сценой и списками IDE': 'No game folder set — TXDs were checked against the scene and the IDE lists only',
+    'IDE не прочитаны: {0}': 'IDE files not read: {0}',
+    '{0} (из {1})': '{0} (from {1})',
+    '{0} оставлен — нужен {1}': '{0} kept — used by {1}',
+    'LOD «{0}» оставлен — выделите LOD, чтобы удалить': 'LOD «{0}» kept — select the LOD to remove it',
+    'Будет удалено из архивов:': 'Will be removed from the archives:',
+    'Удалить?': 'Remove?',
+    # Verify IMG (ops/img_ops.py)
+    'Не прочитаны (связи не сняты): {0}': 'Not read (links kept): {0}',
+    ("Дневной свет коллизии для режима «Авто». 0–15 "
+     "(младший ниббл байта освещения). 14 = стандарт (старое 78)"):
+        ("Collision day light for «Auto» mode. 0–15 "
+         "(low nibble of the lighting byte). 14 = standard (old 78)"),
+    ("Ночной свет коллизии для режима «Авто». 0–15 "
+     "(старший ниббл байта освещения). 4 = стандарт (старое 78)"):
+        ("Collision night light for «Auto» mode. 0–15 "
+         "(high nibble of the lighting byte). 4 = standard (old 78)"),
+    'UV-анимация не записана: в GTA III/VC её нет ({0})': 'UV animation not written: GTA III/VC have none ({0})',
+    '«{0}»: у строки нет LOD — отвязывать нечего': '«{0}»: the row has no LOD — nothing to detach',
+    # IDE/IPL sync (ops/map_link): scaled object into an SA row
+    '«{0}»: масштаб — в строке SA масштаба нет (записано без него)': '«{0}»: scaled — a SA IPL row has no scale (written without it)',
+    # IDE/IPL sync (ops/map_link): IPL «Add» moves a model from its old file
+    '«{0}»: переносится из {1} в {2}': '«{0}»: moves from {1} to {2}',
+    '«{0}»: строка оставлена в {1} — на номера строк этого файла ссылаются потоковые IPL ({2}*); удаление сдвинет их LOD': '«{0}»: its row stays in {1} — streamed IPLs ({2}*) point at this file\'s rows by number; deleting one would shift their LODs',
+    '«{0}»: LOD не перенесён — в {1} строка записана без LOD': '«{0}»: LOD not moved — the row in {1} is written without a LOD',
+    'перенесено из другого файла {0}': 'moved from another file {0}',
+    'Add: записать/обновить РАССТАНОВКУ выделенных моделей в ВЫБРАННЫЙ .ipl (позиция + поворот). Перемещённую модель обновляет на месте (не плодит дубли); LOD модели ставится вместе с ней, у каждой копии — свой LOD в её точке. Модель из другого IPL переносится: её строка и LOD уходят из старого файла. Отличие от Export: пишет в уже выбранный файл, а не создаёт новый': "Add: write/update the PLACEMENT of the selected models in the CHOSEN .ipl (position + rotation). A moved model is updated in place (no duplicates); the model's LOD is placed with it, each copy gets its own LOD at its own spot. A model from another IPL is moved: its row and LOD leave the old file. Unlike Export: writes into the already chosen file instead of creating a new one",
+    # ── IDE/IPL trash buttons: list of rows to delete + question (ops/map_link) ──
+    'удалить расстановок: {0}': 'remove placements: {0}',
+    'удалить определений: {0}': 'remove definitions: {0}',
+    'Строки будут УДАЛЕНЫ из файлов:': 'Rows will be DELETED from the files:',
+    'Удалить эти строки?': 'Delete these rows?',
+    'Проблемы:': 'Problems:',
+    'отвязать LOD: {0}': 'detach LOD: {0}',
+    'удалить LOD: {0}': 'remove LODs: {0}',
+    # ── IPL Check: links of a missing file are kept, lost link reported (ops/map_link) ──
+    '«{0}»: строки нет в {1} (и в {2:g} м) — связь снята': '«{0}»: its row is not in {1} (nor within {2:g} m) — link removed',
+    '{0}: файла нет или он не читается — связи {1} моделей оставлены': '{0}: the file is missing or unreadable — links of {1} models kept',
+    # ── Sync from IDE: own IDE first, ambiguous name not linked (ops/map_link) ──
+    '«{0}»: найдена в нескольких IDE с разными ID — не связана': '«{0}»: found in several IDEs with different IDs — not linked',
+    '«{0}»: Model ID {1} → {2} (из {3})': '«{0}»: Model ID {1} → {2} (from {3})',
+    '«{0}»: ID {1} есть в нескольких IDE под разными именами — не связана': '«{0}»: ID {1} is in several IDEs under different names — not linked',
+    'Имя зоны в map.zon. Правка переименовывает и бокс («Zone_<имя>»); пробелы и запятые заменяются на «_»': 'Zone name in map.zon. Editing it also renames the box («Zone_<name>»); spaces and commas become «_»',
+    'уже в сцене:': 'already in scene:',
+    'моделей в нескольких архивах (взяты как в игре): {0}': 'models in several archives (taken as the game does): {0}',
+    'моделей в нескольких архивах (папка игры не распознана — взяты по алфавиту архивов): {0}': 'models in several archives (game folder not recognised — taken by archive name order): {0}',
+    'коллизия, моделей:': 'collision, models:',
+    'пустых записей COL:': 'empty COL entries:',
+    "В IDE нет моделей": "The IDE has no models",
+    'нет имени модели (нет в IDE)': 'no model name (not in IDE)',
+    # ID Manager: game IDs (<preset>.game), «Из игры» reads default.dat + gta*.dat
+    "ID игры сохранены: {0}": "game IDs kept: {0}",
+    "Освободить все занятые ID пресета. ID игры («Из игры») остаются.": "Free all used IDs of the preset. Game IDs («From Game») stay.",
+    "Нет data\\gta.dat / default.dat в папке игры": "No data\\gta.dat / default.dat in the game folder",
+    "ID игры: {0} (IDE: {1}, из {2}), новых занято: {3}": "Game IDs: {0} (IDE: {1}, from {2}), newly used: {3}",
+    "Ваши записи на ID игры переименованы ({0}): {1}": "Your entries on game IDs renamed to the game models ({0}): {1}",
+    "Не прочитаны: {0}": "Not read: {0}",
+    "Загрузить занятые ID из IDE файлов игры (SA, VC, III)": "Load occupied IDs from the game's IDE files (SA, VC, III)",
+    # ID Manager: Assign — copies share one ID, the LOD gets the model's ID + 1
+    "Назначить ID выделенным моделям с Model ID = 0. Копии модели получают один ID, её LOD (даже не выделенный) — ID модели + 1": "Assign IDs to the selected models with Model ID = 0. Copies of a model get one ID, its LOD (even an unselected one) gets the model's ID + 1",
+    "копиям дан готовый ID: {0}": "copies given the existing ID: {0}",
+    "«{0}»: у копий разные ID ({1}) — взят {2}": "«{0}»: copies have different IDs ({1}) — {2} used",
+    "«{0}»: ID {1} занят — LOD получил {2}": "«{0}»: ID {1} is taken — the LOD got {2}",
+    "Нет свободных ID в активном пресете — без ID: {0}": "No free IDs in the active preset — without ID: {0}",
+    "«{0}»: ID {1} нет в пресете — LOD получил {2}": "«{0}»: ID {1} is not in the preset — the LOD got {2}",
+    # ID Manager: «С ID…» — one ID per model, previous IDs freed; «Создать ID» asks first
+    "Назначить ID подряд выделенным моделям, начиная с указанного. Копии модели получают один ID; LOD — только если выделен; COL не трогается. Прежние ID освобождаются в пресете": "Assign consecutive IDs to the selected models, starting from the given one. Copies of a model get one ID; a LOD only if selected; COL is left alone. Previous IDs are freed in the preset",
+    "прежние ID освобождены в пресете: {0}": "previous IDs freed in the preset: {0}",
+    "Заполнить пресет ID 321-19999: недостающие — свободными, занятые остаются": "Fill the ID preset 321-19999: missing IDs are added as free, used IDs stay",
+    "Пресет «{0}»: недостающие ID 321-19999 будут добавлены свободными, занятые останутся": "Preset «{0}»: missing IDs 321-19999 will be added as free, used IDs stay",
+    "ID: 321-19999 (+{0} свободных)": "ID: 321-19999 (+{0} free)",
+    'Вода: пропущено граней с >4 вершинами: {0} — в water.dat только треугольники и квады, триангулируйте их (Ctrl+T)': 'Water: skipped faces with >4 vertices: {0} — water.dat holds only triangles and quads, triangulate them (Ctrl+T)',
+    'Сетка по игре: {0}×{0}, охват ±{1} м': 'Game grid: {0}×{0}, coverage ±{1} m',
+    # Import Map / Extract Resources — region IPL set, extract cache index
+    'строк бинарных IPL связано с LOD своего текстового IPL:': 'binary IPL rows linked to the LOD of their text IPL:',
+    'без изменений:': 'unchanged:',
+    'файлов в нескольких архивах (взяты из первого по порядку игры): {0}': 'files in several archives (taken from the first in the game load order): {0}',
+    # Export Map — a row per placement, own LOD, IDs from the ID Manager, existing files
+    'LOD без своей модели в экспорте — не экспортирован: {0}': 'LOD without its model in the export — not exported: {0}',
+    '«{0}»: у LOD «{1}» ID/имя самой модели — LOD пропущен': '«{0}»: LOD «{1}» has the model\'s own ID/name — LOD skipped',
+    '«{0}»: ID {1} недоступен — LOD получил {2}': '«{0}»: ID {1} is not available — the LOD got {2}',
+    'Нет свободных ID в активном пресете ID Manager для: {0} — ничего не записано. Заполните пресет: «База ID и сервис» → «Создать ID» (или «Расширить FLA»)': 'No free IDs in the active ID Manager preset for: {0} — nothing was written. Fill the preset: «ID database & service» → «Create ID» (or «Extend FLA»)',
+    'ID из ID Manager: моделей {0}': 'IDs from the ID Manager: {0} model(s)',
+    'Нет моделей DFF для экспорта': 'No DFF models to export',
+    'Нет коллизии (COL) у моделей: {0}': 'No collision (COL) for models: {0}',
+    'Binary IPL — только для SA: для {0} записан текстовый IPL': 'Binary IPL is SA only: a text IPL was written for {0}',
+    '{0}.ipl: имя длиннее {1} символов — игра не свяжет его с текстовым IPL. Сократите имя района': '{0}.ipl: the name is longer than {1} characters — the game won\'t pair it with the text IPL. Shorten the district name',
+    '{0}: существующий файл не TXD — заменён': '{0}: the existing file is not a TXD — replaced',
+    '{0}: {1} одинаковых расстановок (тот же ID и позиция) записаны один раз': '{0}: {1} identical placements (same ID and position) written once',
+    'Моделей {0}, расстановок {1} → DFF {2}, LOD {3}, COL {4}, TXD {5}, IDE {6}, IPL {7} (строк {8})': 'Models {0}, placements {1} → DFF {2}, LOD {3}, COL {4}, TXD {5}, IDE {6}, IPL {7} ({8} rows)',
+    'Ячеек {0}: ': 'Cells {0}: ',
+    'Binary IPL: <ячейка>_stream0.ipl положите в IMG, который gta.dat грузит до строк IPL (например gta3.img); текстовый <ячейка>.ipl — строкой IPL в gta.dat, путь через обратный слэш': 'Binary IPL: put <cell>_stream0.ipl into an IMG that gta.dat loads before its IPL lines (e.g. gta3.img); the text <cell>.ipl goes into gta.dat as an IPL line, path with backslashes',
+    'Только SA — пара, как в игре: модели в бинарный <ячейка>_stream0.ipl (игра берёт его только из IMG), строки LOD в текстовый <ячейка>.ipl (подключается в gta.dat). Для III/VC пишется текстовый IPL': 'SA only — a pair, as in the game: the models go into the binary <cell>_stream0.ipl (the game reads it from an IMG only), the LOD rows into the text <cell>.ipl (listed in gta.dat). III/VC get a text IPL',
+    'Эти файлы уже есть и будут заменены (.txd — слиянием):': 'These files already exist and will be replaced (.txd — merged):',
+    'Продолжить?': 'Continue?',
+    'Модели без ID получат ID из пресета ID Manager «{0}»': 'Models without an ID get one from the ID Manager preset «{0}»',
+    '«{0}»: свой LOD у копий не взят ({1}) — у всех копий LOD «{2}»': '«{0}»: the copies\' own LOD is not used ({1}) — all copies get the LOD «{2}»',
+    # Export to IMG: name pre-check, archive format vs scene game, write errors.
+    "Имя для IMG длиннее 23 символов или не ASCII — игра его не найдёт: {0}. Переименуй модель / TXD.":
+        "IMG entry name longer than 23 characters or not ASCII — the game won't find it: {0}. Rename the model / TXD.",
+    "Архив {0} — формат {1}, а игра сцены — {2}: игра не прочитает такие DFF/COL. Переключи игру во вкладке GTA Tools или выбери другой архив.":
+        "Archive {0} is {1}, but the scene's game is {2}: the game won't read these DFF/COL. Switch the game in the GTA Tools tab or pick another archive.",
+    "IMG: не удалось записать {0}: {1}": "IMG: could not write {0}: {1}",
+    # Export to IMG: TXD merged with the archive's TXD, LOD keeps its own TXD.
+    "{0}.txd: в архиве не TXD — заменён": "{0}.txd: the archive entry is not a TXD — replaced",
+    "{0}: LOD не в слое вида — его текстуры не записаны":
+        "{0}: the LOD is not in the view layer — its textures were not written",
+    # Export to IMG: each model goes to its own archive.
+    "IMG из настроек": "IMG from settings",
+    "Модели без своего IMG — в архив из настроек аддона":
+        "Models without an IMG of their own go to the archive from the addon preferences",
+    "Куда писать при «Экспорт в IMG» модели без своего IMG: архив из настроек или конкретный архив из папки игры. Модель со своим IMG (img_target_file) всегда пишется в него — игра берёт первую копию. Обновляет запись, если модель там есть, иначе добавляет":
+        "Where 'Export to IMG' writes models without an IMG of their own: the archive from settings or a specific archive from the game folder. A model with its own IMG (img_target_file) is always written into it — the game takes the first copy. Updates the entry if the model is already there, otherwise adds it",
+    "IMG для моделей без своего": "IMG for models without their own",
+    "Без IMG-архива: {0} — выберите архив выше": "No IMG archive: {0} — pick an archive above",
+    "Модель со своим IMG пишется в него: игра берёт первую копию":
+        "A model with its own IMG is written into it: the game takes the first copy",
+    "нет архива": "no archive",
+    "«{0}»: нет IMG-архива — выберите архив в окне": "«{0}»: no IMG archive — pick an archive in the window",
+    "{0}: модели из разных архивов — записан в {1}": "{0}: models from different archives — written to {1}",
+    # Export to IMG: an archive failed — shared TXD / IDE/IPL are not written.
+    "{0}: не записан — пропущен архив {1}": "{0}: not written — archive {1} was skipped",
+    "IDE/IPL не записаны: часть моделей не попала в IMG":
+        "IDE/IPL not written: some models did not make it into the IMG",
+    # Export to IMG dialog: the model's collision spheres/boxes (x_sphere_0).
+    "сферы/боксы ({0})": "spheres/boxes ({0})",
+    # Export All → All → IMG: the real target archives; «Один DFF» refused.
+    "Экспортировать прямо в .img: модель со своим IMG — в него, остальные — в архив, выбранный в «Экспорт в IMG» (иначе из настроек аддона). Выбор папки при этом игнорируется":
+        "Export directly into the .img: a model with its own IMG goes into it, the rest into the archive picked in «Export to IMG» (otherwise the one from the addon preferences). The folder selection is ignored",
+    "All → IMG не работает с «Один DFF» — выключите одно из двух":
+        "All → IMG does not work with «Single DFF» — turn one of the two off",
+    # III/VC: the game pairs a LOD with its model by name (from the 4th character).
+    "«{0}»: имя короче 4 символов — в III/VC игра не свяжет с ним LOD":
+        "«{0}»: the name is shorter than 4 characters — in III/VC the game won't pair a LOD with it",
+    "«{0}»: LOD «{1}» не свяжется в игре — III/VC сравнивают имена с 4-го символа, нужно «{2}»":
+        "«{0}»: LOD «{1}» won't be paired in the game — III/VC compare names from the 4th character, «{2}» is needed",
+    "«{0}»: LOD Dist {1} — III/VC связывают LOD с моделью, только если больше 300":
+        "«{0}»: LOD Dist {1} — III/VC pair a LOD with its model only when it is over 300",
+    "«{0}»: LOD {1} стоит в IPL не на модели — его строка оставлена как есть":
+        "«{0}»: LOD {1} is not placed on the model in the IPL — its row is left as it is",
+    "«{0}»: LOD {1} — в другом IDE ({2}), VC их не свяжет":
+        "«{0}»: LOD {1} is in another IDE ({2}) — VC won't pair them",
+    "«{0}»: имя LOD по правилу III/VC «{1}» уже занято ({2}) — LOD записан как «{3}» и в игре не свяжется, переименуй модель":
+        "«{0}»: the III/VC rule's LOD name «{1}» is already taken ({2}) — the LOD is written as «{3}» and won't be paired in the game, rename the model",
 }

@@ -642,6 +642,38 @@ def get_area_id(x: float, y: float, path_set: int = PATHSET_VANILLA) -> int:
     if cy >= grid:    cy = grid - 1
     return cx + cy * grid
 
+
+def split_nodes_by_area(points, fla4: bool = False) -> dict:
+    """Bin bare path nodes into one NodesFile per vanilla area (nodes<N>.dat).
+
+    ``points`` yields ``(path_type, x, y, z)`` in world space; path_type is
+    'nodes_vehicle' or 'nodes_ped', anything else is skipped (no area file
+    is opened for it). The area is `get_area_id` — the game's
+    CPathFind::FindX/YRegionForCoors (0x44D890 / 0x44D8C0) use the same
+    (v + 3000) / 750 on both axes, Y is NOT flipped. node_id is the running
+    index inside the file, vehicle nodes first, as in vanilla nodes*.dat;
+    the empty post-link tail is marked parsed so `write_nodes` still emits
+    the 768-byte filler and the section-7 padding.
+    """
+    zones = {}  # area_id → NodesFile
+    for path_type, x, y, z in points:
+        if path_type not in ('nodes_vehicle', 'nodes_ped'):
+            continue
+        # Area of the position as the game will see it: write_nodes stores
+        # int(v * 8) (truncates toward zero), so a node at y = -750.05 is
+        # read back as -750.0 and belongs to the next row up.
+        area = get_area_id(int(x * 8.0) / 8.0, int(y * 8.0) / 8.0)
+        nf = zones.get(area)
+        if nf is None:
+            nf = zones[area] = NodesFile(fla4=fla4, parsed_extras=True)
+        is_vehicle = path_type == 'nodes_vehicle'
+        node = PathNode(x=x, y=y, z=z, area_id=area, is_vehicle=is_vehicle)
+        (nf.vehicle_nodes if is_vehicle else nf.ped_nodes).append(node)
+    for nf in zones.values():
+        for i, node in enumerate(nf.vehicle_nodes + nf.ped_nodes):
+            node.node_id = i
+    return zones
+
 # FLA4 (Fastman Limit Adjuster 4) extension — unofficial format that
 # inflates each PathNode by 12 bytes to store per-node speed limit,
 # spawn probability and a lane override. File is tagged with the

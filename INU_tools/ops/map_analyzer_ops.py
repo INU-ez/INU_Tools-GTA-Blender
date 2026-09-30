@@ -35,7 +35,11 @@ def _collect_inputs(context):
         info = resolve_paths(root, info)
         ides = [p for p in info.ide_paths if os.path.isfile(p)]
         ipls = [p for p in info.ipl_paths if os.path.isfile(p)]
-        img_paths = [p for p in info.img_paths if os.path.isfile(p)]
+        # The game registers models/gta3.img (and gta_int.img in SA) itself,
+        # ahead of the IMG lines — vanilla gta.dat doesn't list them (if a
+        # .dat does, _gather_img_files reads the archive once).
+        own = [os.path.join(root, 'models', n) for n in ('gta3.img', 'gta_int.img')]
+        img_paths = [p for p in own + info.img_paths if os.path.isfile(p)]
         img_files = _gather_img_files(img_paths) if (s.gtatools_map_analyzer_check_img and img_paths) else None
         return ides, ipls, img_files, None
 
@@ -101,17 +105,21 @@ def _gather_img_files(img_paths):
 
     Per-archive dict (rather than flat set) is required so map_lint
     can run the cross-archive shadowing check. Failures are silent —
-    bad archives just don't appear in the result.
+    bad archives just don't appear in the result. An archive reached
+    twice under different spellings (CUSTOM walks the IDE folders AND
+    the game root) is read once — else it would shadow itself.
     """
     from ..core.img import ImgReader
     out = {}
+    seen = set()
     for path in img_paths:
+        key = os.path.normcase(os.path.realpath(path))
+        if key in seen:
+            continue
+        seen.add(key)
         try:
-            reader = ImgReader(path)
-            names = set()
-            for entry in reader.entries:
-                names.add(entry.name.lower())
-            out[path] = names
+            with ImgReader(path) as reader:      # the directory is read in open()
+                out[path] = {e.name.lower() for e in reader.entries}
         except Exception:
             continue
     return out

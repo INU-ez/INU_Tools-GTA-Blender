@@ -83,6 +83,20 @@ def explicit_name_type(name, suffixes=None, prefixes=None):
     return None, name
 
 
+def reuse_key(name):
+    """Нормализованное имя модели для сверки «модель уже в сцене» (Import from
+    IMG): без маркеров _DFF/_LOD/LOD, в нижнем регистре. Тип в ключ не входит —
+    DFF и его LOD различаются ID, коллизия отсекается отдельно."""
+    if not name:
+        return ''
+    m, b = explicit_name_type(name)
+    if m in ('DFF', 'LOD'):
+        m2, b2 = explicit_name_type(b)   # «xyz_DFF_LOD» (LOD без маркера в имени)
+        if m2 in ('DFF', 'LOD'):
+            b = b2
+    return strip_lod_marker(b).lower()
+
+
 def classify_model(name, *, has_texture=True, inu_type='OBJ',
                    suffixes=None, prefixes=None):
     """Classify a model NAME into ``LOD`` / ``COL`` / ``DFF`` and return
@@ -120,3 +134,13 @@ def classify_model(name, *, has_texture=True, inu_type='OBJ',
         return 'COL', name
 
     return 'DFF', name
+
+
+def lod_has_own_txd(lod_txd, dff_txd):
+    """У LOD-а свой TXD, а не TXD модели: не пустой и не совпадает с TXD
+    модели (регистр и пробелы не важны). У ванильных LOD почти всегда свой —
+    LODGSFreeway7_LAn → lanlod при lanroad модели; Export to IMG такой TXD
+    LOD-у оставляет и кладёт его текстуры туда же."""
+    lod = (lod_txd or '').strip().lower()
+    dff = (dff_txd or '').strip().lower()
+    return bool(lod) and lod != dff

@@ -743,6 +743,82 @@ def strip_lod_marker(name: str) -> str:
     return name
 
 
+def lod_pairs_by_name(lod_name: str, model_name: str) -> bool:
+    """III/VC: does the game pair LOD *lod_name* with *model_name*?
+
+    There is no ``lod_index`` column there: the game compares the names from
+    the 4th character on, case-sensitive (re3/reVC
+    CSimpleModelInfo::FindRelatedModel, ``faststrcmp(name + 3, …)``) —
+    ``LODtower`` ↔ ``ap_tower``, ``LOD_park3`` ↔ ``com_park3``. A name of 3
+    characters or less has nothing left to compare."""
+    return len(model_name) > 3 and lod_name[3:] == model_name[3:]
+
+
+def default_lod_name(model_name: str, game: str = 'SA') -> str:
+    """Name of a NEW LOD of *model_name*.
+
+    SA pairs a LOD with its model through the IPL ``lod_index`` — any name
+    works, the addon's ``LOD<name>``. III/VC pair them by name
+    (:func:`lod_pairs_by_name`): the model's first 3 characters become
+    ``LOD``, the rest keeps its case::
+
+        house     (VC)  -> LODse
+        com_park3 (III) -> LOD_park3
+        house     (SA)  -> LODhouse
+    """
+    if game in ('III', 'VC') and len(model_name) > 3:
+        return 'LOD' + model_name[3:]
+    return 'LOD' + model_name
+
+
+def lod_name_for(own: str, last: str, hd: str, base: str,
+                 game: str = 'SA', taken=None) -> str:
+    """Model name a LOD is written with — one rule for IDE, IPL and IMG.
+
+    *own* — the LOD object's name (no ``.001``), *last* — the name it was
+    imported / last written with, *hd* — its model's name ('' = unknown),
+    *base* — the ``LOD<base>`` fallback.
+
+    * A LOD name in *last* is kept: it is in the files already (a vanilla
+      LOD is never renamed).
+    * SA, or its model unknown → ``LOD<base>`` (never ``LODtower`` →
+      ``LODer`` for a LOD selected without its model).
+    * III/VC with the model known → *own* when the game already pairs it,
+      else :func:`default_lod_name` — ``LODhouse`` of house → ``LODse`` —
+      unless *taken* (name → truthy) says another model has that name or
+      gets it in the game (dt_house1 / ne_house1 → one ``LODhouse1``, the
+      vanilla ``LODhotel`` for my_hotel): then ``LOD<base>`` as before — a
+      unique name the game doesn't pair (the caller warns).
+    """
+    if last and is_lod_name(last):
+        return last
+    if hd and game in ('III', 'VC'):
+        if own.lower().startswith('lod') and lod_pairs_by_name(own, hd):
+            return own
+        name = default_lod_name(hd, game)
+        if not (taken and taken(name)):
+            return name
+        if ('LOD' + base).lower() == name.lower():
+            return 'LOD' + hd
+    return 'LOD' + base
+
+
+def lod_owner_by_tail(lod_name: str, models) -> Optional[str]:
+    """III/VC: the model the game gives the LOD *lod_name* — the first by ID
+    whose name matches it from the 4th character on (FindRelatedModel; VC
+    looks in the LOD's own IDE file only). *models* — ``(model_id, name)``
+    pairs; an ID of 0 (not assigned yet) comes after the real ones. None
+    when no model matches."""
+    best = None
+    for i, (mid, name) in enumerate(models):
+        if name == lod_name or not lod_pairs_by_name(lod_name, name):
+            continue
+        key = (int(mid or 0) <= 0, int(mid or 0), i)
+        if best is None or key < best[0]:
+            best = (key, name)
+    return best[1] if best else None
+
+
 def lod_instance_indices(instances) -> set:
     """Return the set of IplInstance indices that another instance points to
     via its ``lod_index`` field — these are the authoritative LOD models.

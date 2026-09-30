@@ -7,6 +7,7 @@ from ..core.paths import (
     TrackFile, TrackNode, write_track,
     NodesFile, PathNode, NaviNode, PathLink, write_nodes,
     PathIPLFile, PathIPLGroup, PathIPLNode, write_paths_ipl,
+    PATH_FLAG_ROADBLOCK, PATH_FLAG_TRAFFIC_MASK,
 )
 
 
@@ -256,6 +257,32 @@ def export_nodes(filepath: str, objects=None, *, fla4: bool = False,
     return n_written
 
 
+def _path_ipl_real_to_full(obj):
+    """Curve point index → pn_<slot>_* slot (same mapping as the
+    path_node_flag operator): the curve holds only nodes with
+    node_type > 0, import stores pn_<slot>_* for every slot incl. padding."""
+    pn_count = int(obj.get('pn_count', 0) or 0)
+    return [j for j in range(pn_count)
+            if int(obj.get(f'pn_{j}_type', 0) or 0) > 0]
+
+
+def _path_ipl_node_props(obj, slot, defaults):
+    """PathIPLNode fields of one node from pn_<slot>_*; slot None → defaults."""
+    if slot is None:
+        return defaults
+    p = f'pn_{slot}_'
+    return dict(
+        area_id=obj.get(p + 'area', defaults['area_id']),
+        unknown=obj.get(p + 'unk', defaults['unknown']),
+        width=obj.get(p + 'width', defaults['width']),
+        left_lanes=obj.get(p + 'll', defaults['left_lanes']),
+        right_lanes=obj.get(p + 'rl', defaults['right_lanes']),
+        median_width=obj.get(p + 'mw', defaults['median_width']),
+        flags=obj.get(p + 'flags', defaults['flags']),
+        spawn_rate=obj.get(p + 'spawn', defaults['spawn_rate']),
+    )
+
+
 def export_paths_ipl(filepath: str, objects=None):
     """Export curve objects as paths.ipl.
 
@@ -290,50 +317,64 @@ def export_paths_ipl(filepath: str, objects=None):
         def_flags = obj.get('pn_0_flags', 1)
         def_spawn = obj.get('pn_0_spawn', 0)
 
+        # Roadblock / traffic light are per-point toggles (path_node_flag):
+        # points past the slots and synthesized link nodes don't inherit
+        # them from node 0.
+        fill_flags = int(def_flags) & ~(PATH_FLAG_ROADBLOCK
+                                        | PATH_FLAG_TRAFFIC_MASK)
+
+        # Each point keeps its own imported node (pn_<slot>_*); points past
+        # the imported slots (added later) get node 0's values minus those
+        # toggles.
+        defaults = dict(area_id=0, unknown=0.0, width=def_width,
+                        left_lanes=def_ll, right_lanes=def_rl,
+                        median_width=def_mw, flags=fill_flags,
+                        spawn_rate=def_spawn)
+        real_to_full = _path_ipl_real_to_full(obj)
+        all_nodes = [
+            (co, _path_ipl_node_props(
+                obj, real_to_full[k] if k < len(real_to_full) else None,
+                defaults))
+            for k, co in enumerate(all_points)]
+
         # Max internal nodes per group = 10 (slot 0-9 internal, 10-11 for external links)
         MAX_INTERNAL = 10
         chunks = []
-        for i in range(0, len(all_points), MAX_INTERNAL):
-            chunks.append(all_points[i:i + MAX_INTERNAL])
+        for i in range(0, len(all_nodes), MAX_INTERNAL):
+            chunks.append(all_nodes[i:i + MAX_INTERNAL])
 
         for ci, chunk in enumerate(chunks):
             group = PathIPLGroup(group_type=group_type, external_index=-1)
 
             # Internal nodes (type=2)
-            for pi, co in enumerate(chunk):
+            for pi, (co, props) in enumerate(chunk):
                 next_link = pi + 1 if pi < len(chunk) - 1 else -1
                 node = PathIPLNode(
                     node_type=2,
                     link_id=next_link,
-                    area_id=0,
                     x=co.x, y=co.y, z=co.z,
-                    width=def_width,
-                    left_lanes=def_ll,
-                    right_lanes=def_rl,
-                    median_width=def_mw,
-                    flags=def_flags,
-                    spawn_rate=def_spawn,
+                    **props,
                 )
                 group.nodes.append(node)
 
             # External link to next group (type=1)
             if ci < len(chunks) - 1:
-                next_co = chunks[ci + 1][0]
+                next_co = chunks[ci + 1][0][0]
                 group.nodes.append(PathIPLNode(
                     node_type=1, link_id=0, area_id=0,
                     x=next_co.x, y=next_co.y, z=next_co.z,
                     width=def_width, left_lanes=def_ll, right_lanes=def_rl,
-                    flags=def_flags,
+                    flags=fill_flags,
                 ))
 
             # External link to previous group (type=1)
             if ci > 0:
-                prev_co = chunks[ci - 1][-1]
+                prev_co = chunks[ci - 1][-1][0]
                 group.nodes.append(PathIPLNode(
                     node_type=1, link_id=len(chunk) - 1, area_id=0,
                     x=prev_co.x, y=prev_co.y, z=prev_co.z,
                     width=def_width, left_lanes=def_ll, right_lanes=def_rl,
-                    flags=def_flags,
+                    flags=fill_flags,
                 ))
 
             data.groups.append(group)

@@ -373,52 +373,26 @@ class IdeIplImgFloater(B.Floater):
             pass
 
     def _draw_ide_status(self, context, rect):
-        import os
+        # Тот же статус, что в N-панели (сравнение с тем, что уйдёт в файл).
+        from ... import T
+        from ..map_link import ide_status
         ao = context.active_object
         if ao is None or ao.type != 'MESH' or not hasattr(ao, 'inu'):
             return
-        inu = ao.inu
-        if not inu.ide_linked or inu.model_id <= 0:
-            self._draw_label_line(rect, "Не в IDE",
-                                  icon_name='radiobut_off')
-            return
-        drifted = (
-            abs(inu.draw_distance - inu.ide_last_draw_distance) > 1e-3
-            or (inu.txd_name or '') != (inu.ide_last_txd_name or '')
-            or int(inu.ide_flags) != int(inu.ide_last_flags)
-        )
-        if drifted:
-            self._draw_label_line(rect, "В IDE, разошлись",
-                                  icon_name='error')
-        else:
-            tgt = os.path.basename(inu.ide_target_file or '') or '?'
-            self._draw_label_line(rect, f"В IDE ({tgt})",
-                                  icon_name='checkmark')
+        text, arg, icon, _id_changed = ide_status(ao)
+        self._draw_label_line(rect, T(text).format(arg),
+                              icon_name=icon.lower())
 
     def _draw_ipl_status(self, context, rect):
-        import os
+        from ... import T
+        from ..map_link import ipl_status, panel_main
         ao = context.active_object
         if ao is None or ao.type != 'MESH' or not hasattr(ao, 'inu'):
             return
-        inu = ao.inu
-        if not inu.ipl_uuid:
-            self._draw_label_line(rect, "Не в IPL",
-                                  icon_name='radiobut_off')
-            return
-        cur = ao.matrix_world.translation
-        lp = inu.ipl_last_pos
-        drifted = (
-            abs(cur.x - lp[0]) > 1e-4
-            or abs(cur.y - lp[1]) > 1e-4
-            or abs(cur.z - lp[2]) > 1e-4
-        )
-        if drifted:
-            self._draw_label_line(rect, "В IPL, разошлись",
-                                  icon_name='error')
-        else:
-            tgt = os.path.basename(inu.ipl_target_file or '') or '?'
-            self._draw_label_line(rect, f"В IPL ({tgt})",
-                                  icon_name='checkmark')
+        # Меш модели из нескольких мешей — статус её главного меша.
+        text, arg, icon = ipl_status(panel_main(ao))
+        self._draw_label_line(rect, T(text).format(arg),
+                              icon_name=icon.lower())
 
     def _draw_section_header(self, rect, label, icon_name):
         """Section header inside a `_draw_box`: icon at left edge, label

@@ -11,7 +11,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "INU_tools"))
 
-from core.model_classify import classify_model, explicit_name_type  # noqa: E402
+from core.model_classify import classify_model, explicit_name_type, reuse_key  # noqa: E402
 from core.ipl import strip_lod_marker  # noqa: E402
 
 
@@ -178,3 +178,22 @@ def test_strip_lod_marker_unchanged_without_lod():
 
 def test_strip_lod_marker_prefix():
     assert strip_lod_marker("LODbush2b") == 'bush2b'
+
+
+# ── reuse_key (Import from IMG: модель из сцены по ID + имени) ──
+
+def test_reuse_key_lod_forms():
+    assert reuse_key('lodfoo') == reuse_key('foo_LOD') == 'foo'
+    assert reuse_key('des_damlodbit04') == reuse_key('des_dambit04_LOD')
+    assert reuse_key('tatar_str_1LOD') == 'tatar_str_1'
+
+
+def test_reuse_key_dff_markers():
+    assert reuse_key('Foo_DFF') == reuse_key('foo')
+    # LOD, опознанный только по lod_index: импорт даёт «<имя>_DFF_LOD».
+    assert reuse_key('xyz_far_DFF_LOD') == reuse_key('xyz_far')
+
+
+def test_reuse_key_other_name_and_empty():
+    assert reuse_key('mybox') != reuse_key('othername')
+    assert reuse_key('') == ''

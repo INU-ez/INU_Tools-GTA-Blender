@@ -626,6 +626,35 @@ def _sun_loop_intensity(light_obj, loop_world_no, loop_vidx, world_pos,
 _BAKE_LIGHT_TYPES = ('POINT', 'SUN', 'SPOT', 'AREA')
 
 
+def _light_world_pos(light_obj):
+    """Мировая позиция лампы (родитель / constraint / delta учтены).
+    .location — координаты относительно родителя: лампа с родителем
+    светила из неверной точки, хотя направление уже шло из matrix_world."""
+    return np.array(light_obj.matrix_world.translation, dtype=np.float32)
+
+
+def _is_2dfx_preview_lamp(light_obj):
+    """Превью-лампа 2DFX-света (fx_preview.create_light_preview) — подсветка
+    вьюпорта, не источник прилайта (2DFX-свет игра рисует сама; в Max 2DFX —
+    хелперы и не запекаются). Её .location = (0,0,0) у 2DFX Empty: раньше
+    она пеклась из мирового центра, из мировой позиции — выжигала бы пятно
+    у каждого фонаря. Маркер inu_2dfx_preview; риги до маркера — ребёнок
+    2DFX Empty с inu.type NON."""
+    if light_obj.get("inu_2dfx_preview"):
+        return True
+    par = light_obj.parent
+    return (par is not None
+            and getattr(getattr(par, 'inu', None), 'type', '') == '2DFX'
+            and getattr(getattr(light_obj, 'inu', None), 'type', '') == 'NON')
+
+
+def _allowed_light_types(allowed_types):
+    """Типы ламп для запекания. None — все (_BAKE_LIGHT_TYPES); явный набор
+    соблюдается, даже пустой: все тумблеры Point/Sun/Spot/Area выкл. =
+    ламп нет (раньше пустой набор читался как «все типы»)."""
+    return set(_BAKE_LIGHT_TYPES) if allowed_types is None else set(allowed_types)
+
+
 def _spot_cone_factor(light_obj, loop_world_pos):
     """Per-loop множитель конуса SPOT (1 внутри, 0 снаружи, мягкий край по
     spot_blend). Для НЕ-SPOT возвращает None (полный вклад). AREA и POINT
@@ -640,7 +669,7 @@ def _spot_cone_factor(light_obj, loop_world_pos):
     if fn < 1e-6:
         return None
     fwd /= fn
-    lp = np.array(light_obj.location, dtype=np.float32)
+    lp = _light_world_pos(light_obj)
     d = loop_world_pos - lp[None, :]           # направление свет → поверхность
     dn = np.linalg.norm(d, axis=1, keepdims=True)
     dn[dn < 1e-6] = 1.0
@@ -655,8 +684,11 @@ def _spot_cone_factor(light_obj, loop_world_pos):
 
 def _sample_equirect(image, dirs, azimuth_offset=0.0):
     """Сэмпл equirectangular HDRI по направлениям dirs (n,3) → (n,3) RGB.
-    Nearest-выборка, векторизовано. azimuth_offset — поворот мира по Z
-    (радианы). None если картинка недоступна."""
+    Nearest-выборка, векторизовано. Развёртка как у Cycles
+    direction_to_equirectangular / EEVEE node_tex_environment_equirectangular:
+    +X → u 0.5, +Y → u 0.25, зенит → верхняя строка. azimuth_offset = a
+    (радианы): поиск идёт по az' = az + a (как Vector Rotate / Mapping POINT
+    по Z). None если картинка недоступна."""
     import math
     try:
         W, H = int(image.size[0]), int(image.size[1])
@@ -671,7 +703,7 @@ def _sample_equirect(image, dirs, azimuth_offset=0.0):
     nrm = np.linalg.norm(d, axis=1, keepdims=True)
     nrm[nrm < 1e-6] = 1.0
     d = d / nrm
-    u = 0.5 + (np.arctan2(d[:, 1], d[:, 0]) - float(azimuth_offset)) / (2.0 * math.pi)
+    u = 0.5 - (np.arctan2(d[:, 1], d[:, 0]) + float(azimuth_offset)) / (2.0 * math.pi)
     u = np.mod(u, 1.0)                     # заворот по горизонтали
     v = 0.5 + np.arcsin(np.clip(d[:, 2], -1.0, 1.0)) / math.pi
     ix = np.clip((u * W).astype(np.int32), 0, W - 1)
@@ -740,6 +772,54 @@ def _viewport_hdri_sample(loop_world_no):
     return col * intensity
 
 
+_MAPPING_WARNED = set()
+
+
+def _env_mapping_z_offset(env, world_name=''):
+    """Поворот мира по Z из узла Mapping на входе Vector у Environment
+    Texture → azimuth_offset для _sample_equirect. Cycles (svm/mapping_util.h):
+    POINT/VECTOR/NORMAL — R·v (поиск по az + rz), TEXTURE — Rᵀ·v (az − rz).
+    Берётся только Z; X/Y, связанный Rotation, Location и неравномерный /
+    отрицательный Scale не учитываются (одна строка в консоль на узел).
+    0.0 если Mapping нет, он выключен (mute) или что-то не прочиталось."""
+    try:
+        sock = env.inputs['Vector']
+        if not sock.is_linked:
+            return 0.0
+        node = sock.links[0].from_node
+        for _ in range(16):
+            if node.type != 'REROUTE' or not node.inputs[0].links:
+                break
+            node = node.inputs[0].links[0].from_node
+        if node.type != 'MAPPING' or getattr(node, 'mute', False):
+            return 0.0
+        vt = node.vector_type
+        rot = node.inputs['Rotation']
+        rz = float(rot.default_value[2])
+        try:
+            key = (world_name, node.name)
+            if key not in _MAPPING_WARNED:
+                rx, ry = rot.default_value[0], rot.default_value[1]
+                sx, sy, sz = node.inputs['Scale'].default_value
+                ignored = (rot.is_linked
+                           or abs(rx) > 1e-6 or abs(ry) > 1e-6
+                           or abs(sx - sy) > 1e-6 or abs(sx - sz) > 1e-6
+                           or min(sx, sy, sz) <= 0.0)
+                if vt in ('POINT', 'TEXTURE') and not ignored:
+                    ignored = any(abs(c) > 1e-6
+                                  for c in node.inputs['Location'].default_value)
+                if ignored:
+                    _MAPPING_WARNED.add(key)
+                    print("[INU prelight] World Mapping: only Z rotation is used "
+                          "(X/Y rotation, linked Rotation, location, "
+                          "non-uniform/negative scale ignored)")
+        except Exception:
+            pass
+        return -rz if vt == 'TEXTURE' else rz
+    except Exception:
+        return 0.0
+
+
 def _world_env_sample(loop_world_no):
     """Вклад мира/HDRI (World) на каждый loop по направлению нормали.
     Приоритет — HDRI вьюпорта (то, что юзер выбирает в Шейдинг вьюпорта),
@@ -767,7 +847,10 @@ def _world_env_sample(loop_world_no):
                 except Exception:
                     strength = 1.0
             if env is not None:
-                col = _sample_equirect(env.image, loop_world_no)
+                col = _sample_equirect(
+                    env.image, loop_world_no,
+                    azimuth_offset=_env_mapping_z_offset(
+                        env, getattr(world, 'name', '')))
                 if col is not None:
                     return col * strength
             if bg is not None:
@@ -795,13 +878,15 @@ def bake_vertex_colors_from_lights(obj, use_shadows=True,
     if obj is None or obj.type != 'MESH':
         return False, "Select a mesh object!"
 
-    allowed = set(allowed_types) if allowed_types else set(_BAKE_LIGHT_TYPES)
+    allowed = _allowed_light_types(allowed_types)
     lights = []
     for light_obj in bpy.data.objects:
         if light_obj.type == 'LIGHT' and light_obj.data.type in allowed:
             if not light_obj.visible_get():
                 continue
             if light_obj.hide_render:
+                continue
+            if _is_2dfx_preview_lamp(light_obj):
                 continue
             lights.append(light_obj)
 
@@ -891,7 +976,7 @@ def bake_vertex_colors_from_lights(obj, use_shadows=True,
             total += sun_i[:, None] * light_color[None, :]
             continue
 
-        light_pos = np.array(light_obj.location, dtype=np.float32)
+        light_pos = _light_world_pos(light_obj)
 
         # ── Per-vertex shadow raycast (cached, reused by all corners)
         shadow_per_vert = np.ones(n_verts, dtype=np.float32)
@@ -956,13 +1041,15 @@ def bake_vertex_colors_simple(obj, ambient=0.05, intensity_mult=0.008, gamma=1.8
     if obj is None or obj.type != 'MESH':
         return False, "Select a mesh object!"
 
-    allowed = set(allowed_types) if allowed_types else set(_BAKE_LIGHT_TYPES)
+    allowed = _allowed_light_types(allowed_types)
     lights = []
     for light_obj in bpy.data.objects:
         if light_obj.type == 'LIGHT' and light_obj.data.type in allowed:
             if not light_obj.visible_get():
                 continue
             if light_obj.hide_render:
+                continue
+            if _is_2dfx_preview_lamp(light_obj):
                 continue
             lights.append(light_obj)
 
@@ -1042,7 +1129,7 @@ def bake_vertex_colors_simple(obj, ambient=0.05, intensity_mult=0.008, gamma=1.8
             total += sun_i[:, None] * light_color[None, :]
             continue
 
-        light_pos = np.array(light_obj.location, dtype=np.float32)
+        light_pos = _light_world_pos(light_obj)
 
         shadow_per_vert = np.ones(n_verts, dtype=np.float32)
         if use_shadows and depsgraph is not None:
@@ -1128,7 +1215,8 @@ def prelight_foliage(obj, *, material_index=None, select_only=False,
                        <1 — тёмную.
       height_dark    — доп. затемнение НИЗА кроны [0..1] (самозатенение
                        сверху); 0 = выкл.
-      tint           — цвет листвы (RGB 0..1); подмешивается multiply,
+      light_tint / shadow_tint — цвет листвы, ЛИНЕЙНЫЙ RGB 0..1 (оператор
+                       переводит sRGB палитры); подмешивается multiply,
                        сохраняя затенение.
       tint_strength  — сила tint [0..1]; 0 = цвет не меняется.
       metric         — 'SPHERE' (3D-расстояние от центроида) или
@@ -1140,7 +1228,8 @@ def prelight_foliage(obj, *, material_index=None, select_only=False,
                        (заменить vcol целиком).
 
     Пишет в активный color attribute (как bake_vertex_colors_*). Loops
-    вне маски (ствол, не-выделенное) сохраняют прежний цвет.
+    вне маски (ствол, не-выделенное) сохраняют прежний цвет; альфа слоя
+    (нарисованная прозрачность) не трогается (новый слой — белый, альфа 1).
 
     Возвращает (ok: bool, message: str)."""
     if obj is None or obj.type != 'MESH':
@@ -1317,7 +1406,6 @@ def prelight_foliage(obj, *, material_index=None, select_only=False,
     else:                                            # 'REPLACE'
         out = shade
     flat4[mask, 0:3] = np.clip(out[mask], 0.0, 1.0)
-    flat4[mask, 3] = 1.0
     color_attr.data.foreach_set('color', flat4.ravel())
 
     n_painted = int(mask.sum())
@@ -3393,7 +3481,8 @@ def scatter_color_from_selected(obj, color, strength=1.0, distance=1.0):
     полигонов — не тащит prelight под ногами, а замешивает указанный
     цвет с убыванием по расстоянию.
 
-    color   — (r, g, b, a) target color, 0..1.
+    color   — (r, g, b[, a]) target color, линейный 0..1; смешивается
+              только RGB — альфа слоя сохраняется (a не используется).
     strength — 0..1, сила вклада в центре (0 — ничего не делать,
                1 — полная замена цвета на target в центре).
     distance — 0..1, радиус как доля половины bbox-диагонали меша.
@@ -3479,13 +3568,12 @@ def scatter_color_from_selected(obj, color, strength=1.0, distance=1.0):
     color_attr.data.foreach_get('color', flat)
     existing = flat.reshape(n_loops, 4)
 
-    target = np.array(
-        (color[0], color[1], color[2],
-         color[3] if len(color) >= 4 else 1.0),
-        dtype=np.float32)
+    target = np.array((color[0], color[1], color[2]), dtype=np.float32)
 
+    # Только RGB: альфа (нарисованная прозрачность) остаётся как была.
     f = loop_blend[:, None]
-    new_colors = existing * (1.0 - f) + target[None, :] * f
+    new_colors = existing.copy()
+    new_colors[:, :3] = existing[:, :3] * (1.0 - f) + target[None, :] * f
     color_attr.data.foreach_set('color', new_colors.ravel())
 
     if original_mode == 'EDIT':

@@ -1827,7 +1827,7 @@ class DffClump:
         # глобальный реестр, затем кламп резолвит ссылки материалов (UVAnim
         # PLG 0x135) по имени. Если положить его в расширение клампа — игра
         # словарь не находит, и загрузка модели падает (модель невидима).
-        # Добавлено в RW 3.5 (VC); для III (RW 3.3) пропускаем.
+        # RW 3.5+/SA; в III/VC плагина RpUVAnim нет (re3/reVC PluginAttach).
         pre = self.pre_clump_data
         uv_dict_bytes = b''
         if (self.uv_anim_dict and self.uv_anim_dict.anims

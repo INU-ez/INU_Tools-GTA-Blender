@@ -149,6 +149,7 @@ def export_ide(filepath: str, objects: list) -> None:
     _model_id_by_obj_id: dict[int, int] = {}
 
     from ..tools.model_utils import get_model_type
+    hd_of = None
     for obj in objects:
         if obj.type != 'MESH':
             continue
@@ -160,11 +161,17 @@ def export_ide(filepath: str, objects: list) -> None:
 
         inu = getattr(obj, 'inu', None)
 
-        # Model name. A LOD keeps its LOD<base> marker (matching the exported
-        # LOD<base>.dff) so it gets its own entry instead of deduping with the
-        # DFF; everything else uses the clean base name.
+        # Model name. A LOD gets its own name — the one it was imported /
+        # written with (tatar_str_1LOD), else LOD<base>; in III/VC the game's
+        # rule for its model (map_link.lod_model_name, as Add to IDE and the
+        # exported .dff) — so it gets its own entry instead of deduping with
+        # the DFF; everything else uses the clean base name.
         if mt == 'LOD':
-            model_name = "LOD" + base
+            from .map_link import lod_hd_names, lod_model_name
+            if hd_of is None:
+                hd_of = lod_hd_names(objects)
+            model_name = lod_model_name(obj, base, hd=hd_of.get(id(obj), ''),
+                                        game=_scene_game())
         else:
             model_name = _clean_model_name(obj.name)
 

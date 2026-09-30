@@ -50,6 +50,61 @@ def _col_light_invalidate_preview(self, context):
                 area.tag_redraw()
 
 
+# ── Яркость грани → уровень COL-света: ОДНА формула для превью и запекания
+# (раньше «Порог» был только в превью — запечённое расходилось с цифрами).
+
+def _col_gamma(edge):
+    """Гамма из «Края»: ≥ 0 — расширить светлое (гамма < 1), < 0 — сжать."""
+    if edge >= 0:
+        return 1.0 / (1.0 + edge * 4.0)
+    return 1.0 + abs(edge) * 4.0
+
+
+def _col_threshold(slider):
+    """Слайдер «Порог» 0..100 → доля яркости (100 − s) / 10000; 100 = без порога."""
+    s = int(slider)
+    return (100 - s) / 10000.0 if s < 100 else 0.0
+
+
+def _col_level(avg, vmin, vmax, gamma=1.0, contrast=0.0, threshold=0.0):
+    """Средняя яркость грани 0..1 → уровень света COL 0..15:
+    гамма «Края», S-контраст, порог (ниже — 0, выше — растяжка в Min..Max)."""
+    avg = min(1.0, max(0.0, avg))
+    if avg > 0.0 and gamma != 1.0:
+        avg = avg ** gamma
+    if contrast > 0.0:
+        k = 1.0 + contrast * 10.0
+        if avg < 0.5:
+            avg = 0.5 * (2.0 * avg) ** k
+        else:
+            avg = 1.0 - 0.5 * (2.0 * (1.0 - avg)) ** k
+    if threshold > 0.0 and avg < threshold:
+        return 0
+    if 0.0 < threshold < 1.0:
+        avg = (avg - threshold) / (1.0 - threshold)
+    return min(15, max(0, round(vmin + avg * (vmax - vmin))))
+
+
+def _poly_avg(mesh, brightness, domain='CORNER'):
+    """Calculate per-polygon average brightness.
+
+    ``brightness`` is indexed by loop for CORNER-domain attributes and
+    by vertex for POINT-domain attributes, so resolve the right index
+    per loop depending on ``domain``.
+    """
+    per_vertex = (domain == 'POINT')
+    loops = mesh.loops
+    result = {}
+    for poly in mesh.polygons:
+        avg = 0.0
+        for loop_idx in poly.loop_indices:
+            idx = loops[loop_idx].vertex_index if per_vertex else loop_idx
+            avg += brightness[idx]
+        avg /= len(poly.loop_indices)
+        result[poly.index] = avg
+    return result
+
+
 def _col_light_get_preview_data(context):
     """Compute or return cached per-polygon night light values."""
     obj = context.active_object
@@ -74,8 +129,8 @@ def _col_light_get_preview_data(context):
     edge = getattr(scene.inu_settings, 'gtatools_col_light_edge', 0.0)
     contrast = getattr(scene.inu_settings, 'gtatools_col_light_contrast', 0.0)
     # Threshold slider: 0=max cutoff, 100=no cutoff. Real threshold = (100 - slider) / 10000
-    _thr_slider = getattr(scene.inu_settings, 'gtatools_col_light_threshold', 0)
-    threshold = (100 - _thr_slider) / 10000.0 if _thr_slider < 100 else 0.0
+    threshold = _col_threshold(
+        getattr(scene.inu_settings, 'gtatools_col_light_threshold', 0))
 
     cache = _col_light_preview_cache
     key = (id(obj), obj.name, active_attr.name, val_min, val_max, edge, contrast, threshold, len(obj.data.polygons))
@@ -85,12 +140,9 @@ def _col_light_get_preview_data(context):
     color_attr = active_attr
 
     # Gamma from edge: positive = expand (gamma<1), negative = contract (gamma>1)
-    if edge >= 0:
-        gamma = 1.0 / (1.0 + edge * 4.0)
-    else:
-        gamma = 1.0 + abs(edge) * 4.0
+    gamma = _col_gamma(edge)
 
-    # Per-loop brightness
+    # Brightness per element: per loop (CORNER) or per vertex (POINT)
     loop_brightness = []
     for i in range(len(color_attr.data)):
         c = color_attr.data[i].color
@@ -98,35 +150,14 @@ def _col_light_get_preview_data(context):
 
     mat_w = obj.matrix_world
 
-    # First pass: compute light value per polygon
+    # First pass: compute light value per polygon — same formula as the bake.
+    # Домен слоя учитывается: у POINT-слоя data по вершинам, не по углам
+    # (индекс угла давал IndexError в draw-хендлере → пустое превью).
+    avgs = _poly_avg(mesh, loop_brightness, compat.vcol_domain(color_attr))
     poly_vals = {}
     for poly in mesh.polygons:
-        avg = 0.0
-        for loop_idx in poly.loop_indices:
-            avg += loop_brightness[loop_idx]
-        avg /= len(poly.loop_indices)
-        avg = min(1.0, max(0.0, avg))
-
-        # Apply gamma curve (edge)
-        if avg > 0.0:
-            avg = avg ** gamma
-
-        # Apply S-curve contrast
-        if contrast > 0.0:
-            k = 1.0 + contrast * 10.0
-            if avg < 0.5:
-                avg = 0.5 * (2.0 * avg) ** k
-            else:
-                avg = 1.0 - 0.5 * (2.0 * (1.0 - avg)) ** k
-
-        # Threshold: below threshold → 0, above → map to val_min..val_max
-        if threshold > 0.0 and avg < threshold:
-            poly_vals[poly.index] = 0
-        else:
-            if threshold > 0.0 and threshold < 1.0:
-                avg = (avg - threshold) / (1.0 - threshold)
-            value = val_min + avg * (val_max - val_min)
-            poly_vals[poly.index] = min(15, max(0, round(value)))
+        poly_vals[poly.index] = _col_level(avgs[poly.index], val_min, val_max,
+                                           gamma, contrast, threshold)
 
     # Build adjacency: vertex → polygons
     vert_to_polys = {}
@@ -313,44 +344,6 @@ class GTATOOLS_OT_bake_col_light(bpy.types.Operator):
             result.append(max(c[0], c[1], c[2]))
         return result
 
-    def _poly_avg(self, mesh, brightness, domain='CORNER'):
-        """Calculate per-polygon average brightness.
-
-        ``brightness`` is indexed by loop for CORNER-domain attributes and
-        by vertex for POINT-domain attributes, so resolve the right index
-        per loop depending on ``domain``.
-        """
-        per_vertex = (domain == 'POINT')
-        loops = mesh.loops
-        result = {}
-        for poly in mesh.polygons:
-            avg = 0.0
-            for loop_idx in poly.loop_indices:
-                idx = loops[loop_idx].vertex_index if per_vertex else loop_idx
-                avg += brightness[idx]
-            avg /= len(poly.loop_indices)
-            result[poly.index] = avg
-        return result
-
-    def _map_to_range(self, avg, light_min, light_max, gamma=1.0, contrast=0.0):
-        """Map brightness 0.0-1.0 to light_min-light_max range with edge/contrast."""
-        avg = min(1.0, max(0.0, avg))
-
-        # Apply gamma (edge)
-        if avg > 0.0 and gamma != 1.0:
-            avg = avg ** gamma
-
-        # Apply S-curve contrast
-        if contrast > 0.0:
-            k = 1.0 + contrast * 10.0
-            if avg < 0.5:
-                avg = 0.5 * (2.0 * avg) ** k
-            else:
-                avg = 1.0 - 0.5 * (2.0 * (1.0 - avg)) ** k
-
-        value = light_min + avg * (light_max - light_min)
-        return min(15, max(0, round(value)))
-
     def execute(self, context):
         obj = context.active_object
         mesh = obj.data
@@ -361,13 +354,12 @@ class GTATOOLS_OT_bake_col_light(bpy.types.Operator):
         night_min = scene.inu_settings.gtatools_col_night_min
         night_max = scene.inu_settings.gtatools_col_night_max
 
-        # Edge/contrast settings
+        # Edge/contrast/threshold settings — те же, что у превью
         edge = getattr(scene.inu_settings, 'gtatools_col_light_edge', 0.0)
         contrast = getattr(scene.inu_settings, 'gtatools_col_light_contrast', 0.0)
-        if edge >= 0:
-            gamma = 1.0 / (1.0 + edge * 4.0)
-        else:
-            gamma = 1.0 + abs(edge) * 4.0
+        gamma = _col_gamma(edge)
+        threshold = _col_threshold(
+            getattr(scene.inu_settings, 'gtatools_col_light_threshold', 0))
 
         # Day source: "Day" layer or active
         day_attr = compat.vcol_get(mesh, "Day") or compat.vcol_active(mesh)
@@ -381,14 +373,16 @@ class GTATOOLS_OT_bake_col_light(bpy.types.Operator):
         day_brightness = self._read_brightness(day_attr)
         night_brightness = self._read_brightness(night_attr)
 
-        day_avg = self._poly_avg(mesh, day_brightness, compat.vcol_domain(day_attr))
-        night_avg = self._poly_avg(mesh, night_brightness, compat.vcol_domain(night_attr))
+        day_avg = _poly_avg(mesh, day_brightness, compat.vcol_domain(day_attr))
+        night_avg = _poly_avg(mesh, night_brightness, compat.vcol_domain(night_attr))
 
         # Calculate per-polygon levels
         poly_levels = {}
         for poly in mesh.polygons:
-            d = self._map_to_range(day_avg[poly.index], day_min, day_max, gamma, contrast)
-            n = self._map_to_range(night_avg[poly.index], night_min, night_max, gamma, contrast)
+            d = _col_level(day_avg[poly.index], day_min, day_max,
+                           gamma, contrast, threshold)
+            n = _col_level(night_avg[poly.index], night_min, night_max,
+                           gamma, contrast, threshold)
             poly_levels[poly.index] = (d, n)
 
         # Group polygons by (material_index, day_level, night_level)

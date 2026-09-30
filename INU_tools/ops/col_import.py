@@ -174,6 +174,19 @@ def _create_box(box, collection, model_name: str, index: int):
     return empty
 
 
+def _create_prim_holder(model: ColModel, collection):
+    """Map import, a model with spheres/boxes but no mesh at all: a mesh
+    object WITHOUT geometry, «<name>_COL» tagged COL, holds them as its
+    children (and the bounds) — col_export measures primitives from the
+    COL mesh. Not an empty: COL export would write an empty as a sphere
+    and DFF export would take it for a frame."""
+    name = (model.model_name or "col_model") + '_COL'
+    obj = bpy.data.objects.new(name, bpy.data.meshes.new(name))
+    obj.inu.type = 'COL'
+    collection.objects.link(obj)
+    return obj
+
+
 def import_col(filepath: str, context=None, material_cache=None):
     """
     Import a COL file into Blender.
@@ -213,10 +226,38 @@ def _get_or_make_collision_collection(parent):
         return parent
 
 
+def _place_on_models(groups, name_index, own):
+    """Single-file import: every object of a COL model (mesh, shadow,
+    spheres, boxes) moves by the world position of the scene model with the
+    same name (or <name>_dff) — the primitives follow the mesh, so they stay
+    where they are relative to it (col_export measures them from the mesh).
+
+    ``groups`` = [(model_name, [objects])], created unparented at COL-local
+    positions; ``own`` = the objects of this import (never a match).
+    A model without a mesh (only spheres/boxes) stays put: export has no
+    mesh to measure it from and writes its obj.location as is.
+    The caller refreshes the view layer so matrix_world is current."""
+    placed = 0
+    for base, objs in groups:
+        if not any(getattr(o, 'type', None) == 'MESH' for o in objs):
+            continue
+        low = base.lower()
+        match = name_index.get(low) or name_index.get(low + '_dff')
+        if match is None or match in own:
+            continue
+        off = match.matrix_world.translation.copy()
+        for o in objs:
+            if getattr(o, 'parent', None) is None:   # children follow
+                o.location = o.location + off
+        placed += 1
+    return placed
+
+
 def import_col_from_models(models, *, bulk_mode: bool = False,
                            target_collection=None,
                            skip_position_match: bool = False,
-                           material_cache=None):
+                           material_cache=None,
+                           with_prims=None):
     """Build Blender objects from already-parsed ColModel list.
 
     Mirrors ``import_dff_from_clump``: the binary parse (``read_col``)
@@ -228,8 +269,8 @@ def import_col_from_models(models, *, bulk_mode: bool = False,
         models: list of parsed ``ColModel`` instances.
         bulk_mode: when True, skip ``bpy.ops.object.select_all`` and
                    position-match to DFF — caller handles placement
-                   itself (this is the map-import case where we copy
-                   the object per IPL instance).
+                   itself (this is the map-import case: the collision
+                   goes to the model's first IPL instance).
         target_collection: destination collection; falls back to the
                    active one.
         skip_position_match: force-skip the «find DFF with same name
@@ -237,7 +278,12 @@ def import_col_from_models(models, *, bulk_mode: bool = False,
         material_cache: optional dict shared across calls so duplicate
                    surfaces reuse a single material datablock. Pass
                    the same dict for the entire map import.
+        with_prims: create the spheres/boxes; default ``not bulk_mode``.
+                   In bulk mode they become children of the model's COL
+                   mesh (Import Map places the collision once per model).
     """
+    if with_prims is None:
+        with_prims = not bulk_mode
     if not models:
         raise ValueError("No collision models found in file")
 
@@ -250,7 +296,9 @@ def import_col_from_models(models, *, bulk_mode: bool = False,
     if not bulk_mode:
         collection = _get_or_make_collision_collection(collection)
 
+    groups = []   # (model name, its objects) for the position match below
     for model in models:
+        start = len(imported_objects)
         # Collision mesh
         obj = _create_mesh_from_col(model, collection, 'COL',
                                     material_cache=material_cache)
@@ -263,20 +311,31 @@ def import_col_from_models(models, *, bulk_mode: bool = False,
         if sha_obj:
             imported_objects.append(sha_obj)
 
-        # Spheres + boxes — only for single-file import; map import
-        # uses the mesh collision geometry and skipping primitives
-        # keeps the outliner manageable at 3000+ models. Primitives
-        # are the game's broad-phase shapes (fast collision check
-        # before falling back to mesh-mesh) so on map-import they're
-        # already covered by the mesh collision.
-        if not bulk_mode:
+        # Spheres + boxes are collision of their own, not a broad phase:
+        # the game tests them next to the triangles (reVC Collision.cpp
+        # :513-525 lines, :1760-1782 ProcessSphereSphere/SphereBox); 1319
+        # vanilla SA models have no triangles at all. Single-file import
+        # makes them loose; bulk (map) import only with ``with_prims`` —
+        # as children of the COL mesh (else the shadow mesh, else a mesh
+        # holder without geometry), so they follow its placement.
+        holder = None
+        if with_prims and bulk_mode and (model.spheres or model.boxes):
+            holder = obj or sha_obj
+            if holder is None:
+                holder = _create_prim_holder(model, collection)
+                imported_objects.append(holder)
+        if with_prims:
             for i, sphere in enumerate(model.spheres):
                 emp = _create_sphere(sphere, collection,
                                      model.model_name or "col", i)
+                if holder is not None:
+                    emp.parent = holder
                 imported_objects.append(emp)
             for i, box in enumerate(model.boxes):
                 emp = _create_box(box, collection,
                                   model.model_name or "col", i)
+                if holder is not None:
+                    emp.parent = holder
                 imported_objects.append(emp)
 
         # Preserve the source COL's bounds (sphere radius/center + AABB) on the
@@ -285,7 +344,7 @@ def import_col_from_models(models, *, bulk_mode: bool = False,
         # drive the in-game camera distance AND shadow length — so recomputing
         # from the longer mesh inflates both. build_col_model reuses this on
         # export; models built from scratch (no property) fall back to compute.
-        anchor = obj or sha_obj
+        anchor = obj or sha_obj or holder
         if anchor is not None:
             b = model.bounds
             anchor['inu_col_bounds'] = [
@@ -294,6 +353,9 @@ def import_col_from_models(models, *, bulk_mode: bool = False,
                 float(b.bb_min.x), float(b.bb_min.y), float(b.bb_min.z),
                 float(b.bb_max.x), float(b.bb_max.y), float(b.bb_max.z),
             ]
+
+        if model.model_name:
+            groups.append((model.model_name, imported_objects[start:]))
 
     # Single-file-import UX: place COL at the matching DFF's origin
     # so the user sees them aligned. Map import skips this — it sets
@@ -308,18 +370,11 @@ def import_col_from_models(models, *, bulk_mode: bool = False,
             if candidate.type == 'MESH':
                 name_index.setdefault(candidate.name.lower(), candidate)
 
-        for obj in imported_objects:
-            if obj.type != 'MESH':
-                continue
-            base = obj.name
-            for suffix in ('_col', '_sha', '_COL', '_SHA'):
-                if base.endswith(suffix):
-                    base = base[:-len(suffix)]
-                    break
-            base_low = base.lower()
-            match = name_index.get(base_low) or name_index.get(base_low + '_dff')
-            if match is not None and match is not obj:
-                obj.location = match.location.copy()
+        try:
+            bpy.context.view_layer.update()   # current matrix_world
+        except Exception:
+            pass
+        _place_on_models(groups, name_index, set(imported_objects))
 
     # Select only on single-file import. Bulk map import needs no
     # selection side-effects.
@@ -353,6 +408,7 @@ def _iter_import_col_files(filepaths, target_collection, stats):
     stats.setdefault('imported_objects', [])
     stats.setdefault('files_done', 0)
     stats.setdefault('errors', [])
+    stats.setdefault('groups', [])   # (model name, its objects) — placement
 
     # Share the material cache across files so a multi-file drop with
     # repeating COL surface tuples (very common — vanilla COL only uses
@@ -382,6 +438,7 @@ def _iter_import_col_files(filepaths, target_collection, stats):
             yield (file_idx, max(file_count, 1),
                    f"{label} • {m_idx + 1}/{len(models)}: {mname}")
 
+            start = len(stats['imported_objects'])
             obj = _create_mesh_from_col(
                 model, target_collection, 'COL',
                 material_cache=material_cache)
@@ -402,12 +459,15 @@ def _iter_import_col_files(filepaths, target_collection, stats):
                     box, target_collection,
                     model.model_name or "col", b_idx)
                 stats['imported_objects'].append(emp)
+            if model.model_name:
+                stats['groups'].append(
+                    (model.model_name, stats['imported_objects'][start:]))
 
         stats['files_done'] += 1
 
     # Final position-match pass. Same logic as the synchronous
     # import_col_from_models but applied to ALL imported objects from
-    # this batch (one match-DFF lookup per COL mesh).
+    # this batch (one match-DFF lookup per COL model).
     yield (file_count, max(file_count, 1), "matching DFF positions")
     # One-pass name→object index instead of a per-object whole-scene scan
     # (was O(N²) and froze on multi-model COL libraries — same fix as the
@@ -417,18 +477,12 @@ def _iter_import_col_files(filepaths, target_collection, stats):
         if candidate.type == 'MESH':
             name_index.setdefault(candidate.name.lower(), candidate)
 
-    for obj in stats['imported_objects']:
-        if obj.type != 'MESH':
-            continue
-        base = obj.name
-        for suffix in ('_col', '_sha', '_COL', '_SHA'):
-            if base.endswith(suffix):
-                base = base[:-len(suffix)]
-                break
-        base_low = base.lower()
-        match = name_index.get(base_low) or name_index.get(base_low + '_dff')
-        if match is not None and match is not obj:
-            obj.location = match.location.copy()
+    try:
+        bpy.context.view_layer.update()   # current matrix_world
+    except Exception:
+        pass
+    _place_on_models(stats['groups'], name_index,
+                     set(stats['imported_objects']))
 
     # Selection: deselect all, select all imported, set first as active.
     yield (file_count, max(file_count, 1), "selecting imported")

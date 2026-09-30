@@ -391,6 +391,105 @@ class GTATOOLS_OT_frame_validate(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _mirror_frame_x(local, mirror_x):
+    """Parent-relative frame matrix mirrored across the parent's YZ plane:
+    ``S @ local @ S`` with S = diag(−1, 1, 1, 1). The position's X flips and
+    the rotation is reflected, the determinant stays +1 — a proper frame, no
+    negative scale. (``local @ S`` alone only flipped the local X axis: the
+    twin stayed on the source's side, with det −1.)"""
+    return mirror_x @ local @ mirror_x
+
+
+def _mirror_overlay_key(key):
+    """A reflective-overlay position key (``inu_overlay_faces``, the format
+    of dff_import.overlay_face_key: three sorted "x,y,z" points, 4 decimals)
+    with every x negated and the points re-sorted — the key the exporter
+    computes for the same face of the mirrored mesh."""
+    pts = sorted((-float(x), float(y), float(z))
+                 for x, y, z in (p.split(',') for p in key.split('|')))
+    return "|".join("%.4f,%.4f,%.4f" % p for p in pts)
+
+
+def _mirror_mesh_x(me):
+    """Mirror a copied mesh across its local X to match _mirror_frame_x:
+    vertices (and shape keys) x → −x, face winding reversed (the mirror
+    alone turns faces inside out), per-corner normals mirrored along.
+    flip_normals does not carry custom split normals, so they ride through
+    bmesh in a loop layer (as in the DFF-import weld) and are re-applied.
+    x is negated by hand, not by Mesh.transform: exact down to the sign of
+    zero, so the re-keyed overlay faces still match on export."""
+    import bmesh
+    lno = None
+    if getattr(me, 'has_custom_normals', False) and len(me.loops):
+        try:
+            me.calc_normals_split()   # pre-4.1; 4.1+ computes on access
+        except Exception:
+            pass
+        lno = [(-l.normal[0], l.normal[1], l.normal[2]) for l in me.loops]
+    restored = None
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(me)
+        shape = list(bm.verts.layers.shape.values())
+        for v in bm.verts:
+            v.co.x = -v.co.x
+            for lay in shape:
+                co = v[lay]
+                v[lay] = (-co[0], co[1], co[2])
+        loops = [l for f in bm.faces for l in f.loops]
+        nlay = None
+        if lno is not None and len(lno) == len(loops):
+            nlay = bm.loops.layers.float_vector.new('_inu_mirror_n')
+            for l, n in zip(loops, lno):
+                l[nlay] = n
+        # The importer's raw DFF normals (export falls back to them).
+        alay = bm.loops.layers.float_vector.get('inu_authored_normal')
+        if alay is not None:
+            for l in loops:
+                a = l[alay]
+                l[alay] = (-a[0], a[1], a[2])
+        # Loops keep their data (and vertex) through the reversal.
+        bmesh.ops.reverse_faces(bm, faces=bm.faces[:])
+        if nlay is not None:
+            restored = [tuple(l[nlay]) for f in bm.faces for l in f.loops]
+        bm.to_mesh(me)
+    finally:
+        bm.free()
+    _tmp = me.attributes.get('_inu_mirror_n')
+    if _tmp is not None:
+        try:
+            me.attributes.remove(_tmp)
+        except Exception:
+            pass
+    if restored is not None and len(restored) == len(me.loops):
+        if hasattr(me, 'use_auto_smooth'):
+            me.use_auto_smooth = True
+        try:
+            me.normals_split_custom_set(restored)
+        except Exception:
+            pass
+    # The vehicle reflection layer is kept by vertex position (DFF import);
+    # re-key it for the mirrored positions or the export drops it.
+    ov = me.get('inu_overlay_faces')
+    if ov:
+        import json
+        try:
+            me['inu_overlay_faces'] = json.dumps(
+                [[_mirror_overlay_key(k), m] for k, m in json.loads(ov)],
+                separators=(',', ':'))
+        except Exception:
+            pass
+
+
+def _frame_depth(obj):
+    """Number of ancestors — mirror parents before their children."""
+    n = 0
+    while obj.parent is not None:
+        obj = obj.parent
+        n += 1
+    return n
+
+
 class GTATOOLS_OT_frame_mirror_lr(bpy.types.Operator):
     """Создать зеркальную копию выделенных фреймов: ``_lf`` → ``_rf``,
     ``_lb`` → ``_rb`` (X отражается, остальные оси без изменений). Если
@@ -412,7 +511,8 @@ class GTATOOLS_OT_frame_mirror_lr(bpy.types.Operator):
         created = 0
         skipped = 0
 
-        for src in list(context.selected_objects):
+        # Parents first: a child then finds its parent's twin made here.
+        for src in sorted(context.selected_objects, key=_frame_depth):
             mirror_suffix = None
             target_name = None
             for src_suf, dst_suf in self._MAP.items():
@@ -434,12 +534,27 @@ class GTATOOLS_OT_frame_mirror_lr(bpy.types.Operator):
             else:
                 copy = bpy.data.objects.new(target_name, src.data.copy())
 
-            copy.parent = src.parent
-            copy.matrix_parent_inverse = src.matrix_parent_inverse.copy()
-            # Mirror local X
+            # Under the parent's own twin when there is one: door_rf_ok goes
+            # under door_rf_dummy, not door_lf_dummy (whose swing the game
+            # would carry it with).
+            parent = src.parent
+            for src_suf, dst_suf in self._MAP.items():
+                if parent is not None and src_suf in parent.name:
+                    parent = bpy.data.objects.get(
+                        parent.name.replace(src_suf, dst_suf, 1), parent)
+                    break
+            copy.parent = parent
+            # Mirror in the parent's space — the space the DFF frame is
+            # written in (matrix_local = parent inverse @ basis); the copy
+            # takes it as its basis, its own parent inverse stays identity.
             from mathutils import Matrix
             mirror_x = Matrix.Diagonal((-1.0, 1.0, 1.0, 1.0))
-            copy.matrix_basis = src.matrix_basis @ mirror_x
+            local = src.matrix_basis
+            if src.parent is not None:
+                local = src.matrix_parent_inverse @ local
+            copy.matrix_basis = _mirror_frame_x(local, mirror_x)
+            if copy.type == 'MESH':
+                _mirror_mesh_x(copy.data)
 
             # Carry DFF frame metadata if present
             for k in ('dff_frame_flags', 'dff_frame_write_name'):

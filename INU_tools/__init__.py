@@ -1186,6 +1186,32 @@ def _lod_dist_sync_update(self, context):
         pass
 
 
+def _zon_name_get(self):
+    return str(self.id_data.get('zon_name', '') or '')
+
+
+def _zon_name_set(self, value):
+    """Поле «Имя» бокса map.zon: пишет zon_name И переименовывает бокс в
+    «Zone_<имя>» (как adapter/zon.rename в Max). Иначе экспорт (_zone_name)
+    берёт основу имени объекта, и правка поля молча терялась. Пробелы и
+    запятые → «_»: движок меняет ',' на пробел и режет строку по пробелам."""
+    name = '_'.join(str(value).replace(',', ' ').split())
+    # Пустое — ничего не трогаем. Это обязательно: apply_2dfx_to_selected
+    # (ops/effects_ops.py) копирует все записываемые свойства obj.inu, и у
+    # 2DFX-источника без zon_name сюда приходит '' — без выхода любая
+    # целевая пустышка переименовалась бы в «Zone_».
+    if not name:
+        return
+    ob = self.id_data
+    # Только боксы зон ('inu_zon' = TAG из ops/zon_ops.py). Alt+Enter и
+    # «Copy to Selected» применяют inu.zon_name_edit ко ВСЕМ выделенным —
+    # без проверки меш здания стал бы «Zone_<имя>».
+    if not ob.get('inu_zon'):
+        return
+    ob['zon_name'] = name
+    ob.name = "Zone_" + name
+
+
 class INUObjectProps(bpy.types.PropertyGroup):
     """INU_tools object export properties (replaces DragonFF obj.dff)."""
 
@@ -1264,6 +1290,15 @@ class INUObjectProps(bpy.types.PropertyGroup):
         items=_particle_effect_enum_items,
         get=_particle_effect_get,
         set=_particle_effect_set,
+    )
+
+    # Имя зоны map.zon — само значение живёт в obj['zon_name'].
+    zon_name_edit : StringProperty(
+        name=T("Имя"),
+        description=T("Имя зоны в map.zon. Правка переименовывает и бокс "
+                      "(«Zone_<имя>»); пробелы и запятые заменяются на «_»"),
+        get=_zon_name_get,
+        set=_zon_name_set,
     )
 
     particle_emitter_index : IntProperty(
@@ -2079,70 +2114,57 @@ class INUObjectProps(bpy.types.PropertyGroup):
         default=False,
     )
 
-    # IDE flag checkboxes with auto-sync to ide_flags.
+    # IDE flag checkboxes — each one is a view of its own bit in ide_flags.
     #
     # Bit values are verified against gtamods.com/wiki/Item_Definition.
     # Each property carries a "supported games" hint in its description
     # so the UI panel can filter the list per ``scene.gtatools_game``
     # (see ``IDE_FLAG_GAMES`` mapping in ui/panels.py).
-    def _update_ide_flag(self, context):
-        _FLAG_BITS = [
-            # Stable across all 3 games:
-            ('flag_draw_last', 4), ('flag_additive', 8),
-            ('flag_no_zbuffer', 64),
-            # III + VC (deprecated in SA):
-            ('flag_do_not_fade', 2),
-            ('flag_ignore_lighting', 32),
-            # III only:
-            ('flag_is_subway', 16),
-            # VC + SA (not III):
-            ('flag_is_road', 1),
-            ('flag_no_shadows', 128),
-            ('flag_glass_1', 512), ('flag_glass_2', 1024),
-            # VC only:
-            ('flag_ignore_draw_dist', 256),
-            # SA only:
-            ('flag_garage_door', 2048), ('flag_damagable', 4096),
-            ('flag_is_tree', 8192), ('flag_is_palm', 16384),
-            ('flag_no_flyer_col', 32768), ('flag_is_tag', 1048576),
-            ('flag_no_backface', 2097152), ('flag_breakable', 4194304),
-        ]
-        val = 0
-        for prop, bit in _FLAG_BITS:
-            if getattr(self, prop, False):
-                val |= bit
-        self['ide_flags'] = val
+    #
+    # get/set instead of stored bools: ide_flags is the only source of
+    # truth, so bits written by import show up as ticked and a click flips
+    # just its own bit (the old update= rebuilt ide_flags from all the
+    # checkboxes and wiped imported bits). Stale stored flag_* values in
+    # old .blend files are ignored.
+    def _ide_flag_bit(bit):
+        def _get(self):
+            return bool(int(self.ide_flags) & bit)
+
+        def _set(self, value):
+            flags = int(self.ide_flags)
+            self.ide_flags = (flags | bit) if value else (flags & ~bit)
+        return {'get': _get, 'set': _set}
 
     # Stable across III/VC/SA — show in every game's UI.
-    flag_draw_last : BoolProperty(name=T("Рисовать последним (DRAW_LAST)"), description=T("Прозрачный, рисовать последним (4) · III/VC/SA"), default=False, update=_update_ide_flag)
-    flag_additive : BoolProperty(name=T("Аддитивный (ADDITIVE)"), description=T("Аддитивный блендинг (8) · III/VC/SA"), default=False, update=_update_ide_flag)
-    flag_no_zbuffer : BoolProperty(name=T("Без Z-буфера (NO_ZBUFFER_WRITE)"), description=T("Не писать в Z-буфер (64) · III/VC/SA"), default=False, update=_update_ide_flag)
+    flag_draw_last : BoolProperty(name=T("Рисовать последним (DRAW_LAST)"), description=T("Прозрачный, рисовать последним (4) · III/VC/SA"), default=False, **_ide_flag_bit(4))
+    flag_additive : BoolProperty(name=T("Аддитивный (ADDITIVE)"), description=T("Аддитивный блендинг (8) · III/VC/SA"), default=False, **_ide_flag_bit(8))
+    flag_no_zbuffer : BoolProperty(name=T("Без Z-буфера (NO_ZBUFFER_WRITE)"), description=T("Не писать в Z-буфер (64) · III/VC/SA"), default=False, **_ide_flag_bit(64))
 
     # III + VC (SA ignores these bits — checkbox hidden in SA scene).
-    flag_do_not_fade : BoolProperty(name=T("Без затухания (DO_NOT_FADE)"), description=T("Без затухания на дистанции (2) · III/VC"), default=False, update=_update_ide_flag)
-    flag_ignore_lighting : BoolProperty(name=T("Динамический свет (IGNORE_LIGHTING)"), description=T("Динамическое освещение вместо статического (32) · III/VC"), default=False, update=_update_ide_flag)
+    flag_do_not_fade : BoolProperty(name=T("Без затухания (DO_NOT_FADE)"), description=T("Без затухания на дистанции (2) · III/VC"), default=False, **_ide_flag_bit(2))
+    flag_ignore_lighting : BoolProperty(name=T("Динамический свет (IGNORE_LIGHTING)"), description=T("Динамическое освещение вместо статического (32) · III/VC"), default=False, **_ide_flag_bit(32))
 
     # III only.
-    flag_is_subway : BoolProperty(name=T("Туннель метро (IS_SUBWAY)"), description=T("Туннель, видим только в cull-зоне (16) · III only"), default=False, update=_update_ide_flag)
+    flag_is_subway : BoolProperty(name=T("Туннель метро (IS_SUBWAY)"), description=T("Туннель, видим только в cull-зоне (16) · III only"), default=False, **_ide_flag_bit(16))
 
     # VC + SA (III lacks 0x1 IS_ROAD semantics — bit 0 was «ignored»).
-    flag_is_road : BoolProperty(name=T("Дорога (IS_ROAD)"), description=T("Дорога, wet reflections (1) · VC/SA"), default=False, update=_update_ide_flag)
-    flag_no_shadows : BoolProperty(name=T("Без теней (NO_SHADOWS)"), description=T("Не получать тени (128) · VC/SA"), default=False, update=_update_ide_flag)
-    flag_glass_1 : BoolProperty(name=T("Стекло разбиваемое (GLASS_TYPE_1)"), description=T("Стекло разбиваемое (512) · VC/SA"), default=False, update=_update_ide_flag)
-    flag_glass_2 : BoolProperty(name=T("Стекло с трещинами (GLASS_TYPE_2)"), description=T("Стекло с трещинами (1024) · VC/SA"), default=False, update=_update_ide_flag)
+    flag_is_road : BoolProperty(name=T("Дорога (IS_ROAD)"), description=T("Дорога, wet reflections (1) · VC/SA"), default=False, **_ide_flag_bit(1))
+    flag_no_shadows : BoolProperty(name=T("Без теней (NO_SHADOWS)"), description=T("Не получать тени (128) · VC/SA"), default=False, **_ide_flag_bit(128))
+    flag_glass_1 : BoolProperty(name=T("Стекло разбиваемое (GLASS_TYPE_1)"), description=T("Стекло разбиваемое (512) · VC/SA"), default=False, **_ide_flag_bit(512))
+    flag_glass_2 : BoolProperty(name=T("Стекло с трещинами (GLASS_TYPE_2)"), description=T("Стекло с трещинами (1024) · VC/SA"), default=False, **_ide_flag_bit(1024))
 
     # VC only.
-    flag_ignore_draw_dist : BoolProperty(name=T("Игнор. дистанции (IGNORE_DRAW_DIST)"), description=T("Игнорировать draw distance (256) · VC only — typical для LOD-моделей"), default=False, update=_update_ide_flag)
+    flag_ignore_draw_dist : BoolProperty(name=T("Игнор. дистанции (IGNORE_DRAW_DIST)"), description=T("Игнорировать draw distance (256) · VC only — typical для LOD-моделей"), default=False, **_ide_flag_bit(256))
 
     # SA only.
-    flag_garage_door : BoolProperty(name=T("Дверь гаража (GARAGE_DOOR)"), description=T("Дверь гаража (2048) · SA only"), default=False, update=_update_ide_flag)
-    flag_damagable : BoolProperty(name=T("Повреждаемый (DAMAGABLE)"), description=T("Разрушаемый ok/dam (4096) · SA only"), default=False, update=_update_ide_flag)
-    flag_is_tree : BoolProperty(name=T("Дерево (IS_TREE)"), description=T("Дерево, качается на ветру (8192) · SA only"), default=False, update=_update_ide_flag)
-    flag_is_palm : BoolProperty(name=T("Пальма (IS_PALM)"), description=T("Пальма, качается на ветру (16384) · SA only"), default=False, update=_update_ide_flag)
-    flag_no_flyer_col : BoolProperty(name=T("Без колл. с авиа (NO_FLYER_COL)"), description=T("Нет коллизии с летающим (32768) · SA only"), default=False, update=_update_ide_flag)
-    flag_is_tag : BoolProperty(name=T("Граффити-тег (IS_TAG)"), description=T("Граффити тег (1048576) · SA only"), default=False, update=_update_ide_flag)
-    flag_no_backface : BoolProperty(name=T("Двусторонний (NO_BACKFACE_CULL)"), description=T("Рисовать обе стороны (2097152) · SA only"), default=False, update=_update_ide_flag)
-    flag_breakable : BoolProperty(name=T("Разрушаемая статуя (BREAKABLE_STATUE)"), description=T("Разрушаемая статуя (4194304) · SA only"), default=False, update=_update_ide_flag)
+    flag_garage_door : BoolProperty(name=T("Дверь гаража (GARAGE_DOOR)"), description=T("Дверь гаража (2048) · SA only"), default=False, **_ide_flag_bit(2048))
+    flag_damagable : BoolProperty(name=T("Повреждаемый (DAMAGABLE)"), description=T("Разрушаемый ok/dam (4096) · SA only"), default=False, **_ide_flag_bit(4096))
+    flag_is_tree : BoolProperty(name=T("Дерево (IS_TREE)"), description=T("Дерево, качается на ветру (8192) · SA only"), default=False, **_ide_flag_bit(8192))
+    flag_is_palm : BoolProperty(name=T("Пальма (IS_PALM)"), description=T("Пальма, качается на ветру (16384) · SA only"), default=False, **_ide_flag_bit(16384))
+    flag_no_flyer_col : BoolProperty(name=T("Без колл. с авиа (NO_FLYER_COL)"), description=T("Нет коллизии с летающим (32768) · SA only"), default=False, **_ide_flag_bit(32768))
+    flag_is_tag : BoolProperty(name=T("Граффити-тег (IS_TAG)"), description=T("Граффити тег (1048576) · SA only"), default=False, **_ide_flag_bit(1048576))
+    flag_no_backface : BoolProperty(name=T("Двусторонний (NO_BACKFACE_CULL)"), description=T("Рисовать обе стороны (2097152) · SA only"), default=False, **_ide_flag_bit(2097152))
+    flag_breakable : BoolProperty(name=T("Разрушаемая статуя (BREAKABLE_STATUE)"), description=T("Разрушаемая статуя (4194304) · SA only"), default=False, **_ide_flag_bit(4194304))
 
     # Source game for the loaded IDE flags — set by ide_import when
     # known (defaults to '' = unknown). Read by export to decide
@@ -2578,22 +2600,24 @@ class GTATOOLS_TxdExportEntry(bpy.types.PropertyGroup):
         default=True,
         description=T("Включить DFF модели в экспорт"),
     )
-    # Иерархия под DFF: LOD и COL. Включены по умолчанию. Имена/флаги
-    # «найдено в сцене» заполняет invoke().
+    # Иерархия под DFF: LOD и COL. Имена/флаги «найдено в сцене» и сами
+    # галки заполняет invoke(): найденные — вкл, заглушки — выкл.
     inc_lod: BoolProperty(
         name="",
-        default=True,
+        default=False,
         description=T("Экспортировать LOD этой модели. Если LOD в сцене нет — уйдёт копия основной модели под LOD-именем"),
     )
     inc_col: BoolProperty(
         name="",
-        default=True,
+        default=False,
         description=T("Экспортировать COL (коллизию). Если COL в сцене нет — будет создана пустая габаритная COL-заглушка"),
     )
     lod_name: StringProperty()
     col_name: StringProperty()
     lod_found: BoolProperty(default=False)
     col_found: BoolProperty(default=False)
+    # Сферы/боксы коллизии модели (x_sphere_0 / x_box_0) — для подписи COL.
+    col_prims: IntProperty(default=0)
 
 
 # IMG operators + _refresh_img_entries helper moved to ops/img_ops.py

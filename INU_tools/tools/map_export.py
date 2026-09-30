@@ -11,14 +11,23 @@
 # non-empty cell becomes its own subdirectory with its own IDE/IPL/COL/TXD.
 # Game-side this just means loading several IPLs instead of one — engine
 # behavior is identical.
+#
+# Every placement (copy) of a model is an IPL row of its own; the model's
+# DFF, LOD (<LOD>.dff + its own IDE row and IPL rows), COL and TXD are
+# written once, in the cell of its first placement. Models without a
+# Model ID get one from the ID Manager's active preset (all or nothing,
+# undoable). Files already in the folder are listed and asked about; a
+# .txd is merged. Binary IPL (SA) is the game's pair: text <cell>.ipl
+# with the LOD rows + binary <cell>_stream0.ipl with the models.
 
 import math
 import os
+import re
 from dataclasses import dataclass
 
 import bpy
 
-from .model_utils import get_model_type
+from .model_utils import get_model_type, _strip_dup_suffix
 from .compat import safe_icon, inu_icon
 from .. import T
 from typing import Dict, List, Optional, Set, Tuple
@@ -28,7 +37,8 @@ from typing import Dict, List, Optional, Set, Tuple
 
 @dataclass
 class MapGroup:
-    """One DFF → (LOD, COL) group inferred from object naming."""
+    """One placement (``dff``) of model ``base`` — the unit the split
+    planners below bin into cells."""
     base: str
     # Forward-string refs — без future-import dataclass eager-eval'нул бы
     # bpy.types.Object на class-creation, что роняет unit-тесты со
@@ -43,38 +53,224 @@ class MapGroup:
             self.col_objects = []
 
 
-def collect_map_groups(objects) -> List[MapGroup]:
-    """Walk `objects` and build MapGroup records keyed by base name.
+@dataclass
+class MapModel:
+    """One model of the export. Every placement (copy) of it is an IPL row
+    of its own cell; its DFF, LOD, COL, TXD and IDE rows are written once,
+    in the cell of its first placement (``home``)."""
+    key: str                                  # model name, lower case
+    name: str                                 # as in the IDE row / <name>.dff
+    home: "bpy.types.Object"
+    placements: list = None
+    lod: 'Optional["bpy.types.Object"]' = None
+    lod_name: str = ''
+    lod_objs: list = None                     # the LOD + its copies (one Model ID)
+    lod_own: bool = True                      # False — another model writes this LOD
+    txd: str = ''
+    lod_txd: str = ''
+    cols: list = None                         # COL / SHA meshes + spheres / boxes — one collision
 
-    A group is created for every DFF mesh; any LOD / COL / SHA objects
-    sharing that base name are attached to the group.
-    """
-    dffs: Dict[str, bpy.types.Object] = {}
-    lods: Dict[str, bpy.types.Object] = {}
-    cols: Dict[str, list] = {}
+    def __post_init__(self):
+        if self.placements is None:
+            self.placements = [self.home]
+        if self.lod_objs is None:
+            self.lod_objs = [self.lod] if self.lod is not None else []
+        if self.cols is None:
+            self.cols = []
 
-    for obj in objects:
-        if obj.type != 'MESH':
+
+def _names(names, n: int = 8) -> str:
+    more = len(names) - n
+    return ", ".join(names[:n]) + (" " + T("… ещё {0}").format(more) if more > 0 else "")
+
+
+def _pick_col_group(cands, home) -> list:
+    """The collision of one model out of the scene's COL / SHA meshes with
+    its name: the meshes standing together at one spot (a COL with its SHA,
+    a collision split into several meshes) — never every copy (N overlapping
+    meshes in the .col). The spot of ``home`` wins; else the spot of an
+    undecorated mesh (house_COL, not house_COL.001); else the smallest name."""
+    if not cands:
+        return []
+
+    def spot(o):
+        t = o.matrix_world.translation
+        return (round(t.x, 3), round(t.y, 3), round(t.z, 3))
+
+    spots: Dict[tuple, list] = {}
+    for o in cands:
+        spots.setdefault(spot(o), []).append(o)
+    here = spots.get(spot(home))
+    if here:
+        return here
+    groups = list(spots.values())
+    plain = [g for g in groups if any(o.name == _strip_dup_suffix(o.name) for o in g)]
+    return min(plain or groups, key=lambda g: min(o.name for o in g))
+
+
+# «<model>_sphere_N» / «<model>_box_N» — the names col_import gives a
+# model's spheres / boxes.
+_PRIM_NAME = re.compile(r'(.+)_(?:sphere|box)_\d+', re.IGNORECASE)
+
+
+def _col_prim_index(objects, col_ids):
+    """The scene's sphere / box empties (not a vehicle's frame dummy):
+    ({id(COL / SHA mesh): its children}, {model (lower): loose ones}).
+    A child of a collision mesh is that mesh's (Import Map parents them to
+    it); the rest count by name, «.001» left out — another import's copy
+    (Import COL leaves them loose, a model of spheres / boxes only too)."""
+    by_parent: Dict[int, list] = {}
+    by_name: Dict[str, list] = {}
+    empties = [o for o in objects if o.type == 'EMPTY']
+    if not empties:
+        return by_parent, by_name
+    from ..ops.dff_export import _is_col_primitive_empty
+    for o in empties:
+        if not _is_col_primitive_empty(o):
             continue
-        mtype, base = get_model_type(obj)
-        if not mtype:
+        if o.parent is not None and id(o.parent) in col_ids:
+            by_parent.setdefault(id(o.parent), []).append(o)
             continue
-        if mtype == 'DFF':
-            dffs.setdefault(base, obj)
-        elif mtype == 'LOD':
-            lods.setdefault(base, obj)
-        elif mtype == 'COL':
-            cols.setdefault(base, []).append(obj)
+        hit = _PRIM_NAME.fullmatch(o.name)
+        if hit:
+            by_name.setdefault(hit.group(1).lower(), []).append(o)
+    return by_parent, by_name
 
-    groups: List[MapGroup] = []
-    for base, dff in dffs.items():
-        groups.append(MapGroup(
-            base=base,
-            dff=dff,
-            lod=lods.get(base),
-            col_objects=cols.get(base, []),
-        ))
-    return groups
+
+def collect_map_models(context, objects):
+    """Selection → (models {key: MapModel} in first-placement order,
+    placements [MapGroup(base=model key, dff=placement)], notes).
+
+    Every DFF mesh is a placement; copies (house, house.001) are one model.
+    A mesh some model points at as its LOD (``inu.lod_object`` — a LOD with
+    a plain name) is that LOD, not a placement. A model's LOD comes from the
+    scene even when it isn't selected (it travels with its model, as in Add
+    to IDE / IPL); a LOD selected without its model is left out with a note.
+    Collision — the scene's COL / SHA meshes with the model's name and their
+    spheres / boxes (a model of spheres / boxes only has a collision too)."""
+    from ..ops.ipl_export import _clean_model_name
+    from ..ops.map_link import LodIndex, lod_model_name
+    notes = []
+    types, lod_refs = {}, set()
+    for o in context.scene.objects:
+        if o.type != 'MESH':
+            continue
+        types[id(o)] = (o, get_model_type(o))
+        ref = getattr(getattr(o, 'inu', None), 'lod_object', None)
+        if ref is not None and ref is not o:
+            lod_refs.add(id(ref))
+
+    def mtype(o):
+        hit = types.get(id(o))
+        return hit[1] if hit is not None else get_model_type(o)
+
+    models: Dict[str, MapModel] = {}
+    placements, lone, seen = [], [], set()
+    for o in objects:
+        if o.type != 'MESH' or id(o) in seen:
+            continue
+        seen.add(id(o))
+        mt = mtype(o)[0]
+        if mt == 'DFF' and id(o) not in lod_refs:
+            name = _clean_model_name(o.name)
+            m = models.get(name.lower())
+            if m is None:
+                models[name.lower()] = MapModel(key=name.lower(), name=name, home=o)
+            else:
+                m.placements.append(o)
+            placements.append(MapGroup(base=name.lower(), dff=o))
+        elif mt in ('DFF', 'LOD'):
+            lone.append(o)
+
+    # LOD — one per model (the partner of its first placement, as Add to
+    # IPL finds it; each placement gets a LOD row). A LOD several models
+    # share is written once, by the first. The copies' own pointers and
+    # the scene's LOD meshes of the model's name are its LOD's copies.
+    lodix = LodIndex()
+    used, first = set(), {}
+    # The ID each model keeps (its copies' smallest): a «LOD» carrying one
+    # is that model (Shift+D renamed to LODfoo), and as the LOD's ID it
+    # would give the IDE two rows with one ID.
+    final = {}
+    for m in models.values():
+        ids = [int(p.inu.model_id) for p in m.placements if p.inu.model_id > 0]
+        if ids:
+            final.setdefault(min(ids), m.name)
+
+    def twin_of(lo):
+        return final.get(int(getattr(lo.inu, 'model_id', 0) or 0))
+
+    for m in models.values():
+        m.txd = (getattr(m.home.inu, 'txd_name', '') or '').strip() or m.name
+        partners = [lo for lo in (getattr(p.inu, 'lod_object', None) for p in m.placements)
+                    if lo is not None and lo.type == 'MESH']
+        partners += lodix.by_base.get(m.key, [])
+        # III/VC: a placement's LOD by the game's name rule (LODtower ↔
+        # ap_tower) — the copy standing on it.
+        if lodix.by_tail:
+            partners += [lo for lo in map(lodix.partner, m.placements)
+                         if lo is not None and all(lo is not x for x in partners)]
+        used.update(id(lo) for lo in partners)
+        lod = partners[0] if partners and partners[0] is m.home.inu.lod_object else None
+        lod = lod or lodix.partner(m.home) or next(iter(partners), None)
+        if lod is None:
+            continue
+        # Its name for THIS model (III/VC pair by name: house → LODse).
+        lod_name = lod_model_name(lod, mtype(lod)[1] or m.name, hd=m.name)
+        if lod_name.lower() == m.key or twin_of(lod):
+            # Shift+D of the model renamed to LODfoo: a second row with the
+            # model's ID / position crashes the game (see ipl_export dedupe).
+            notes.append(('WARNING', T("«{0}»: у LOD «{1}» ID/имя самой модели "
+                                       "— LOD пропущен").format(twin_of(lod) or m.name,
+                                                                lod.name)))
+            continue
+        owner = first.setdefault(lod_name.lower(), m)
+        m.lod, m.lod_name, m.lod_own = owner.lod or lod, lod_name, owner is m
+        m.lod_txd = (getattr(m.lod.inu, 'txd_name', '') or '').strip() or m.txd
+        if owner is m:
+            m.lod_objs = []
+        have = {id(lo) for lo in owner.lod_objs}
+        for lo in [lod] + partners:
+            if (lo is not None and id(lo) not in have and lod_model_name(
+                    lo, mtype(lo)[1] or m.name, hd=m.name).lower() == lod_name.lower()):
+                have.add(id(lo))
+                if twin_of(lo):
+                    notes.append(('WARNING', T("«{0}»: у LOD «{1}» ID/имя самой модели "
+                                               "— LOD пропущен").format(twin_of(lo), lo.name)))
+                    continue
+                owner.lod_objs.append(lo)
+        # One LOD per model: a copy pointing at a LOD of another name gets
+        # the model's LOD in its row — say so instead of dropping it quietly.
+        alien = []
+        for p in m.placements:
+            lo = getattr(p.inu, 'lod_object', None)
+            if (lo is not None and lo.type == 'MESH' and lod_model_name(
+                    lo, mtype(lo)[1] or m.name, hd=m.name).lower() != lod_name.lower()):
+                alien.append(f"{p.name} → {lo.name}")
+        if alien:
+            notes.append(('WARNING', T("«{0}»: свой LOD у копий не взят ({1}) — у всех "
+                                       "копий LOD «{2}»").format(m.name, _names(alien),
+                                                                m.lod.name)))
+    lone = [o.name for o in lone if id(o) not in used]
+    if lone:
+        notes.append(('WARNING', T("LOD без своей модели в экспорте — не "
+                                   "экспортирован: {0}").format(_names(lone))))
+
+    col_idx: Dict[str, list] = {}
+    skip = {id(g.dff) for g in placements} | used
+    for oid, (o, (mt, base)) in types.items():
+        if mt == 'COL' and base and oid not in skip:
+            col_idx.setdefault(base.lower(), []).append(o)
+    by_parent, by_name = _col_prim_index(
+        context.scene.objects, {oid for oid, (_o, (mt, _b)) in types.items() if mt == 'COL'})
+    for m in models.values():
+        group = _pick_col_group(col_idx.get(m.key, []), m.home)
+        # + spheres / boxes, after the meshes: col_export measures them
+        # from the COL mesh passed with them. Those of a COL copy left out
+        # above stay out with it.
+        m.cols = (group + [p for o in group for p in by_parent.get(id(o), ())]
+                  + by_name.get(m.key, []))
+    return models, placements, notes
 
 
 # ──────────────────────────── auto-split grid ─────────────────────────
@@ -375,61 +571,256 @@ def _resolve_export_objects(context) -> list:
 
 # ──────────────────────────── ID helpers ──────────────────────────────
 
-def _get_or_assign_id(obj, id_pool_start: int, used_ids: Set[int]) -> int:
-    """Return the object's inu.model_id, allocating a free ID from the
-    [`id_pool_start`, 19999] range when the current value is 0.
-    """
-    inu = getattr(obj, 'inu', None)
-    current = int(getattr(inu, 'model_id', 0) or 0) if inu else 0
-    if current > 0:
-        used_ids.add(current)
-        return current
-    next_id = id_pool_start
-    while next_id in used_ids:
-        next_id += 1
-    used_ids.add(next_id)
-    if inu:
+def assign_ids(models, allocate, skip):
+    """Model IDs for Export Map (bpy-free — tested without Blender).
+
+    ``models`` — [(key, name, have, prefer, own)] in export order (a model,
+    then its LOD): ``have`` = the Model IDs its objects (copies) carry;
+    ``prefer`` = the ID a LOD would like (its model's + 1, or ``own`` —
+    the ID its own IDE row already holds) or None. ``skip`` = IDs in use
+    (scene, IDE files); a ``prefer`` in it is dropped unless ``own``.
+    ``allocate(requests, skip)`` → [ID] for [(name, prefer)] from the ID
+    Manager — all or nothing (None).
+
+    Copies share one ID: the one they carry (the smallest, with a note, if
+    they differ), else a new one. Returns (ids {key: ID}, notes, left):
+    ``left`` = names without an ID when the preset ran out — then nothing
+    was allocated and ``ids`` is empty."""
+    ids, notes, need = {}, [], []
+    skip = set(skip)
+    for _k, _n, have, _p, _o in models:
+        skip.update(i for i in have if i > 0)
+    for key, name, have, prefer, own in models:
+        have = sorted({i for i in have if i > 0})
+        if not have:
+            need.append((key, name, prefer, own))
+            continue
+        ids[key] = have[0]
+        if len(have) > 1:
+            notes.append(('WARNING', T("«{0}»: у копий разные ID ({1}) — взят {2}").format(
+                name, ", ".join(str(i) for i in have), have[0])))
+    if not need:
+        return ids, notes, []
+    got = allocate([(n, p if p is not None and (own or p not in skip) else None)
+                    for _k, n, p, own in need], skip)
+    if got is None:
+        return {}, notes, [n for _k, n, _p, _o in need]
+    for (key, name, prefer, _own), nid in zip(need, got):
+        ids[key] = nid
+        if prefer is not None and nid != prefer:
+            notes.append(('INFO', T("«{0}»: ID {1} недоступен — LOD получил {2}").format(
+                name, prefer, nid)))
+    return ids, notes, []
+
+
+def _ide_file_ids(context) -> Dict[str, Set[int]]:
+    """{IDE path: its Model IDs} for the IDE files in use — the IDE box,
+    «IDE для экспорта», the IDE each scene model is linked to. A new ID
+    must not repeat one of them: a second row with the same ID overrides
+    the model in the game."""
+    from ..ops.map_link import norm, ide_linked_file
+    from ..core.ide import read_ide
+    s = context.scene.inu_settings
+    paths = {norm(p) for p in ([getattr(s, 'gtatools_ide_path', '')]
+                               + [it.path for it in getattr(s, 'gtatools_ide_sync_list', [])])
+             if p}
+    paths |= {ide_linked_file(o) for o in context.scene.objects
+              if o.type == 'MESH' and hasattr(o, 'inu') and o.inu.ide_linked}
+    out: Dict[str, Set[int]] = {}
+    for p in sorted(x for x in paths if x):
+        if not os.path.isfile(p):
+            continue
         try:
-            inu.model_id = next_id
-        except Exception:
-            pass
-    return next_id
+            ide = read_ide(p)
+        except Exception as e:                                  # noqa: BLE001
+            print(f"[map_export] IDE {os.path.basename(p)}: {e!r}")
+            continue
+        out[p] = {int(e.model_id) for sec in (ide.objects, ide.anims, ide.cars, ide.peds,
+                                              ide.weaps, ide.hiers) for e in sec}
+    return out
+
+
+def assign_map_ids(context, prep):
+    """Model ID for every model / LOD of *prep* that has none — from the
+    active ID Manager preset (like Assign), all or nothing, before any file
+    is written. Copies get one ID; a LOD prefers its model's ID + 1.
+    Returns (objects changed, notes, error text)."""
+    if not any(kind in ('ide', 'ipl', 'bnry') for kind, _d in prep.plan.values()):
+        return 0, [], ''             # no IDE / IPL — DFF, COL, TXD carry no Model ID
+    from ..ops.map_link import ide_linked_file
+    groups = []                          # (key, name, objects, owner key)
+    for m in prep.models.values():
+        groups.append((('DFF', m.key), m.name, m.placements, None))
+        if m.lod is not None and m.lod_own:
+            groups.append((('LOD', m.lod_name.lower()), m.lod_name, m.lod_objs,
+                           ('DFF', m.key)))
+
+    def mid(o):
+        return int(getattr(o.inu, 'model_id', 0) or 0)
+
+    have = {key: [mid(o) for o in objs] for key, _n, objs, _ow in groups}
+    need = [g for g in groups if not any(i > 0 for i in have[g[0]])]
+    scene_ids, skip, per_file = set(), set(), {}
+    if need:
+        from .. import _id_preset_sync
+        _id_preset_sync(context)
+        scene_ids = {mid(o) for o in bpy.data.objects
+                     if o.type == 'MESH' and hasattr(o, 'inu') and mid(o) > 0}
+        per_file = _ide_file_ids(context)
+        skip = scene_ids.union(*per_file.values())
+    rows = []
+    for key, name, objs, owner in groups:
+        prefer, own = None, False
+        if owner is not None and not any(i > 0 for i in have[key]):
+            # Its own IDE row (Add to IDE wrote it at model + 1 while the
+            # LOD had no ID) is its ID, not someone else's.
+            for o in objs:
+                path, oid = ide_linked_file(o), int(o.inu.ide_last_model_id or 0)
+                if (oid > 0 and oid not in scene_ids and oid in per_file.get(path, ())
+                        and not any(oid in ids for p, ids in per_file.items() if p != path)):
+                    prefer, own = oid, True
+                    break
+            if prefer is None and any(i > 0 for i in have[owner]):
+                prefer = min(i for i in have[owner] if i > 0) + 1
+        rows.append((key, name, have[key], prefer, own))
+    from ..data.id_manager import allocate_ids
+    ids, notes, left = assign_ids(rows, allocate_ids, skip)
+    if left:
+        return 0, notes, T("Нет свободных ID в активном пресете ID Manager для: {0} — "
+                           "ничего не записано. Заполните пресет: «База ID и сервис» → "
+                           "«Создать ID» (или «Расширить FLA»)").format(_names(left))
+    changed = 0
+    for key, _n, objs, _ow in groups:
+        for o in objs:
+            if ids.get(key) and mid(o) != ids[key]:
+                o.inu.model_id = ids[key]
+                changed += 1
+    if need:
+        notes.append(('INFO', T("ID из ID Manager: моделей {0}").format(len(need))))
+    return changed, notes, ''
+
+
+# ──────────────────────────── files and IPL rows ──────────────────────
+
+# IplDef.m_szName (0x10..0x21): 17 characters — a longer <cell>_stream0
+# doesn't pair with its text IPL (CIplStore::SetupRelatedIpls 0x404DE0).
+STREAM_NAME_MAX = 17
+
+
+def stream_name_ok(cell: str) -> bool:
+    return len(cell + '_stream0') <= STREAM_NAME_MAX
+
+
+def plan_ipl_rows(pairs, pair: bool):
+    """IPL rows of one cell (bpy-free — tested without Blender).
+
+    ``pairs`` = [(model IplInstance, its LOD IplInstance or None)] in
+    placement order. A placement with the ID and position (to the mm) of an
+    earlier one is dropped with its LOD — SA crashes on such doubles; such a
+    LOD row (models at one spot sharing a LOD) is written once and each of
+    them points at it.
+    pair=False → (models + LODs, [], dup): one text IPL, a model's lod_index
+    points at its LOD row after the models. pair=True (SA Binary IPL) →
+    (LODs, models, dup): the text <cell>.ipl holds the LOD rows, the binary
+    <cell>_stream0.ipl the models, lod_index = row in the text IPL
+    (CIplStore::LoadIpl 0x406080 resolves it in the related IPL)."""
+    import copy
+
+    def spot(r):
+        return (r.model_id, round(r.pos_x, 3), round(r.pos_y, 3), round(r.pos_z, 3))
+
+    mains, lods, seen, dup = [], [], set(), 0
+    lod_at = {}                          # spot → its row in lods
+    for main, lod in pairs:
+        key = spot(main)
+        if key in seen:
+            dup += 1
+            continue
+        seen.add(key)
+        main = copy.copy(main)
+        main.lod_index = -1
+        if lod is not None:
+            if spot(lod) not in lod_at:
+                lod_at[spot(lod)] = len(lods)
+                lod = copy.copy(lod)
+                lod.lod_index = -1
+                lods.append(lod)
+            main.lod_index = lod_at[spot(lod)]
+        mains.append(main)
+    if pair:
+        return lods, mains, dup
+    for m in mains:
+        if m.lod_index >= 0:
+            m.lod_index += len(mains)
+    return mains + lods, [], dup
+
+
+def plan_files(models, cells, *, export_dff=True, export_col=True,
+               col_library=False, export_txd=True, export_ide=True,
+               export_ipl=True, pair=False) -> dict:
+    """What Export Map writes (bpy-free — tested without Blender):
+    {path: (kind, payload)} in write order, cell by cell.
+
+    ``models`` — {key: MapModel}; ``cells`` — [(cell name, dir,
+    [MapGroup(base=key, dff=placement)])]. A model's DFF, LOD, COL, TXD and
+    IDE row go to the cell of its first placement; every placement is an IPL
+    row of its own cell. TXD — one file per TXD name (the LOD's own TXD too,
+    vanilla lanroad → lanlod)."""
+    home_cell = {}
+    for cell_name, _d, groups in cells:
+        for g in groups:
+            m = models.get(g.base)
+            if m is not None and g.dff is m.home:
+                home_cell[m.key] = cell_name
+    plan = {}
+    for cell_name, cell_dir, groups in cells:
+        mine = [m for m in models.values() if home_cell.get(m.key) == cell_name]
+        lods = [m for m in mine if m.lod is not None and m.lod_own]
+        if export_dff:
+            for m in mine:
+                plan[os.path.join(cell_dir, m.name + '.dff')] = ('dff', m)
+            for m in lods:
+                plan[os.path.join(cell_dir, m.lod_name + '.dff')] = ('lod', m)
+        if export_col:
+            with_col = [m for m in mine if m.cols]
+            if with_col and col_library:
+                plan[os.path.join(cell_dir, cell_name + '.col')] = ('col_lib', with_col)
+            elif with_col:
+                for m in with_col:
+                    plan[os.path.join(cell_dir, m.name + '.col')] = ('col', m)
+        if export_txd:
+            buckets = {}
+            for m in mine:
+                buckets.setdefault(m.txd.lower(), (m.txd, []))[1].append(m.home)
+            for m in lods:
+                buckets.setdefault(m.lod_txd.lower(), (m.lod_txd, []))[1].append(m.lod)
+            for _k, (tname, objs) in sorted(buckets.items()):
+                plan[os.path.join(cell_dir, tname + '.txd')] = ('txd', objs)
+        if export_ide and mine:
+            plan[os.path.join(cell_dir, cell_name + '.ide')] = ('ide', mine)
+        if export_ipl:
+            plan[os.path.join(cell_dir, cell_name + '.ipl')] = ('ipl', groups)
+            if pair:
+                plan[os.path.join(cell_dir, cell_name + '_stream0.ipl')] = ('bnry', groups)
+    return plan
+
+
+def existing_files(plan) -> list:
+    """Paths of *plan* already on disk — the operator asks before replacing."""
+    return [p for p in plan if os.path.isfile(p)]
+
+
+def _txd_readable(path) -> bool:
+    """An existing .txd update_txd can merge into (a Texture Dictionary)."""
+    from ..core.txd import split_txd_sections
+    try:
+        with open(path, 'rb') as f:
+            return split_txd_sections(f.read())[0] is not None
+    except OSError:
+        return False
 
 
 # ──────────────────────────── main export ─────────────────────────────
-
-def _pair_main_lod_groups(cell_groups: list) -> list:
-    """Reorder cell_groups so each main DFF is immediately followed by
-    its LOD partner from ``inu.lod_object``.
-
-    Vanilla SA IPL/IDE files interleave main → LOD → main → LOD →…,
-    which keeps a model and its low-poly twin physically close in the
-    binary stream. We mirror that by walking ``cell_groups`` once,
-    emitting each main and (if it points at a LOD that's also being
-    exported) the LOD right after. Groups already emitted via this
-    pairing are skipped on their direct visit so a LOD never appears
-    twice. Anything without a resolvable LOD partner keeps its
-    original position.
-    """
-    by_obj: dict = {id(g.dff): g for g in cell_groups}
-    out: list = []
-    consumed: set = set()
-
-    for g in cell_groups:
-        if id(g.dff) in consumed:
-            continue
-        out.append(g)
-        consumed.add(id(g.dff))
-        inu = getattr(g.dff, 'inu', None)
-        lod_obj = getattr(inu, 'lod_object', None) if inu is not None else None
-        if lod_obj is None:
-            continue
-        partner = by_obj.get(id(lod_obj))
-        if partner is not None and id(partner.dff) not in consumed:
-            out.append(partner)
-            consumed.add(id(partner.dff))
-
-    return out
 
 
 def _plan_cells(groups, *, base_name: str, target_dir: str,
@@ -502,6 +893,80 @@ def _plan_cells(groups, *, base_name: str, target_dir: str,
     return [(base_name, target_dir, groups)]
 
 
+class MapExportPrep:
+    """One Export Map run, planned without touching the scene or the disk
+    (:func:`prepare_map_export`) — the operator lists the files that
+    already exist from ``plan`` and asks before anything is written."""
+
+    def __init__(self, target_dir: str = ''):
+        self.target_dir = target_dir
+        self.models = {}            # key → MapModel
+        self.placements = []        # [MapGroup(base=key, dff=placement)]
+        self.cells = []             # [(cell name, dir, [MapGroup])]
+        self.plan = {}              # path → (kind, payload), in write order
+        self.notes = []             # [(level, text)]
+        self.error = ''
+        self.game = 'SA'
+        self.pair = False           # SA Binary IPL: <cell>.ipl + <cell>_stream0.ipl
+        self.split = False          # a split mode produced several cells
+        self.fla = False
+
+
+def prepare_map_export(context, target_dir: str, objects=None, *,
+                       export_dff: bool = True,
+                       export_col: bool = True,
+                       col_library: bool = False,
+                       export_txd: bool = True,
+                       export_ipl: bool = True,
+                       export_ide: bool = True,
+                       binary_ipl: bool = False,
+                       fla_extended_ipl: bool = False,
+                       base_name: str = "district",
+                       split_mode: str = 'NONE',
+                       cell_size: float = 256.0,
+                       max_per_cell: int = 200,
+                       min_cell_size: float = 16.0) -> MapExportPrep:
+    """Models, cells and the file plan of one export — no ID handed out,
+    nothing written (that's :func:`assign_map_ids` / :func:`iter_export_map`)."""
+    from ..ops.map_link import scene_game
+    prep = MapExportPrep(target_dir)
+    if objects is None:
+        objects = list(context.selected_objects) or list(context.scene.objects)
+    prep.models, prep.placements, prep.notes = collect_map_models(context, objects)
+    if not prep.placements:
+        prep.error = T("Нет моделей DFF для экспорта")
+        return prep
+    prep.game = scene_game(context)
+    prep.pair = bool(export_ipl and binary_ipl) and prep.game == 'SA'
+    prep.fla = bool(fla_extended_ipl)
+    if export_col:
+        bare = [m.name for m in prep.models.values() if not m.cols]
+        if bare:
+            prep.notes.append(('WARNING', T("Нет коллизии (COL) у моделей: {0}").format(
+                _names(bare))))
+    prep.cells = _plan_cells(prep.placements, base_name=base_name,
+                             target_dir=target_dir, split_mode=split_mode,
+                             cell_size=cell_size,
+                             scene=getattr(context, 'scene', None),
+                             max_per_cell=max_per_cell,
+                             min_cell_size=min_cell_size)
+    prep.split = (split_mode or 'NONE').upper() != 'NONE' and len(prep.cells) > 1
+    if export_ipl and binary_ipl and not prep.pair:
+        prep.notes.append(('INFO', T("Binary IPL — только для SA: для {0} записан "
+                                     "текстовый IPL").format(prep.game)))
+    for cell_name, _d, _g in (prep.cells if prep.pair else ()):
+        if not stream_name_ok(cell_name):
+            prep.notes.append(('WARNING', T(
+                "{0}.ipl: имя длиннее {1} символов — игра не свяжет его с "
+                "текстовым IPL. Сократите имя района").format(
+                    cell_name + '_stream0', STREAM_NAME_MAX)))
+    prep.plan = plan_files(prep.models, prep.cells, export_dff=export_dff,
+                           export_col=export_col, col_library=col_library,
+                           export_txd=export_txd, export_ide=export_ide,
+                           export_ipl=export_ipl, pair=prep.pair)
+    return prep
+
+
 def iter_export_map(context, target_dir: str, *, objects=None,
                     export_dff: bool = True,
                     export_col: bool = True,
@@ -511,165 +976,61 @@ def iter_export_map(context, target_dir: str, *, objects=None,
                     export_ide: bool = True,
                     binary_ipl: bool = False,
                     fla_extended_ipl: bool = False,
-                    id_pool_start: int = 20000,
                     base_name: str = "district",
                     split_mode: str = 'NONE',
                     cell_size: float = 256.0,
                     max_per_cell: int = 200,
                     min_cell_size: float = 16.0,
-                    stats: Optional[dict] = None):
+                    stats: Optional[dict] = None,
+                    prepared: Optional[MapExportPrep] = None):
     """Generator-driven map export.
 
-    Yields ``(current, total, status_label)`` after every unit of work
-    (one DFF group, one COL library, one TXD/IDE/IPL write). Caller
-    drives it from a modal timer to keep the viewport responsive and
-    update the workspace status bar between units. Pass an empty
-    ``stats`` dict to have it filled with per-format counts in place.
+    Yields ``(current, total, status_label)`` after every file written.
+    Caller drives it from a modal timer to keep the viewport responsive
+    and update the workspace status bar between files. Pass an empty
+    ``stats`` dict to have it filled with counts and ``notes`` in place.
 
-    The synchronous ``export_map(...)`` wrapper exhausts this generator
-    in one go for callers that don't need progress.
+    ``prepared`` — a plan from :func:`prepare_map_export` whose models
+    already have their IDs (the operator asks about existing files, hands
+    out IDs with an undo step, then runs this). Without it the generator
+    plans and hands out IDs itself — the synchronous ``export_map(...)``
+    wrapper exhausts it in one go for callers that don't need progress.
     """
-    os.makedirs(target_dir, exist_ok=True)
-
-    if objects is None:
-        objects = list(context.selected_objects)
-        if not objects:
-            objects = list(context.scene.objects)
-
     if stats is None:
         stats = {}
-    stats.setdefault('dff', 0)
-    stats.setdefault('col', 0)
-    stats.setdefault('txd', 0)
-    stats.setdefault('ide', 0)
-    stats.setdefault('ipl', 0)
-    stats.setdefault('groups', 0)
+    for k in ('models', 'placements', 'dff', 'lod', 'col', 'txd', 'ide', 'ipl', 'rows'):
+        stats.setdefault(k, 0)
+    notes = stats.setdefault('notes', [])
 
-    groups = collect_map_groups(objects)
-    if not groups:
-        stats['error'] = 'no DFF meshes found in selection'
+    prep = prepared
+    if prep is None:
+        prep = prepare_map_export(
+            context, target_dir, objects, export_dff=export_dff,
+            export_col=export_col, col_library=col_library,
+            export_txd=export_txd, export_ipl=export_ipl,
+            export_ide=export_ide, binary_ipl=binary_ipl,
+            fla_extended_ipl=fla_extended_ipl, base_name=base_name,
+            split_mode=split_mode, cell_size=cell_size,
+            max_per_cell=max_per_cell, min_cell_size=min_cell_size)
+        if not prep.error:
+            _n, id_notes, prep.error = assign_map_ids(context, prep)
+            prep.notes[:0] = id_notes
+    if prep.error:
+        stats['error'] = prep.error
         return
-
-    # ── Assign / unify Model IDs across duplicate-name objects ──
-    # Many scenes have several DFFs sharing the same cleaned model
-    # name (Blender's .001 / .002 instance suffixes, or hand-placed
-    # copies of vegas_palm01). The IDE dedupes by cleaned name and
-    # writes ONE entry per model, but the IPL writes every instance
-    # with that DFF's own ``inu.model_id`` — if duplicates carry
-    # different IDs (e.g. one vanilla 6870, others auto-assigned
-    # 20000/20001/…), the IPL ends up with model_ids that have no
-    # IDE definition and the game crashes on load.
-    #
-    # Resolution: bucket DFFs by cleaned model name; for each bucket
-    # pick the existing nonzero ID if any, otherwise allocate one
-    # via ``_get_or_assign_id``; then propagate the chosen ID to
-    # every duplicate in the bucket.
-    from .model_utils import get_model_type
-    used_ids: Set[int] = set()
-
-    def _bucket_key(obj):
-        """Strip Blender's .001 / .002 instance suffix BEFORE running
-        the model-type detector — get_model_type leaves digit-suffixes
-        intact and would otherwise put each duplicate in its own bucket."""
-        n = obj.name
-        if '.' in n:
-            b, s = n.rsplit('.', 1)
-            if s.isdigit():
-                n = b
-        class _Mock:
-            def __init__(self, nn):
-                self.name = nn
-        _, base = get_model_type(_Mock(n))
-        return base
-
-    name_to_groups: Dict[str, list] = {}
-    for g in groups:
-        name_to_groups.setdefault(_bucket_key(g.dff), []).append(g)
-
-    for base, gs in name_to_groups.items():
-        existing_id = 0
-        for g in gs:
-            inu = getattr(g.dff, 'inu', None)
-            mid = int(getattr(inu, 'model_id', 0) or 0) if inu else 0
-            if mid > 0:
-                existing_id = mid
-                break
-
-        if existing_id > 0:
-            used_ids.add(existing_id)
-            for g in gs:
-                inu = getattr(g.dff, 'inu', None)
-                if inu is not None:
-                    try:
-                        inu.model_id = existing_id
-                    except Exception:
-                        pass
-        else:
-            shared_id = _get_or_assign_id(gs[0].dff, id_pool_start, used_ids)
-            for g in gs[1:]:
-                inu = getattr(g.dff, 'inu', None)
-                if inu is not None:
-                    try:
-                        inu.model_id = shared_id
-                    except Exception:
-                        pass
-
-    cells = _plan_cells(groups, base_name=base_name, target_dir=target_dir,
-                        split_mode=split_mode, cell_size=cell_size,
-                        scene=getattr(context, 'scene', None),
-                        max_per_cell=max_per_cell,
-                        min_cell_size=min_cell_size)
-    if (split_mode or 'NONE').upper() != 'NONE' and len(cells) > 1:
-        stats['cells'] = len(cells)
-
-    # ── Reorder each cell's groups so each main DFF is immediately
-    # followed by its LOD partner (matching the vanilla SA layout
-    # main→LOD→main→LOD…). Pairing reads ``inu.lod_object`` set during
-    # Map Import; LOD partners that aren't part of the same export
-    # subset stay in their original spot.
-    cells = [
-        (cell_name, cell_dir, _pair_main_lod_groups(cell_groups))
-        for cell_name, cell_dir, cell_groups in cells
-    ]
-
-    # Pre-bucket each cell's groups by their target ``inu.txd_name``.
-    # SA's IDE assigns every model to a TXD by name; many models share
-    # one TXD (e.g. ``vegas01.txd`` used by 50 buildings), some have
-    # their own (``cj.txd``). A monolithic <cell>.txd would silently
-    # destroy that mapping at re-export time, so we bucket per
-    # txd_name and emit one .txd per bucket. Empty txd_name falls
-    # back to the model's own base name (fresh hand-crafted models).
-    cell_txd_buckets: List[List[Tuple[str, list]]] = []
-    for cell_name, _cell_dir, cell_groups in cells:
-        buckets: Dict[str, list] = {}
-        if export_txd:
-            for g in cell_groups:
-                inu = getattr(g.dff, 'inu', None)
-                tname = ((getattr(inu, 'txd_name', '') if inu else '') or '').strip()
-                if not tname:
-                    tname = g.base
-                buckets.setdefault(tname, []).append(g)
-        cell_txd_buckets.append(sorted(buckets.items()))
-
-    # Pre-compute total work units for the progress bar
-    total = 0
-    for cell_idx, (cell_name, cell_dir, cell_groups) in enumerate(cells):
-        total += len(cell_groups)  # one DFF (+ optional per-group COL) per group
-        if export_col and col_library and any(g.col_objects for g in cell_groups):
-            total += 1
-        if export_txd:
-            total += len(cell_txd_buckets[cell_idx])
-        if export_ide:
-            total += 1
-        if export_ipl:
-            total += 1
-    if total == 0:
-        total = 1
-    current = 0
+    notes.extend(prep.notes)
+    stats['models'] = len(prep.models)
+    stats['placements'] = len(prep.placements)
+    stats['pair'] = prep.pair
+    if prep.split:
+        stats['cells'] = len(prep.cells)
+    plan = prep.plan
+    kinds = {kind for kind, _d in plan.values()}
+    total = max(1, len(plan))
 
     # ── Lazy imports (so the generator doesn't pull bpy heavy modules
     # in until it's actually run) ──
-    if export_dff:
+    if kinds & {'dff', 'lod'}:
         from ..ops.dff_export import export_dff as _export_dff, _resolve_export_version
         # Resolve RW version + platform once for the whole map export —
         # bulk export honours scene's gtatools_game + gtatools_platform.
@@ -680,159 +1041,146 @@ def iter_export_map(context, target_dir: str, *, objects=None,
                 _bpy.context.scene.inu_settings, 'gtatools_platform', 'PC')
         except Exception:
             _map_export_platform = 'PC'
-    if export_col:
-        from ..ops.col_export import _resolve_col_version
+    if kinds & {'col', 'col_lib'}:
+        from ..ops.col_export import (_resolve_col_version, export_col as _export_col,
+                                      export_col_library as _export_col_lib)
         _map_export_col_version = _resolve_col_version()
-        if col_library:
-            from ..ops.col_export import export_col_library as _export_col_lib
-        else:
-            from ..ops.col_export import export_col as _export_col
-    if export_txd:
-        from ..tools.txd_export import export_txd as _export_txd
+    if 'txd' in kinds:
+        from ..tools.txd_export import export_txd as _export_txd, update_txd as _update_txd
         # DXT compression backend — read once at the top so every bucket
         # uses the same encoder. Default 'numpy' is the vectorized core.dxt
         # path (no external binaries, ToS-clean for extensions.blender.org).
         _txd_backend = getattr(
             getattr(getattr(context, 'scene', None), 'inu_settings', None),
             'gtatools_dxt_backend', 'numpy')
-    if export_ide:
-        from ..ops.ide_export import export_ide as _export_ide
-    if export_ipl:
-        from ..ops.ipl_export import export_ipl as _export_ipl
+    if kinds & {'ide', 'ipl', 'bnry'}:
+        from ..ops import map_link as _ml
+        from ..core.ide import IdeFile, write_ide
+        from ..core.ipl import IplFile, write_ipl
 
-    for cell_idx, (cell_name, cell_dir, cell_groups) in enumerate(cells):
-        os.makedirs(cell_dir, exist_ok=True)
-        n_local = len(cell_groups)
+    def _write(path, kind, data):
+        fname = os.path.basename(path)
+        if kind == 'dff':
+            # The model alone — no LOD / COL inside (the game keeps one
+            # atomic per model, an embedded COL crashes a map model);
+            # 2DFX children are picked up by the DFF builder.
+            _export_dff(path, [data.home], version=_map_export_rw_version,
+                        target_platform=_map_export_platform)
+            stats['dff'] += 1
+        elif kind == 'lod':
+            _export_dff(path, [data.lod], version=_map_export_rw_version,
+                        target_platform=_map_export_platform)
+            stats['lod'] += 1
+        elif kind == 'col':
+            _export_col(path, data.cols, version=_map_export_col_version,
+                        model_name=data.name)
+            stats['col'] += 1
+        elif kind == 'col_lib':
+            stats['col'] += _export_col_lib(path, [o for m in data for o in m.cols],
+                                            version=_map_export_col_version)
+        elif kind == 'txd':
+            # Merged INTO an existing .txd: textures of models that aren't
+            # in this export stay (one lanlod.txd serves hundreds of LODs).
+            if os.path.isfile(path) and not _txd_readable(path):
+                res, msg, _t = _export_txd(path, context, selected_only=True,
+                                           backend=_txd_backend, objects=data)
+                if res == {'FINISHED'}:
+                    notes.append(('WARNING', T("{0}: существующий файл не TXD — "
+                                               "заменён").format(fname)))
+            else:
+                res, msg, _t = _update_txd(path, context, selected_only=True,
+                                           backend=_txd_backend, objects=data)
+            if res == {'FINISHED'}:
+                stats['txd'] += 1
+            else:
+                notes.append(('WARNING', f"{fname}: {msg}"))
+        elif kind == 'ide':
+            # A model, then its LOD — the rows of map_link.ide_entries, but
+            # for exactly the LOD this export writes (its .dff, its TXD).
+            from .. import _ide_entry_from_obj
+            rows = []
+            for m in data:
+                ents = [_ide_entry_from_obj(m.home)]
+                if m.lod is not None and m.lod_own:
+                    le = _ide_entry_from_obj(m.lod)
+                    le.model_name, le.txd_name = m.lod_name, m.lod_txd
+                    le.model_id = _ml.lod_model_id(m.lod, m.home)
+                    le.draw_distance = m.home.inu.lod_draw_distance
+                    ents.append(le)
+                for e in ents:
+                    if e.model_id <= 0:
+                        notes.append(('ERROR', T("«{0}»: Model ID = 0 — не записана").format(
+                            e.model_name)))
+                    else:
+                        rows.append(e)
+            write_ide(path, IdeFile(objects=rows), game=prep.game)
+            stats['ide'] += 1
+        elif kind in ('ipl', 'bnry'):
+            pairs = []
+            for g in data:
+                m = prep.models[g.base]
+                main = _ml.ipl_inst_of(g.dff)
+                lod = None
+                if m.lod is not None:
+                    # Each placement gets its own LOD row, at its transform.
+                    lod = _ml.lod_inst_for(g.dff, m.lod, m.name, main)
+                    lod.model_name = m.lod_name
+                    if lod.model_id <= 0 or _ml._lod_is_model(lod, main):
+                        lod = None
+                pairs.append((main, lod))
+            text_rows, bin_rows, dup = plan_ipl_rows(pairs, prep.pair)
+            rows = bin_rows if kind == 'bnry' else text_rows
+            if dup and kind == 'ipl':
+                notes.append(('WARNING', T("{0}: {1} одинаковых расстановок (тот же ID и "
+                                           "позиция) записаны один раз").format(fname, dup)))
+            write_ipl(path, IplFile(instances=rows), binary=(kind == 'bnry'),
+                      game=prep.game, fla_extended=prep.fla and kind == 'ipl')
+            stats['ipl'] += 1
+            stats['rows'] += len(rows)
 
-        # ── Per-group DFF + (per-group COL if not col_library) ────
-        for gi, g in enumerate(cell_groups, start=1):
-            current += 1
-            yield current, total, f"{cell_name}: DFF {gi}/{n_local} ({g.base})"
+    if context.mode != 'OBJECT':
+        try:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        except RuntimeError:
+            pass
+    for d in sorted({os.path.dirname(p) for p in plan}):
+        os.makedirs(d, exist_ok=True)
 
-            if export_dff:
-                dff_path = os.path.join(cell_dir, f"{g.base}.dff")
-                group_objs = [g.dff]
-                if g.lod:
-                    group_objs.append(g.lod)
-                group_objs.extend(g.col_objects)
-                try:
-                    _export_dff(dff_path, group_objs,
-                                version=_map_export_rw_version,
-                                target_platform=_map_export_platform)
-                    stats['dff'] += 1
-                except Exception as e:
-                    print(f"[map_export] DFF {g.base} failed: {e}")
+    labels = {'dff': 'DFF', 'lod': 'LOD', 'col': 'COL', 'col_lib': 'COL',
+              'txd': 'TXD', 'ide': 'IDE', 'ipl': 'IPL', 'bnry': 'IPL'}
+    for current, (path, (kind, data)) in enumerate(plan.items(), start=1):
+        fname = os.path.basename(path)
+        yield current, total, f"{labels[kind]} {fname}"
+        try:
+            _write(path, kind, data)
+        except Exception as e:
+            notes.append(('WARNING', f"{T('Ошибка экспорта')} {fname}: {e}"))
+            print(f"[map_export] {fname} failed: {e}")
 
-            if export_col and not col_library and g.col_objects:
-                col_path = os.path.join(cell_dir, f"{g.base}.col")
-                try:
-                    _export_col(col_path, g.col_objects,
-                                version=_map_export_col_version)
-                    stats['col'] += 1
-                except Exception as e:
-                    print(f"[map_export] COL {g.base} failed: {e}")
 
-        # ── COL library (one .col per cell) ───────────────────────
-        if export_col and col_library and any(g.col_objects for g in cell_groups):
-            current += 1
-            yield current, total, f"{cell_name}: COL library"
-            lib_path = os.path.join(cell_dir, f"{cell_name}.col")
-            all_col_objs: list = []
-            for g in cell_groups:
-                all_col_objs.extend(g.col_objects)
-            try:
-                count = _export_col_lib(lib_path, all_col_objs,
-                                        version=_map_export_col_version)
-                stats['col'] += count
-            except Exception as e:
-                print(f"[map_export] COL library failed: {e}")
-
-        # ── Per-txd_name TXD writes ──────────────────────────────
-        # IDE-driven grouping: every model belongs to a named TXD;
-        # models sharing a name go into one .txd, exclusive ones get
-        # their own. Preserves the vanilla SA layout exactly when the
-        # scene was imported with IDE-populated inu.txd_name.
-        if export_txd and cell_txd_buckets[cell_idx]:
-            if context.mode != 'OBJECT':
-                try:
-                    bpy.ops.object.mode_set(mode='OBJECT')
-                except RuntimeError:
-                    pass
-            prev_selection = list(context.selected_objects)
-            prev_active = context.view_layer.objects.active
-
-            def _clear_selection():
-                for _o in context.selected_objects:
-                    try:
-                        _o.select_set(False)
-                    except Exception:
-                        pass
-
-            try:
-                for txd_basename, txd_groups in cell_txd_buckets[cell_idx]:
-                    current += 1
-                    yield current, total, (
-                        f"{cell_name}: TXD {txd_basename} "
-                        f"({len(txd_groups)} model{'s' if len(txd_groups) != 1 else ''})"
-                    )
-                    txd_path = os.path.join(cell_dir, f"{txd_basename}.txd")
-                    _clear_selection()
-                    for g in txd_groups:
-                        if g.dff:
-                            try:
-                                g.dff.select_set(True)
-                            except Exception:
-                                pass
-                    if txd_groups and txd_groups[0].dff:
-                        try:
-                            context.view_layer.objects.active = txd_groups[0].dff
-                        except Exception:
-                            pass
-                    try:
-                        _export_txd(txd_path, context, selected_only=True,
-                                    backend=_txd_backend)
-                        stats['txd'] += 1
-                    except Exception as e:
-                        print(f"[map_export] TXD {txd_basename} failed: {e}")
-            finally:
-                _clear_selection()
-                for o in prev_selection:
-                    try:
-                        o.select_set(True)
-                    except Exception:
-                        pass
-                if prev_active:
-                    try:
-                        context.view_layer.objects.active = prev_active
-                    except Exception:
-                        pass
-
-        # ── IDE ──────────────────────────────────────────────────
-        if export_ide:
-            current += 1
-            yield current, total, f"{cell_name}: IDE"
-            ide_path = os.path.join(cell_dir, f"{cell_name}.ide")
-            ide_objs = [g.dff for g in cell_groups]
-            try:
-                _export_ide(ide_path, ide_objs)
-                stats['ide'] += 1
-            except Exception as e:
-                print(f"[map_export] IDE failed: {e}")
-
-        # ── IPL ──────────────────────────────────────────────────
-        if export_ipl:
-            current += 1
-            yield current, total, f"{cell_name}: IPL"
-            ipl_path = os.path.join(cell_dir, f"{cell_name}.ipl")
-            ipl_objs = [g.dff for g in cell_groups]
-            try:
-                _export_ipl(ipl_path, ipl_objs, binary=binary_ipl,
-                            fla_extended=fla_extended_ipl)
-                stats['ipl'] += 1
-            except Exception as e:
-                print(f"[map_export] IPL failed: {e}")
-
-        stats['groups'] += n_local
+def map_export_report(stats) -> list:
+    """[(level, text)] for the operator: the notes, then the summary last
+    (the line the status bar keeps)."""
+    head = T("Моделей {0}, расстановок {1} → DFF {2}, LOD {3}, COL {4}, TXD {5}, "
+             "IDE {6}, IPL {7} (строк {8})").format(
+        stats.get('models', 0), stats.get('placements', 0), stats.get('dff', 0),
+        stats.get('lod', 0), stats.get('col', 0), stats.get('txd', 0),
+        stats.get('ide', 0), stats.get('ipl', 0), stats.get('rows', 0))
+    if stats.get('cells'):
+        head = T("Ячеек {0}: ").format(stats['cells']) + head
+    out, seen = [], set()
+    for level, text in stats.get('notes', ()):
+        if text not in seen:
+            seen.add(text)
+            out.append((level, text))
+    if stats.get('pair') and stats.get('ipl'):
+        out.append(('INFO', T(
+            "Binary IPL: <ячейка>_stream0.ipl положите в IMG, который gta.dat "
+            "грузит до строк IPL (например gta3.img); текстовый <ячейка>.ipl — "
+            "строкой IPL в gta.dat, путь через обратный слэш")))
+    warn = any(level in ('WARNING', 'ERROR') for level, _t in out)
+    out.append(('WARNING' if warn else 'INFO', head))
+    return out
 
 
 def export_map(target_dir: str, *, objects=None,
@@ -844,7 +1192,6 @@ def export_map(target_dir: str, *, objects=None,
                export_ide: bool = True,
                binary_ipl: bool = False,
                fla_extended_ipl: bool = False,
-               id_pool_start: int = 20000,
                base_name: str = "district",
                split_mode: str = 'NONE',
                cell_size: float = 256.0,
@@ -855,6 +1202,8 @@ def export_map(target_dir: str, *, objects=None,
 
     Drives the generator to exhaustion in one go and returns the stats
     dict — including the ``cells`` count when a split mode was applied.
+    No question about existing files (a .txd is merged, the rest
+    replaced); models without an ID get one from the ID Manager.
     """
     stats: dict = {}
     for _ in iter_export_map(
@@ -863,7 +1212,6 @@ def export_map(target_dir: str, *, objects=None,
             col_library=col_library, export_txd=export_txd,
             export_ipl=export_ipl, export_ide=export_ide,
             binary_ipl=binary_ipl, fla_extended_ipl=fla_extended_ipl,
-            id_pool_start=id_pool_start,
             base_name=base_name, split_mode=split_mode,
             cell_size=cell_size,
             max_per_cell=max_per_cell, min_cell_size=min_cell_size,
@@ -892,7 +1240,15 @@ class GTATOOLS_OT_map_export(bpy.types.Operator):
     include_txd: bpy.props.BoolProperty(name="TXD", default=True)
     include_ide: bpy.props.BoolProperty(name="IDE", default=True)
     include_ipl: bpy.props.BoolProperty(name="IPL", default=True)
-    binary_ipl: bpy.props.BoolProperty(name="Binary IPL", default=False)
+    binary_ipl: bpy.props.BoolProperty(
+        name="Binary IPL",
+        description=T(
+            "Только SA — пара, как в игре: модели в бинарный "
+            "<ячейка>_stream0.ipl (игра берёт его только из IMG), строки LOD "
+            "в текстовый <ячейка>.ipl (подключается в gta.dat). Для III/VC "
+            "пишется текстовый IPL"),
+        default=False,
+    )
     fla_extended_ipl: bpy.props.BoolProperty(
         name=T("FLA: real_interior"),
         description=T(
@@ -900,10 +1256,6 @@ class GTATOOLS_OT_map_export(bpy.types.Operator):
             "Fastman92 Limit Adjuster читает её, vanilla SA молча "
             "игнорирует. Значение берётся из obj.inu.real_interior"),
         default=False,
-    )
-    id_pool_start: bpy.props.IntProperty(
-        name="ID Pool Start", default=20000, min=1, max=32000,
-        description=T("Первый ID для DFF у которых inu.model_id == 0"),
     )
     split_mode: bpy.props.EnumProperty(
         name=T("Разбиение"),
@@ -958,8 +1310,14 @@ class GTATOOLS_OT_map_export(bpy.types.Operator):
     _gen = None
     _stats: dict = None
     _captured_objects: list = None
+    _prepared = None
+    _ask_overwrite = False       # set by invoke — a script's EXEC run doesn't ask
+    _confirm_lines: list = []    # existing files → draw() shows the question
 
     def invoke(self, context, event):
+        type(self)._confirm_lines = []
+        self._ask_overwrite = True
+        self._prepared = None
         # Capture the user's outliner / viewport selection BEFORE the
         # file browser steals focus and clears it. Two-pronged: the
         # snapshot serves as a fallback when ``target_collections`` is
@@ -981,6 +1339,16 @@ class GTATOOLS_OT_map_export(bpy.types.Operator):
 
     def draw(self, context):
         layout = self.layout
+        if type(self)._confirm_lines:
+            # Second step (after the file browser): files already there.
+            col = layout.column(align=True)
+            col.label(text=T("Эти файлы уже есть и будут заменены (.txd — слиянием):"),
+                      **inu_icon(safe_icon('ERROR')))
+            for line in type(self)._confirm_lines:
+                col.label(text=line)
+            col.separator()
+            col.label(text=T("Продолжить?"))
+            return
 
         # Top-level collections multi-checkbox FIRST — most reliable
         # way to express «export these N collections» when the outliner
@@ -1008,7 +1376,10 @@ class GTATOOLS_OT_map_export(bpy.types.Operator):
         layout.prop(self, "col_library")
         layout.prop(self, "binary_ipl")
         layout.prop(self, "fla_extended_ipl")
-        layout.prop(self, "id_pool_start")
+        if self.include_ide or self.include_ipl:
+            preset = getattr(context.scene.inu_settings, 'gtatools_id_preset', '') or 'default'
+            layout.label(text=T("Модели без ID получат ID из пресета ID Manager «{0}»").format(
+                preset), **inu_icon(safe_icon('INFO')))
         layout.separator()
         layout.prop(self, "split_mode")
         if self.split_mode == 'GRID':
@@ -1023,6 +1394,56 @@ class GTATOOLS_OT_map_export(bpy.types.Operator):
             self.report({'ERROR'}, "Pick a target folder")
             return {'CANCELLED'}
 
+        prep = self._prepared        # second pass: OK in the «files exist» dialog
+        if prep is None:
+            prep = self._prepare(context)
+        if prep.error:
+            self.report({'ERROR'}, prep.error)
+            return {'CANCELLED'}
+
+        # Files already in the folder → list + question before anything is
+        # written or any ID handed out (.txd is merged, the rest replaced).
+        existing = existing_files(prep.plan)
+        if existing and self._ask_overwrite:
+            self._ask_overwrite = False
+            self._prepared = prep
+            shown = [os.path.relpath(p, self.directory) for p in existing[:20]]
+            if len(existing) > 20:
+                shown.append(T("… ещё {0}").format(len(existing) - 20))
+            type(self)._confirm_lines = shown
+            return context.window_manager.invoke_props_dialog(self, width=520)
+        type(self)._confirm_lines = []
+        self._prepared = None
+
+        # Model IDs from the ID Manager — all or nothing, own undo step
+        # (the operator has no UNDO flag: ESC after this, or Adjust Last
+        # Operation re-running the whole export, would lose / redo it).
+        changed, id_notes, err = assign_map_ids(context, prep)
+        if err:
+            self.report({'ERROR'}, err)
+            return {'CANCELLED'}
+        if changed:
+            try:
+                bpy.ops.ed.undo_push(message="INU: Export Map IDs")
+            except Exception as e:
+                print(f"[map_export] undo_push failed: {e}")
+        prep.notes[:0] = id_notes
+
+        # Modal generator pattern (same shape as Import Map): yield-driven
+        # work loop fed by a window-manager timer keeps the viewport
+        # responsive and the workspace status text fresh between writes.
+        self._stats = {}
+        self._gen = iter_export_map(context, self.directory, stats=self._stats,
+                                    prepared=prep)
+
+        wm = context.window_manager
+        wm.progress_begin(0, 100)
+        self._timer = wm.event_timer_add(0.05, window=context.window)
+        wm.modal_handler_add(self)
+        context.workspace.status_text_set(T("Map Export: подготовка..."))
+        return {'RUNNING_MODAL'}
+
+    def _prepare(self, context):
         # Source of truth, in priority order:
         #   1. Explicit dialog checkboxes (``target_collections``) — the
         #      user picked these in the operator panel, ignore everything
@@ -1051,12 +1472,8 @@ class GTATOOLS_OT_map_export(bpy.types.Operator):
             if not selected:
                 selected = _resolve_export_objects(context)
 
-        # Modal generator pattern (same shape as Import Map): yield-driven
-        # work loop fed by a window-manager timer keeps the viewport
-        # responsive and the workspace status text fresh between writes.
-        self._stats = {}
-        self._gen = iter_export_map(
-            context, self.directory, objects=selected,
+        return prepare_map_export(
+            context, self.directory, selected,
             export_dff=self.include_dff,
             export_col=self.include_col,
             col_library=self.col_library,
@@ -1065,21 +1482,12 @@ class GTATOOLS_OT_map_export(bpy.types.Operator):
             export_ipl=self.include_ipl,
             binary_ipl=self.binary_ipl,
             fla_extended_ipl=self.fla_extended_ipl,
-            id_pool_start=self.id_pool_start,
             base_name=self.base_name,
             split_mode=self.split_mode,
             cell_size=self.cell_size,
             max_per_cell=self.max_per_cell,
             min_cell_size=self.min_cell_size,
-            stats=self._stats,
         )
-
-        wm = context.window_manager
-        wm.progress_begin(0, 100)
-        self._timer = wm.event_timer_add(0.05, window=context.window)
-        wm.modal_handler_add(self)
-        context.workspace.status_text_set(T("Map Export: подготовка..."))
-        return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
         if event.type == 'ESC':
@@ -1103,17 +1511,17 @@ class GTATOOLS_OT_map_export(bpy.types.Operator):
                 if stats.get('error'):
                     self.report({'ERROR'}, stats['error'])
                     return {'CANCELLED'}
-                if 'cells' in stats:
-                    msg = (f"{stats['cells']} cells, {stats.get('groups', 0)} group(s) → "
-                           f"{stats.get('dff', 0)} DFF, {stats.get('col', 0)} COL, "
-                           f"{stats.get('txd', 0)} TXD, {stats.get('ide', 0)} IDE, "
-                           f"{stats.get('ipl', 0)} IPL")
-                else:
-                    msg = (f"{stats.get('groups', 0)} group(s) → "
-                           f"{stats.get('dff', 0)} DFF, {stats.get('col', 0)} COL, "
-                           f"{stats.get('txd', 0)} TXD, {stats.get('ide', 0)} IDE, "
-                           f"{stats.get('ipl', 0)} IPL")
-                self.report({'INFO'}, msg)
+                lines = map_export_report(stats)
+                for level, text in lines[:-1][:20] + lines[-1:]:
+                    self.report({level if level in ('WARNING', 'ERROR') else 'INFO'}, text)
+                # Mobile: TXD карты всё равно PC-формата (как в Export TXD) —
+                # после сводки, последним (строка состояния).
+                from .txd_export import mobile_txd_warning
+                _mob = mobile_txd_warning(getattr(
+                    context.scene.inu_settings, 'gtatools_platform', 'PC'),
+                    stats.get('txd', 0))
+                if _mob:
+                    self.report({'WARNING'}, _mob)
                 return {'FINISHED'}
             except Exception as e:
                 self._finish(context)

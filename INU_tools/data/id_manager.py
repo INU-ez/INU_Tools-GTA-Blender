@@ -12,6 +12,16 @@
 #     3501-tatar_str_2817_1
 #     3502-LODtatar_str_2817_1
 #     3503
+#
+# IDs of the game's own models («Из игры») are also listed in a sidecar
+# `<preset>.game` (one ID per line — the same file the Max port writes, so
+# preset folders stay interchangeable). «Освободить фантомы», «Очистить
+# всё» and «Очистить выделенные» keep those IDs used: a freed vanilla ID
+# would be handed out again, and a second IDE line with the same ID makes
+# the engine overwrite the game's model info.
+#
+# Operators work through `Preset` — the preset is read and written once per
+# operation, not once per handed-out ID.
 
 import os
 import re
@@ -42,6 +52,15 @@ def _sanitize(name: str) -> str:
     name = (name or '').strip()
     name = re.sub(r'[^\w.\- ]+', '_', name)
     return name or _DEFAULT_PRESET
+
+
+def preset_name(name: str) -> str:
+    """The name a new / renamed preset gets — exactly as list_presets()
+    shows it (the preset selector only accepts listed names); '' if the
+    name can't be one. A leading '_' is dropped (list_presets hides such
+    files), a name of dots only is refused (no usable file name)."""
+    s = _sanitize(name).lstrip('_ ')
+    return s if s.strip('.') else ''
 
 
 def _ensure_presets_dir():
@@ -91,6 +110,13 @@ def _preset_path(name: str = None) -> str:
     return os.path.join(_presets_dir(), safe + '.txt')
 
 
+def _game_path(name: str = None) -> str:
+    """`<preset>.game` — IDs used by the game («Из игры»), next to the .txt."""
+    _ensure_presets_dir()
+    safe = _sanitize(name if name is not None else _active_preset)
+    return os.path.join(_presets_dir(), safe + '.game')
+
+
 def create_preset(name: str, copy_from: str = None) -> bool:
     """Create a new empty preset, optionally duplicating another preset's IDs."""
     _ensure_presets_dir()
@@ -100,11 +126,21 @@ def create_preset(name: str, copy_from: str = None) -> bool:
     dst = os.path.join(_presets_dir(), safe + '.txt')
     if os.path.isfile(dst):
         return False
+    try:        # a .game left by a .txt deleted by hand is not this preset's
+        os.remove(_game_path(safe))
+    except OSError:
+        pass
     try:
         if copy_from:
             src = os.path.join(_presets_dir(), _sanitize(copy_from) + '.txt')
             if os.path.isfile(src):
                 shutil.copy2(src, dst)
+                # the copy keeps the source's game IDs protected too
+                if os.path.isfile(_game_path(copy_from)):
+                    try:
+                        shutil.copy2(_game_path(copy_from), _game_path(safe))
+                    except OSError as e:
+                        print(f"[INU] ID preset copy, {safe}.game: {e!r}")
                 return True
         with open(dst, 'w', encoding='utf-8') as f:
             f.write(f'# GTA SA model ID preset: {safe}\n')
@@ -123,9 +159,13 @@ def delete_preset(name: str) -> bool:
         return False
     try:
         os.remove(path)
-        return True
     except Exception:
         return False
+    try:
+        os.remove(_game_path(safe))
+    except OSError:
+        pass
+    return True
 
 
 def rename_preset(old: str, new: str) -> bool:
@@ -139,17 +179,26 @@ def rename_preset(old: str, new: str) -> bool:
         return False
     try:
         os.rename(src, dst)
-        return True
     except Exception:
         return False
+    try:
+        if os.path.isfile(_game_path(old_safe)):
+            os.replace(_game_path(old_safe), _game_path(new_safe))
+        else:       # a stale .game under the new name is not this preset's
+            os.remove(_game_path(new_safe))
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"[INU] ID preset rename, {old_safe}.game: {e!r}")
+    return True
 
 
 # ── Storage (current active preset) ──────────────────────────────────
 
-def _load():
-    """Load ID list from the active preset. Returns list of (id, model_name_or_None)."""
+def _load(name=None):
+    """Load ID list from the active preset (or preset ``name``). Returns list of (id, model_name_or_None)."""
     entries = []
-    path = _preset_path()
+    path = _preset_path(name)
     if not os.path.isfile(path):
         return entries
     try:
@@ -162,8 +211,8 @@ def _load():
                     parts = line.split('-', 1)
                     try:
                         id_num = int(parts[0].strip())
-                        name = parts[1].strip()
-                        entries.append((id_num, name if name else None))
+                        model = parts[1].strip()
+                        entries.append((id_num, model if model else None))
                     except ValueError:
                         continue
                 else:
@@ -177,9 +226,25 @@ def _load():
     return entries
 
 
-def _save(entries):
-    """Save ID list to the active preset, preserving any header comment lines."""
-    path = _preset_path()
+def _write_atomic(path, text):
+    """Write through a temp file + os.replace: a crash or a full disk
+    mid-write can't leave a half-written preset behind."""
+    tmp = path + '.inu_tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _save(entries, name=None):
+    """Save ID list to the active preset (or preset ``name``), preserving any header comment lines."""
+    path = _preset_path(name)
     header_lines = []
     if os.path.isfile(path):
         with open(path, 'r', encoding='utf-8') as f:
@@ -191,14 +256,34 @@ def _save(entries):
                     break
                 header_lines.append(line.rstrip('\n'))
 
-    with open(path, 'w', encoding='utf-8') as f:
-        for h in header_lines:
-            f.write(h + '\n')
-        for id_num, name in sorted(entries, key=lambda x: x[0]):
-            if name:
-                f.write(f"{id_num}-{name}\n")
-            else:
-                f.write(f"{id_num}\n")
+    out = [h + '\n' for h in header_lines]
+    for id_num, model in sorted(entries, key=lambda x: x[0]):
+        if model:
+            out.append(f"{id_num}-{model}\n")
+        else:
+            out.append(f"{id_num}\n")
+    _write_atomic(path, ''.join(out))
+
+
+def game_ids(name=None):
+    """IDs used by the game («Из игры») — the `<preset>.game` sidecar."""
+    out = set()
+    try:
+        with open(_game_path(name), 'r', encoding='utf-8') as f:
+            for line in f:
+                s = line.strip()
+                if s.isascii() and s.isdigit():
+                    out.add(int(s))
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def save_game_ids(name, ids):
+    """Write `<preset>.game` (same format as the Max port)."""
+    _write_atomic(_game_path(name),
+                  "# INU: IDs used by the game (From Game)\n"
+                  + "".join(f"{i}\n" for i in sorted(ids)))
 
 
 def get_free_ids():
@@ -216,6 +301,157 @@ def get_all():
     return _load()
 
 
+class Preset:
+    """A preset held in memory for one operation: read once, written once
+    by ``save()`` (the module functions below used to load and rewrite the
+    whole ~20k-line file for every handed-out ID).
+
+    Port of the Max ``id_presets.Preset`` — same files, same rules.
+    ``game`` = IDs from `<preset>.game`: ``gc`` / ``clear_all`` keep them.
+    """
+
+    def __init__(self, name=None):
+        self.name = _sanitize(name if name is not None else _active_preset)
+        self.entries = _load(self.name)
+        self._idx = {}                       # ID → positions in entries (duplicates — several)
+        for k, (i, _n) in enumerate(self.entries):
+            self._idx.setdefault(i, []).append(k)
+        self.game = game_ids(self.name)
+        self._game0 = set(self.game)
+        self.changed = False
+
+    # — queries —
+    def used(self):
+        return {i: n for i, n in self.entries if n}
+
+    def ids(self):
+        return set(self._idx)
+
+    def is_free(self, i):
+        """The ID is in the preset and none of its lines is taken."""
+        pos = self._idx.get(i)
+        return bool(pos) and not any(self.entries[k][1] for k in pos)
+
+    # — changes —
+    def _append(self, i, name):
+        self._idx.setdefault(i, []).append(len(self.entries))
+        self.entries.append((i, name))
+        self._order = None
+        self.changed = True
+
+    def _set(self, i, name):
+        pos = self._idx.get(i)
+        if not pos:
+            self._append(i, name)
+            return
+        for k in pos:
+            self.entries[k] = (i, name)
+        if name is None:
+            self._order = None          # freed — search from the start again
+        self.changed = True
+
+    _order = None
+
+    def allocate(self, name, skip, prefer=None):
+        """First free ID in ascending order (not in ``skip``) → taken by
+        ``name``. ``prefer`` goes first if it is free. None — no free IDs.
+        Searches with a cursor over the sorted IDs (within one operation
+        ``skip`` only grows)."""
+        skip = skip or ()
+        if prefer is not None and prefer not in skip and self.is_free(prefer):
+            self._set(prefer, name)
+            return prefer
+        if self._order is None:
+            self._order = sorted(self._idx)
+            self._cur = 0
+        k = self._cur
+        while k < len(self._order):
+            i = self._order[k]
+            if i not in skip and self.is_free(i):
+                self._set(i, name)
+                self._cur = k + 1
+                return i
+            k += 1
+        self._cur = k
+        return None
+
+    def reserve(self, i, name):
+        """The ID is taken by ``name`` (overwrites the name; appended if missing)."""
+        pos = self._idx.get(i)
+        if not pos or any(self.entries[k][1] != name for k in pos):
+            self._set(i, name)
+
+    def release(self, i):
+        if any(self.entries[k][1] for k in self._idx.get(i, ())):
+            self._set(i, None)
+            return True
+        return False
+
+    def gc(self, scene_ids):
+        """Free phantoms: used IDs no scene object holds → free (game IDs
+        stay). Returns how many were freed."""
+        n = 0
+        for i in list(self.used()):
+            if i not in scene_ids and i not in self.game:
+                self._set(i, None)
+                n += 1
+        return n
+
+    def clear_all(self):
+        """Clear All: every used ID → free (game IDs stay). Returns the count."""
+        n = 0
+        for i in list(self.used()):
+            if i not in self.game:
+                self._set(i, None)
+                n += 1
+        return n
+
+    def fill(self, first=321, last=19999):
+        """Create ID: the missing IDs first..last are added as free; used
+        ones stay. Returns how many were added."""
+        have = self.ids()
+        add = [i for i in range(first, last + 1) if i not in have]
+        for i in add:
+            self._append(i, None)
+        return len(add)
+
+    def extend(self, count):
+        """``count`` free IDs after the highest one. Returns (first, last)."""
+        top = max(self.ids()) if self.entries else 320
+        start = top + 1
+        for i in range(start, start + count):
+            self._append(i, None)
+        return start, start + count - 1
+
+    def mark_game(self, game):
+        """From Game: {ID: game model name} → used by those names and
+        remembered as game IDs. Returns (clashes, added): clashes =
+        [(ID, your name, game name)] for IDs the preset held under another
+        name; added = game IDs that were free or missing before."""
+        clashes, added = [], 0
+        cur = self.used()
+        have = self.ids()
+        for i, gname in sorted(game.items()):
+            old = cur.get(i)
+            if old and old.lower() != gname.lower() and i not in self.game:
+                clashes.append((i, old, gname))
+            if not old:
+                added += 1
+            if old != gname or i not in have:
+                self._set(i, gname)
+        self.game |= set(game)
+        return clashes, added
+
+    def save(self):
+        """Write the .txt / .game only if they changed."""
+        if self.changed:
+            _save(self.entries, self.name)
+            self.changed = False
+        if self.game != self._game0:
+            save_game_ids(self.name, self.game)
+            self._game0 = set(self.game)
+
+
 def allocate_id(model_name, skip=None):
     """Take first free ID, assign model_name, save. Returns ID or None.
 
@@ -225,15 +461,13 @@ def allocate_id(model_name, skip=None):
     over them WITHOUT writing every scene ID into the preset — the
     latter floods the manager's "used" list with map-imported IDs the
     user never assigned (see id_manager_ops.auto_assign).
+    Operators handing out many IDs use one ``Preset`` instead.
     """
-    skip = set(skip) if skip else ()
-    entries = _load()
-    for i, (id_num, name) in enumerate(entries):
-        if name is None and id_num not in skip:
-            entries[i] = (id_num, model_name)
-            _save(entries)
-            return id_num
-    return None
+    P = Preset()
+    new_id = P.allocate(model_name, set(skip) if skip else ())
+    if new_id is not None:
+        P.save()
+    return new_id
 
 
 def reserve_id(model_id, model_name):
@@ -247,17 +481,11 @@ def reserve_id(model_id, model_name):
     Returns True if a write happened, False if the slot was already in
     that exact state.
     """
-    entries = _load()
-    for i, (id_num, name) in enumerate(entries):
-        if id_num == model_id:
-            if name == model_name:
-                return False
-            entries[i] = (id_num, model_name)
-            _save(entries)
-            return True
-    # ID not in preset yet — append and keep the list sorted on write.
-    entries.append((model_id, model_name))
-    _save(entries)
+    P = Preset()
+    P.reserve(model_id, model_name)
+    if not P.changed:
+        return False
+    P.save()
     return True
 
 
@@ -270,10 +498,11 @@ def gc_preset(objects):
     corresponding mesh was deleted long ago, or the slot was leaked by
     a Shift+D duplicate that later got its ID reassigned), that slot
     stays "used" forever and ``allocate_id`` keeps skipping past it.
+    IDs used by the game (`.game`, «Из игры») are kept: no scene object
+    holds them, yet handing them out again duplicates a vanilla ID.
 
     Returns the number of slots that were freed.
     """
-    entries = _load()
     scene_ids = set()
     for obj in objects:
         inu = getattr(obj, 'inu', None)
@@ -283,15 +512,9 @@ def gc_preset(objects):
         if mid > 0:
             scene_ids.add(mid)
 
-    released = 0
-    changed = False
-    for i, (id_num, name) in enumerate(entries):
-        if name is not None and id_num not in scene_ids:
-            entries[i] = (id_num, None)
-            released += 1
-            changed = True
-    if changed:
-        _save(entries)
+    P = Preset()
+    released = P.gc(scene_ids)
+    P.save()
     return released
 
 
@@ -336,22 +559,48 @@ def sync_scene_to_preset(objects):
     return updated
 
 
+def allocate_ids(requests, skip=None):
+    """Several IDs at once, all or nothing (Export Map). ``requests`` =
+    [(model_name, prefer)] in order: ``prefer`` (an ID or None — the caller
+    has checked it against its own skip) is taken when the preset lists it
+    free, else the first free ID not in ``skip``. The preset is read once
+    and written once — or not at all when it runs out of free IDs (then
+    None). Returns the IDs in request order. One ``Preset``: free by its
+    rules (an ID with a taken duplicate line is not free)."""
+    skip = set(skip) if skip else set()
+    P = Preset()
+    out = []
+    for model_name, prefer in requests:
+        if prefer is not None and P.is_free(prefer):
+            P.reserve(prefer, model_name)
+            nid = prefer
+        else:
+            nid = P.allocate(model_name, skip)
+            if nid is None:
+                return None
+        skip.add(nid)
+        out.append(nid)
+    P.save()
+    return out
+
+
 def release_id(model_id):
     """Release an ID (remove model name, keep ID as free)."""
-    entries = _load()
-    for i, (id_num, name) in enumerate(entries):
-        if id_num == model_id and name is not None:
-            entries[i] = (id_num, None)
-            _save(entries)
-            return True
-    return False
+    P = Preset()
+    if not P.release(model_id):
+        return False
+    P.save()
+    return True
 
 
 def clear_all():
-    """Clear all assignments in the active preset (all IDs become free)."""
-    entries = _load()
-    entries = [(id_num, None) for id_num, _ in entries]
-    _save(entries)
+    """Clear all assignments in the active preset (IDs become free) —
+    except IDs used by the game («Из игры», `.game`). Returns how many
+    were freed."""
+    P = Preset()
+    n = P.clear_all()
+    P.save()
+    return n
 
 
 def get_file_path():
@@ -360,61 +609,60 @@ def get_file_path():
 
 
 def create_id_file(max_id=19999):
-    """Fill the active preset with free IDs 321..max_id."""
-    entries = [(i, None) for i in range(321, max_id + 1)]
-    _save(entries)
-    return len(entries)
+    """Fill the active preset with IDs 321..max_id: missing ones are added
+    as free, used ones (yours and the game's) stay — wiping them would hand
+    vanilla IDs out again. Returns how many IDs were added."""
+    P = Preset()
+    n = P.fill(321, max_id)
+    P.save()
+    return n
 
 
 def extend_ids(count=1000):
     """Add more free IDs after the current maximum. Returns (new_start, new_end)."""
-    entries = _load()
-    if entries:
-        max_id = max(id_num for id_num, _ in entries)
-    else:
-        max_id = 320
-    new_start = max_id + 1
-    new_end = new_start + count - 1
-    for i in range(new_start, new_end + 1):
-        entries.append((i, None))
-    _save(entries)
+    P = Preset()
+    new_start, new_end = P.extend(count)
+    P.save()
     return new_start, new_end
 
 
 def populate_from_game(game_root):
-    """Read all IDE files from gta.dat and mark those IDs as occupied in the active preset."""
-    from ..core.gta_dat import find_all_resources
+    """«Из игры»: read every IDE the game loads — data/default.dat
+    (vehicles, peds, weapons) plus gta.dat / gta_int.dat (SA), gta_vc.dat
+    (VC) or gta3.dat (III) — mark those IDs used by the game's model names
+    in the active preset and remember them in `<preset>.game`.
+
+    Returns None if ``game_root/data`` has none of those .dat files, else a
+    dict: count (game IDs), added (of them, free or missing in the preset
+    before), clashes [(ID, your name, game name)], n_ide (IDE files read),
+    dats (the .dat files read), bad (.dat / IDE files missing or unreadable).
+    """
+    from ..core.gta_dat import GAME_DATS, game_ide_paths
     from ..core.ide import read_ide
-    import os
 
-    info = find_all_resources(game_root)
-    game_ids = {}  # id -> model_name
+    paths, dats = game_ide_paths(game_root)
+    # a .dat that is there but failed to parse (locked, no rights) is not in
+    # ``dats`` — its IDs stay unprotected, so the report must name it
+    bad_dats = [d for d in GAME_DATS if d not in dats
+                and os.path.isfile(os.path.join(game_root, 'data', d))]
+    if not dats and not bad_dats:
+        return None
+    game, bad = {}, []  # id -> model_name, basenames not read
+    for p in paths:
+        if not os.path.isfile(p):
+            bad.append(os.path.basename(p))
+            continue
+        try:
+            ide = read_ide(p)
+        except Exception:
+            bad.append(os.path.basename(p))
+            continue
+        for sec in (ide.objects, ide.anims, ide.cars, ide.peds, ide.weaps, ide.hiers):
+            for e in sec:
+                game[int(e.model_id)] = str(e.model_name)
 
-    for p in info.ide_paths:
-        if os.path.isfile(p):
-            try:
-                ide = read_ide(p)
-                for obj in ide.objects:
-                    game_ids[obj.model_id] = obj.model_name
-                for anim in ide.anims:
-                    game_ids[anim.model_id] = anim.model_name
-                for car in ide.cars:
-                    game_ids[car.model_id] = car.model_name
-                for ped in ide.peds:
-                    game_ids[ped.model_id] = ped.model_name
-                for weap in ide.weaps:
-                    game_ids[weap.model_id] = weap.model_name
-                for hier in ide.hiers:
-                    game_ids[hier.model_id] = hier.model_name
-            except Exception:
-                pass
-
-    entries = _load()
-    entry_map = {id_num: name for id_num, name in entries}
-
-    for gid, gname in game_ids.items():
-        entry_map[gid] = gname
-
-    entries = [(k, v) for k, v in entry_map.items()]
-    _save(entries)
-    return len(game_ids)
+    P = Preset()
+    clashes, added = P.mark_game(game)
+    P.save()
+    return dict(count=len(game), added=added, clashes=clashes,
+                n_ide=len(paths) - len(bad), dats=dats, bad=bad_dats + bad)

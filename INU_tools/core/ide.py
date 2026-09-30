@@ -214,6 +214,20 @@ def _tokens(line: str) -> list:
     return line.replace(',', ' ').split()
 
 
+def _data_tokens(line: str) -> list:
+    """``_tokens`` without a trailing ``# comment``.
+
+    The game's ``sscanf`` reads only its own fields and ignores the rest
+    of the line (III ``default.ide`` peds 39/40: ``..., 0<TAB># dont move
+    this``), but the peds/cars parsers pick the game by token count, so
+    the comment words must not be counted."""
+    parts = _tokens(line)
+    for i, t in enumerate(parts):
+        if t.startswith('#'):
+            return parts[:i]
+    return parts
+
+
 _INT_PREFIX_RE = re.compile(r'[-+]?\d+')
 
 
@@ -369,7 +383,7 @@ def _parse_car_line(line: str) -> Optional[IdeCar]:
     best-effort SA-style parse — matches the legacy behaviour where
     short lines were tolerated.
     """
-    parts = _tokens(line)
+    parts = _data_tokens(line)
     n = len(parts)
     if n < 10:
         return None
@@ -447,7 +461,7 @@ def _parse_ped_line(line: str) -> Optional[IdePed]:
     Short / unrecognised line counts fall through to best-effort SA
     parse (matches legacy tolerance).
     """
-    parts = _tokens(line)
+    parts = _data_tokens(line)
     n = len(parts)
     if n < 7:
         return None
@@ -554,30 +568,36 @@ def _fmt_dd(val: float) -> str:
     return str(int(val)) if val == int(val) else str(val)
 
 
-def _format_obj_line(o: IdeObject, *, game: str = 'SA') -> str:
-    """Format an ``objs`` line. SA supports the 7/9-field multi-mesh
-    variants (mesh_count + 2/3 draw distances); III/VC only know the
-    5-field single-mesh form and would mis-parse the longer variants.
-    For III/VC we silently downgrade to single-mesh (first draw_dist
-    only) — the alternative would be raising on export, which makes
-    porting SA assets to VC harder than necessary.
+def _obj_fields(o: IdeObject, game: str) -> str:
+    """Draw-distance + flags part of an ``objs`` / ``tobj`` line.
+
+    * SA: the 5-field single-mesh form ``dd, flags``, or the mesh-count
+      form ``count, dd1, dd2[, dd3], flags`` when there are extra
+      distances.
+    * III/VC: always the mesh-count form. ``CFileLoader::LoadObject`` /
+      ``LoadTimeObject`` (re3 / reVC) read ``"%d %s %s %d"`` and switch on
+      the 4th field (1/2/3 only), so ``dd, flags`` would be read as
+      ``numObjs = dd``. Vanilla: ``865, ap_tower, ap_buildings2, 1, 299, 0``.
     """
-    if o.extra_draw_distances and game == 'SA':
-        # SA multi-mesh: id, name, txd, meshCount, dd1, dd2[, dd3], flags
-        dds = ', '.join(_fmt_dd(d) for d in (o.draw_distance, *o.extra_draw_distances))
-        return f'{o.model_id}, {o.model_name}, {o.txd_name}, {o.mesh_count}, {dds}, {o.flags}'
-    return f'{o.model_id}, {o.model_name}, {o.txd_name}, {_fmt_dd(o.draw_distance)}, {o.flags}'
+    dists = (o.draw_distance, *o.extra_draw_distances)
+    if game != 'SA':
+        dists = dists[:3]
+    elif not o.extra_draw_distances:
+        return f'{_fmt_dd(o.draw_distance)}, {o.flags}'
+    dds = ', '.join(_fmt_dd(d) for d in dists)
+    return f'{len(dists)}, {dds}, {o.flags}'
+
+
+def _format_obj_line(o: IdeObject, *, game: str = 'SA') -> str:
+    """Format an ``objs`` line for the target game (see ``_obj_fields``)."""
+    return f'{o.model_id}, {o.model_name}, {o.txd_name}, {_obj_fields(o, game)}'
 
 
 def _format_tobj_line(o: IdeObject, *, game: str = 'SA') -> str:
-    """Same multi-mesh / single-mesh distinction as ``_format_obj_line``,
-    plus the trailing time_on / time_off columns that mark a timed
-    object."""
-    if o.extra_draw_distances and game == 'SA':
-        dds = ', '.join(_fmt_dd(d) for d in (o.draw_distance, *o.extra_draw_distances))
-        return (f'{o.model_id}, {o.model_name}, {o.txd_name}, {o.mesh_count}, '
-                f'{dds}, {o.flags}, {o.time_on}, {o.time_off}')
-    return f'{o.model_id}, {o.model_name}, {o.txd_name}, {_fmt_dd(o.draw_distance)}, {o.flags}, {o.time_on}, {o.time_off}'
+    """Same as ``_format_obj_line`` plus the trailing time_on / time_off
+    columns that mark a timed object."""
+    return (f'{o.model_id}, {o.model_name}, {o.txd_name}, '
+            f'{_obj_fields(o, game)}, {o.time_on}, {o.time_off}')
 
 
 def _format_anim_line(a: IdeAnim) -> str:
@@ -890,38 +910,52 @@ def write_ide(filepath: str, ide: IdeFile, *, game: str = 'SA') -> None:
             f.write('end\n')
 
 
-def upsert_ide(filepath: str, entries: list[IdeObject]) -> tuple[int, int]:
+def upsert_ide(filepath: str, entries: list[IdeObject], *,
+               game: str = 'SA') -> tuple[int, int]:
     """
     Insert or update entries in an existing IDE file.
 
-    - If entry with same model_id exists → replace the line.
-    - If no match → append to the ``objs`` section (or create it).
+    - If entry with same model_id exists in its own section (``objs`` for
+      plain, ``tobj`` for timed) → replace the line.
+    - If it exists in the other section → drop that line and add the
+      entry to the right one (counts as updated).
+    - If no match → append to ``objs`` / ``tobj`` (or create the section).
+
+    ``game`` (III/VC/SA) selects the line format, as in ``write_ide``.
 
     Returns (updated_count, added_count).
     """
     if not os.path.isfile(filepath):
         # File doesn't exist — write fresh
-        write_ide(filepath, IdeFile(objects=entries))
+        write_ide(filepath, IdeFile(objects=entries), game=game)
         return (0, len(entries))
 
     # Read original lines
     with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
+    if lines and not lines[-1].endswith('\n'):
+        lines[-1] += '\n'
+
+    def fmt(e: IdeObject) -> str:
+        if e.is_timed:
+            return _format_tobj_line(e, game=game) + '\n'
+        return _format_obj_line(e, game=game) + '\n'
 
     # Build lookup of entries to upsert by model_id
     pending: dict[int, IdeObject] = {e.model_id: e for e in entries}
+    moved: list[IdeObject] = []   # found in the wrong section
     updated = 0
     result_lines = []
     section = None
-    objs_end_idx = -1  # index of 'end' line for objs section ONLY
+    # Index where each section closes ('end' line or the next header).
+    end_idx: dict[str, int] = {}
 
     for line in lines:
         stripped = line.strip()
         low = stripped.lower()
 
         if low == 'end' and section is not None:
-            if section == 'objs':
-                objs_end_idx = len(result_lines)
+            end_idx[section] = len(result_lines)
             section = None
             result_lines.append(line)
             continue
@@ -929,8 +963,8 @@ def upsert_ide(filepath: str, entries: list[IdeObject]) -> tuple[int, int]:
         if low in ('objs', 'tobj', 'anim', 'txdp', 'weap', 'hier',
                    'cars', 'peds', 'path', '2dfx'):
             # Previous section ended implicitly (no 'end' before new section)
-            if section == 'objs':
-                objs_end_idx = len(result_lines)
+            if section is not None:
+                end_idx[section] = len(result_lines)
             section = low
             result_lines.append(line)
             continue
@@ -938,33 +972,35 @@ def upsert_ide(filepath: str, entries: list[IdeObject]) -> tuple[int, int]:
         if section in ('objs', 'tobj') and stripped and not stripped.startswith('#'):
             parsed = _parse_obj_line(stripped, timed=(section == 'tobj'))
             if parsed and parsed.model_id in pending:
-                # Replace this line with updated entry
                 entry = pending.pop(parsed.model_id)
-                if entry.is_timed:
-                    result_lines.append(_format_tobj_line(entry) + '\n')
-                else:
-                    result_lines.append(_format_obj_line(entry) + '\n')
                 updated += 1
+                if entry.is_timed == (section == 'tobj'):
+                    result_lines.append(fmt(entry))
+                else:
+                    moved.append(entry)
                 continue
 
         result_lines.append(line)
 
-    # Remaining entries need to be appended
+    if section is not None:
+        # File ended inside a section without 'end'.
+        end_idx[section] = len(result_lines)
+
     added = len(pending)
-    if added > 0:
-        remaining = list(pending.values())
-        if objs_end_idx >= 0:
-            # Insert before the last 'end' of objs section
-            insert_lines = [_format_obj_line(e) + '\n' for e in remaining]
-            result_lines = (result_lines[:objs_end_idx]
-                          + insert_lines
-                          + result_lines[objs_end_idx:])
-        else:
-            # No objs section found — append one at the end
-            result_lines.append('objs\n')
-            for e in remaining:
-                result_lines.append(_format_obj_line(e) + '\n')
-            result_lines.append('end\n')
+    remaining = moved + list(pending.values())
+    groups = {
+        'objs': [fmt(e) for e in remaining if not e.is_timed],
+        'tobj': [fmt(e) for e in remaining if e.is_timed],
+    }
+    # Insert into existing sections, later position first so the other
+    # index stays valid.
+    for name in sorted((n for n in groups if groups[n] and n in end_idx),
+                       key=lambda n: end_idx[n], reverse=True):
+        i = end_idx[name]
+        result_lines[i:i] = groups[name]
+    for name in ('objs', 'tobj'):
+        if groups[name] and name not in end_idx:
+            result_lines +=[name + '\n', *groups[name], 'end\n']
 
     with open(filepath, 'w', encoding='utf-8', newline='\r\n') as f:
         f.writelines(result_lines)

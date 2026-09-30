@@ -54,6 +54,27 @@ class TextureEntry:
             return f"0x{self.fourcc:08X}"
 
 
+# ── Compression mark of a Texture Native ──────────────────────────
+# The u32 after raster_format means different things per platform:
+#   D3D9 (SA)     — D3DFORMAT: FourCC 'DXT1'..'DXT5' for compressed
+#                   textures, a small D3DFMT_* number for raw ones;
+#   D3D8 (III/VC) — has_alpha (0/1); compression lives in the last
+#                   header byte instead (1..5 = DXT1..DXT5).
+# Reading the D3D8 value as a FourCC showed format '\x01' in the texture
+# browser and a false TXD_RASTER_PAL_AND_DXT on every palettized texture.
+_DXT_BASE = 0x00545844          # 'DXT' + digit in the high byte
+
+
+def dxt_fourcc(platform_id: int, format_field: int, compression: int) -> int:
+    """FourCC of the texture compression (DXT1..DXT5), 0 if uncompressed."""
+    if platform_id == 8:
+        if 1 <= compression <= 5:
+            return _DXT_BASE | ((0x30 + compression) << 24)
+        return 0
+    b = format_field.to_bytes(4, 'little')
+    return format_field if all(0x20 <= c <= 0x7E for c in b) else 0
+
+
 # ── Bytes-level TXD walker ────────────────────────────────────────
 
 def scan_txd_bytes(raw: bytes, archive_path: str, txd_name: str
@@ -101,14 +122,17 @@ def scan_txd_bytes(raw: bytes, archive_path: str, txd_name: str
                 base = chunk_payload + 12
                 # Layout (RW PC native texture struct):
                 #   platform_id u32, filter_flags u32,
-                #   name(32), mask(32), raster_format u32, fourcc u32,
+                #   name(32), mask(32), raster_format u32,
+                #   d3d_format/has_alpha u32 (see dxt_fourcc),
                 #   width u16, height u16, depth u8, num_levels u8,
                 #   raster_type u8, compression_flag u8.
                 platform_id = struct.unpack_from('<I', raw, base)[0]
                 name_bytes = raw[base + 8 : base + 8 + 32]
                 name = name_bytes.split(b'\x00', 1)[0].decode('ascii',
                     errors='replace')
-                fourcc = struct.unpack_from('<I', raw, base + 76)[0]
+                fourcc = dxt_fourcc(platform_id,
+                                    struct.unpack_from('<I', raw, base + 76)[0],
+                                    raw[base + 87])
                 width  = struct.unpack_from('<H', raw, base + 80)[0]
                 height = struct.unpack_from('<H', raw, base + 82)[0]
                 depth  = raw[base + 84]

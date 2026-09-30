@@ -9,6 +9,7 @@ from bpy.props import (
 )
 
 from .. import T
+from ..core import game_versions as gv
 
 
 class GTATOOLS_OT_radar_generate(bpy.types.Operator):
@@ -30,8 +31,10 @@ class GTATOOLS_OT_radar_generate(bpy.types.Operator):
         height = scn.inu_settings.gtatools_radar_height
         size = scn.inu_settings.gtatools_radar_size
 
-        # GTA SA map: -3000 to 3000
-        map_half = 3000.0
+        # Radar coverage/grid by game: SA ±3000, 12×12; III/VC ±2000, 8×8
+        # (tiles 500 m). Grid 0 = the game's own grid.
+        grid, map_half = gv.radar_layout(
+            gv.game_of_scene(scn), scn.inu_settings.gtatools_radar_grid)
 
         # Create temp camera
         cam_data = bpy.data.cameras.new("_RadarCam")
@@ -104,7 +107,6 @@ class GTATOOLS_OT_radar_generate(bpy.types.Operator):
 
         elif self.mode == 'SPECIFIC':
             # Specific tiles by index
-            grid = scn.inu_settings.gtatools_radar_grid
             sect_size = map_half * 2 / grid
             cam_data.ortho_scale = sect_size
             indices_str = scn.inu_settings.gtatools_radar_specific.strip()
@@ -128,10 +130,8 @@ class GTATOOLS_OT_radar_generate(bpy.types.Operator):
 
             wm.progress_begin(0, len(indices))
             for i, radar_idx in enumerate(indices):
-                x = radar_idx % grid
-                y = radar_idx // grid
-                cam_obj.location.x = -map_half + sect_size * (x + 0.5)
-                cam_obj.location.y = map_half - sect_size * (y + 0.5)
+                cam_obj.location.x, cam_obj.location.y = gv.radar_tile_center(
+                    radar_idx, grid, map_half)
                 name = f"radar{radar_idx:02d}"
                 filepath = os.path.join(output_dir, name + ".png")
                 scn.render.filepath = filepath
@@ -142,7 +142,6 @@ class GTATOOLS_OT_radar_generate(bpy.types.Operator):
 
         else:
             # ALL: full grid
-            grid = scn.inu_settings.gtatools_radar_grid
             sect_size = map_half * 2 / grid
             cam_data.ortho_scale = sect_size
             total = grid * grid
@@ -150,8 +149,8 @@ class GTATOOLS_OT_radar_generate(bpy.types.Operator):
             for y in range(grid):
                 for x in range(grid):
                     radar_idx = y * grid + x
-                    cam_obj.location.x = -map_half + sect_size * (x + 0.5)
-                    cam_obj.location.y = map_half - sect_size * (y + 0.5)
+                    cam_obj.location.x, cam_obj.location.y = gv.radar_tile_center(
+                        radar_idx, grid, map_half)
                     name = f"radar{radar_idx:02d}"
                     filepath = os.path.join(output_dir, name + ".png")
                     scn.render.filepath = filepath
@@ -186,7 +185,8 @@ class GTATOOLS_OT_radar_pack_txd(bpy.types.Operator):
             self.report({'ERROR'}, T("Укажите папку для сохранения"))
             return {'CANCELLED'}
 
-        grid = scn.inu_settings.gtatools_radar_grid
+        grid, _ = gv.radar_layout(
+            gv.game_of_scene(scn), scn.inu_settings.gtatools_radar_grid)
         backend = getattr(scn.inu_settings, 'gtatools_dxt_backend', 'numpy')
 
         txd_dir = os.path.join(output_dir, "txd")

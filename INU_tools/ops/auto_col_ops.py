@@ -75,6 +75,9 @@ def _make_col_object(src, base_name, mode):
         existing.data = me
         if old.users == 0:
             bpy.data.meshes.remove(old)
+        # новая форма — сохранённые границы старого COL (col_import) сбрасываем,
+        # иначе экспорт возьмёт их вместо пересчитанных
+        existing.pop('inu_col_bounds', None)
         obj = existing
     else:
         obj = bpy.data.objects.new(cname, me)

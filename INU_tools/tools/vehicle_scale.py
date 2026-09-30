@@ -15,7 +15,7 @@
 #     visibility between OK and damaged state for preview.
 
 import bpy
-from mathutils import Matrix, Vector
+from mathutils import Matrix
 
 from .. import T
 from typing import Dict, List, Optional, Tuple
@@ -71,6 +71,15 @@ def _walk(obj, out: list):
         _walk(ch, out)
 
 
+def _scaled_local(local, factor: float):
+    """Parent-relative 4×4 *local* with its offset scaled by *factor*,
+    rotation untouched. Plain indexing — runs on numpy too (tests)."""
+    out = local.copy()
+    for i in range(3):
+        out[i][3] *= factor
+    return out
+
+
 def _rescale_hierarchy(root, factor: float, *, dummies_only: bool):
     """Return (scaled_meshes, scaled_empties) count after walking the tree."""
     if factor <= 0.0:
@@ -83,14 +92,19 @@ def _rescale_hierarchy(root, factor: float, *, dummies_only: bool):
     scaled_empties = 0
     scale_mat = Matrix.Scale(factor, 4)
 
-    for obj in tree:
-        # Rescale position offset from parent
-        obj.location = Vector(obj.location) * factor
-        # Reset any parent-inverse that would re-multiply scale
-        try:
-            obj.matrix_parent_inverse.identity()
-        except Exception:
-            pass
+    for i, obj in enumerate(tree):
+        # Rescale position offset from parent. The walked root stays put —
+        # the tree scales about it. The parent inverse is folded into the
+        # new basis before it is reset, so a child parented with Keep
+        # Transform keeps its place instead of jumping.
+        if i:
+            local = _scaled_local(
+                obj.matrix_parent_inverse @ obj.matrix_basis, factor)
+            try:
+                obj.matrix_parent_inverse.identity()
+            except Exception:
+                pass
+            obj.matrix_basis = local
 
         if obj.type == 'MESH' and not dummies_only:
             # Transform the mesh data itself so vertex positions shrink/grow

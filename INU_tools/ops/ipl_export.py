@@ -42,6 +42,7 @@ def export_ipl(filepath: str, objects: list, *, binary: bool = False,
     obj_per_inst: list = []
 
     from ..tools.model_utils import get_model_type
+    hd_of = None
     for obj in objects:
         if obj.type != 'MESH':
             continue
@@ -53,9 +54,16 @@ def export_ipl(filepath: str, objects: list, *, binary: bool = False,
 
         inu = getattr(obj, 'inu', None)
 
-        # LOD keeps its LOD<base> name so its placement references the LOD
-        # model, not the DFF.
-        model_name = ("LOD" + base) if mt == 'LOD' else _clean_model_name(obj.name)
+        # LOD keeps its own model name (map_link.lod_model_name — as Export
+        # IDE writes it) so its placement references the LOD model, not the DFF.
+        if mt == 'LOD':
+            from .map_link import lod_hd_names, lod_model_name
+            if hd_of is None:
+                hd_of = lod_hd_names(objects)
+            model_name = lod_model_name(obj, base, hd=hd_of.get(id(obj), ''),
+                                        game=_scene_game())
+        else:
+            model_name = _clean_model_name(obj.name)
         model_id = getattr(inu, 'model_id', 0) if inu else 0
         interior = getattr(inu, 'interior_id', 0) if inu else 0
         real_interior = getattr(inu, 'real_interior', 0) if inu else 0

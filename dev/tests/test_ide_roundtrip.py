@@ -23,6 +23,8 @@ from core.ide import (  # noqa: E402
     write_ide,
     upsert_ide,
     remove_ide,
+    _parse_ped_line,
+    _parse_car_line,
 )
 
 
@@ -139,6 +141,55 @@ def test_peds_round_trip(tmp_path):
     assert p0.model_name == "cj"
     assert p0.ped_type == "PLAYER1"
     assert p0.cars_can_drive == "7fffffff"
+
+
+# ── trailing "# comment" on peds/cars lines (III default.ide 39/40) ──
+
+def test_ped_line_trailing_comment_iii():
+    """The game's sscanf ignores the tail; the comment words must not
+    push the 7-column III line into the SA branch (and fail)."""
+    ped = _parse_ped_line("39, prostitute, prostitute, PROSTITUTE, "
+                          "STAT_PROSTITUTE, sexywoman, 0\t# dont move this")
+    assert ped is not None
+    assert ped.model_id == 39
+    assert ped.txd_name == "prostitute"
+    assert ped.source_game == "III"
+    assert ped.cars_can_drive == "0"
+
+
+def test_car_line_trailing_comment_iii():
+    car = _parse_car_line("90, landstal, landstal, car, LANDSTAL, LANDSTK, "
+                          "poorfamily, 10, 7, 0, 250, 0.8\t# x")
+    assert car is not None
+    assert car.model_id == 90
+    assert car.anims == "null"
+    assert car.wheel_id == 250
+    assert abs(car.wheel_scale_front - 0.8) < 1e-6
+
+
+def test_read_ide_peds_with_trailing_comment(tmp_path):
+    p = tmp_path / "default.ide"
+    p.write_text(
+        "peds\n"
+        "38, male01, male01, CIVMALE, STAT_STREET_GUY, man, 0\n"
+        "39, prostitute, prostitute, PROSTITUTE, STAT_PROSTITUTE, "
+        "sexywoman, 0\t# dont move this\n"
+        "40, prostitute2, prostitute2, PROSTITUTE, STAT_PROSTITUTE, "
+        "sexywoman, 0\t# dont move this\n"
+        "end\n", encoding="utf-8")
+    parsed = read_ide(str(p))
+    assert [pd.model_id for pd in parsed.peds] == [38, 39, 40]
+    assert parsed.peds[2].txd_name == "prostitute2"
+
+
+def test_read_ide_vanilla_iii_default_peds():
+    import pytest
+    p = Path(r"D:\Grand Theft Auto III\data\default.ide")
+    if not p.is_file():
+        pytest.skip("vanilla III install not present")
+    ids = {pd.model_id for pd in read_ide(str(p)).peds}
+    assert len(ids) == 83
+    assert {39, 40} <= ids
 
 
 # ── weap section ─────────────────────────────────────────────────

@@ -419,12 +419,34 @@ def _write_txd_file(txd_path, context, backend, merge):
     return export_txd(txd_path, context, selected_only=True, backend=backend)
 
 
+def _lod_file_base(models, base_name, renamed, lod_hd=None, notes=None):
+    """File name (no .dff) of the group's LOD — its model name as Add to IDE
+    / Export IDE write it (map_link.lod_model_name: tatar_str_1LOD; in III/VC
+    the game's rule for the model base_name, a LOD without it in the group —
+    for its model in the scene, *lod_hd*: map_link.lod_hd_names). A group
+    renamed by a click in the file browser → a new LOD of the new name.
+    *notes* — gets why the game won't pair it (map_link.lod_name_note)."""
+    from .map_link import lod_model_name, lod_name_note, new_lod_name
+    if renamed:
+        hd = base_name if models['DFF'] else ''
+        name = new_lod_name(hd, base_name, models['LOD'])
+    else:
+        hd = base_name if models['DFF'] else (lod_hd or {}).get(id(models['LOD']), '')
+        name = lod_model_name(models['LOD'], base_name, hd=hd)
+    note = lod_name_note(models['LOD'], name, hd) if notes is not None else ''
+    if note:
+        notes.append(note)
+    return name
+
+
 def _export_model_group(context, directory, base_name, models,
                         skip_dff, skip_col, skip_lod, skip_txd,
                         backend, tri_warnings, skip_cst=True,
-                        empty_col=False, txd_merge=False, txd_notes=None):
+                        empty_col=False, txd_merge=False, txd_notes=None,
+                        lod_name=None):
     """Export ONE model group (DFF + LOD + COL + TXD) into ``directory``,
-    one file per format named from ``base_name``.
+    one file per format named from ``base_name`` (the LOD — ``lod_name``,
+    see _lod_file_base).
 
     DFF/geometry flags come straight from each object's ``obj.inu.*`` (the
     N-panel DFF Flags) — no separate export override. ``tri_warnings`` is
@@ -452,9 +474,10 @@ def _export_model_group(context, directory, base_name, models,
         except Exception as e:
             errors.append(f"{base_name}.dff: {str(e)}")
 
-    # LOD (LOD-prefixed filename, RW version from scene)
+    # LOD (its own model name, RW version from scene)
     if models['LOD'] and not skip_lod:
-        lod_path = os.path.join(directory, f"LOD{base_name}.dff")
+        lod_fname = f"{lod_name or 'LOD' + base_name}.dff"
+        lod_path = os.path.join(directory, lod_fname)
         try:
             from .dff_export import export_dff as inu_export_dff, _resolve_export_version
             rw_ver = _resolve_export_version(context)
@@ -463,9 +486,9 @@ def _export_model_group(context, directory, base_name, models,
                            version=rw_ver, target_platform=tp)
             from ..core.dff import DFF_EXPORT_WARNINGS
             tri_warnings.extend(DFF_EXPORT_WARNINGS)
-            exported.append(f"LOD{base_name}.dff")
+            exported.append(lod_fname)
         except Exception as e:
-            errors.append(f"LOD{base_name}.dff: {str(e)}")
+            errors.append(f"{lod_fname}: {str(e)}")
 
     # COL / CST: normally driven by the group's COL mesh. In empty mode
     # we write a geometry-less record for the whole group (named from
@@ -597,14 +620,20 @@ def run_group_export(context, directory, *, skip_dff, skip_col, skip_lod,
 
     model_groups = find_all_selected_model_groups()
     if not model_groups:
-        return [], [], [], 0
+        return [], [], [], [], 0
 
     # Клик по файлу в браузере задаёт базовое имя экспорта. Применимо только
     # к ОДНОЙ модели (одно имя на несколько групп не натянуть) — иначе
     # оставляем имена по моделям.
+    renamed = bool(name_override and len(model_groups) == 1)
     if name_override and len(model_groups) == 1:
         _only = next(iter(model_groups.values()))
         model_groups = {name_override: _only}
+    # LOD without its model in the selection: the LOD's name (III/VC) is for
+    # its model in the scene — as Add to IDE writes it.
+    from .map_link import lod_hd_names
+    lone_lods = [m['LOD'] for m in model_groups.values() if m['LOD'] and not m['DFF']]
+    lod_hd = lod_hd_names(lone_lods) if lone_lods else {}
 
     # Disable prelight preview on the meshes about to be exported.
     prelight_was_on = set()
@@ -666,7 +695,10 @@ def run_group_export(context, directory, *, skip_dff, skip_col, skip_lod,
                 context, directory, base_name, models,
                 skip_dff, skip_col, skip_lod, skip_txd, backend, tri_warnings,
                 skip_cst=skip_cst, empty_col=empty_col, txd_merge=txd_merge,
-                txd_notes=txd_notes)
+                txd_notes=txd_notes,
+                lod_name=(_lod_file_base(models, base_name, renamed, lod_hd,
+                                         None if skip_lod else tri_warnings)
+                          if models['LOD'] else None))
             all_exported.extend(exported)
             all_errors.extend(errors)
             current_step += _group_steps(models)
@@ -728,8 +760,10 @@ def run_group_export(context, directory, *, skip_dff, skip_col, skip_lod,
 
 
 def _report_group_export(op, exported, errors, tri_warnings, num_groups,
-                         txd_notes=None):
-    """Shared operator reporting for the group-export engine."""
+                         txd_notes=None, mobile=True):
+    """Shared operator reporting for the group-export engine.
+    ``mobile=False``: the caller gives the Mobile TXD warning itself (after
+    its own lines — the status bar shows the last report)."""
     if num_groups == 0:
         op.report({'ERROR'}, T("Выделите модели для экспорта!"))
         return {'CANCELLED'}
@@ -746,7 +780,20 @@ def _report_group_export(op, exported, errors, tri_warnings, num_groups,
         op.report({'WARNING'}, f"{T('Ошибки:')} {preview}{more}")
     for w in dict.fromkeys(tri_warnings):  # dedup, keep order
         op.report({'WARNING'}, w)
+    if mobile:
+        _warn_mobile_txd(op, exported)
     return {'FINISHED'}
+
+
+def _warn_mobile_txd(op, names):
+    """Платформа MOBILE, а среди записанных есть .txd — предупредить: TXD
+    всё равно PC-формата (как отдельный Export TXD). Последним отчётом."""
+    from ..tools.txd_export import mobile_txd_warning
+    msg = mobile_txd_warning(
+        getattr(bpy.context.scene.inu_settings, 'gtatools_platform', 'PC'),
+        sum(1 for n in names if '.txd' in str(n).lower()))
+    if msg:
+        op.report({'WARNING'}, msg)
 
 
 def _upsert_ide_ipl_objects(op, context, objs, ide_path='', ipl_path=''):
@@ -912,8 +959,9 @@ def run_single_dff_export(context, directory, name_override='', *,
     return out, errors, root, dropped
 
 
-def _report_single_dff(op, out, errors, root, dropped):
-    """Отчёт оператора для run_single_dff_export (общий для обоих экспортов)."""
+def _report_single_dff(op, out, errors, root, dropped, mobile=True):
+    """Отчёт оператора для run_single_dff_export (общий для обоих экспортов).
+    mobile=False — Mobile-предупреждение вызывающий даёт сам."""
     if not out:
         op.report({'ERROR'}, T("Ничего не экспортировано")
                   + ((": " + "; ".join(errors[:3])) if errors else ""))
@@ -926,6 +974,8 @@ def _report_single_dff(op, out, errors, root, dropped):
     op.report({'WARNING'} if (errors or dropped) else {'INFO'},
               f"{T('Экспортировано:')} {', '.join(out)} "
               f"({T('корень')}: {getattr(root, 'name', '?')}){tail}")
+    if mobile:
+        _warn_mobile_txd(op, out)
     return {'FINISHED'}
 
 
@@ -946,9 +996,10 @@ class GTATOOLS_OT_export_all(bpy.types.Operator):
     filter_glob: StringProperty(default="", options={'HIDDEN'})
     to_img: BoolProperty(
         name="All → IMG",
-        description=T("Экспортировать прямо в .img архив, путь к которому "
-                      "задан в настройках аддона. Выбор папки при этом "
-                      "игнорируется"),
+        description=T("Экспортировать прямо в .img: модель со своим IMG — в "
+                      "него, остальные — в архив, выбранный в «Экспорт в "
+                      "IMG» (иначе из настроек аддона). Выбор папки при "
+                      "этом игнорируется"),
         default=False)
 
     def invoke(self, context, event):
@@ -959,6 +1010,7 @@ class GTATOOLS_OT_export_all(bpy.types.Operator):
         # назвать → имя пустое, имена пишутся по моделям.
         name = ''
         n_groups = 0
+        groups = {}
         try:
             from ..tools.model_utils import (find_all_selected_model_groups,
                                              get_model_type)
@@ -982,6 +1034,17 @@ class GTATOOLS_OT_export_all(bpy.types.Operator):
             pass
         self._n_groups = n_groups
         self._export_name = name
+        # All → IMG: куда реально пойдут модели — как в «Экспорт в IMG»
+        # (_export_routes: свой IMG модели → выбранный там → из настроек).
+        # Тоже здесь: в draw браузера выделения нет.
+        self._img_routes, self._img_no_arch = [], 0
+        try:
+            from .img_ops import _export_routes
+            _r, _none = _export_routes(context, groups)
+            self._img_routes = [(os.path.basename(a), len(b)) for a, b in _r.items()]
+            self._img_no_arch = len(_none)
+        except Exception:
+            pass
         if name:
             self.filename = name
         # Начальный фильтр браузера по включённым форматам (LOD тоже .dff).
@@ -1090,14 +1153,24 @@ class GTATOOLS_OT_export_all(bpy.types.Operator):
         box.prop(self, "to_img", text=T("All → IMG"),
                  **inu_icon(safe_icon('PACKAGE')))
         if self.to_img:
-            img_path = bpy.path.abspath(scn.inu_settings.gtatools_img_path or '')
-            if img_path:
-                box.label(text=os.path.basename(img_path) or img_path,
+            # Реальные архивы (invoke → _export_routes), не только из настроек.
+            routes = getattr(self, '_img_routes', [])
+            for arch, n in routes:
+                box.label(text=(f"{arch} — {T('Моделей:')} {n}"
+                                if len(routes) > 1 else arch),
                           **inu_icon(safe_icon('FILE_ARCHIVE')))
-                box.label(text=T("Папка игнорируется — экспорт в этот IMG"),
+            if routes:
+                box.label(text=T("Папка игнорируется — экспорт в этот IMG")
+                          if len(routes) == 1 else
+                          T("Модель со своим IMG пишется в него: игра берёт первую копию"),
                           **inu_icon(safe_icon('INFO')))
-            else:
+            if (getattr(self, '_img_no_arch', 0)
+                    or not (routes or scn.inu_settings.gtatools_img_path)):
                 box.label(text=T("Путь к .img не задан в настройках аддона"),
+                          **inu_icon(safe_icon('ERROR')))
+            if scn.inu_settings.gtatools_export_all_single_dff:
+                box.label(text=T("All → IMG не работает с «Один DFF» — "
+                                 "выключите одно из двух"),
                           **inu_icon(safe_icon('ERROR')))
 
     def _export_single_dff(self, context, name_override):
@@ -1116,23 +1189,59 @@ class GTATOOLS_OT_export_all(bpy.types.Operator):
         s = context.scene.inu_settings
 
         # All → IMG: вместо записи в выбранную папку пишем прямо в .img
-        # архив из настроек. Переиспользуем gtatools.export_to_img через
-        # EXEC_DEFAULT (без его диалога): при пустом TXD-плане он берёт
-        # имена .txd по моделям и включает все группы по умолчанию.
+        # (архив — как в «Экспорт в IMG»: свой IMG модели → выбранный там →
+        # из настроек). Переиспользуем gtatools.export_to_img через
+        # EXEC_DEFAULT (без его диалога), план его окна — по галкам этого:
+        # DFF / LOD / COL / TXD, LOD и COL — только найденные (как в папку),
+        # «Пустая коллизия» — пустая COL у всех; имя TXD — txd_name модели
+        # (TXD сливается с TXD архива).
         if self.to_img:
-            img_path = bpy.path.abspath(s.gtatools_img_path or '')
-            if not img_path or not os.path.isfile(img_path):
+            # «Один DFF» — вся иерархия одним .dff; в IMG ушли бы части
+            # машины отдельными DFF / TXD.
+            if getattr(s, 'gtatools_export_all_single_dff', False):
+                self.report({'ERROR'}, T("All → IMG не работает с «Один DFF» — "
+                                         "выключите одно из двух"))
+                return {'CANCELLED'}
+            from ..tools.model_utils import find_all_selected_model_groups
+            from .img_ops import _export_routes, fill_export_plan
+            groups = find_all_selected_model_groups()
+            if groups and not _export_routes(context, groups)[0]:
                 self.report({'ERROR'},
                             T("Укажите путь к .img архиву в настройках аддона"))
                 return {'CANCELLED'}
-            context.window_manager.gtatools_txd_export_plan.clear()
+            empty_col = bool(getattr(s, 'gtatools_export_all_col_empty', False))
+            fill_export_plan(context, groups,
+                             want_lod=bool(s.gtatools_export_all_lod),
+                             want_col=bool(s.gtatools_export_all_col),
+                             col_stub=empty_col)
             res = bpy.ops.gtatools.export_to_img(
                 'EXEC_DEFAULT',
                 shared_txd=bool(getattr(s, 'gtatools_export_all_txd_shared', False)),
                 shared_txd_name=(getattr(s, 'gtatools_export_all_txd_shared_name', '')
-                                 or 'textures'))
-            if getattr(s, 'gtatools_export_all_ide_ipl', False):
-                self._also_upsert_ide_ipl(context)
+                                 or 'textures'),
+                skip_dff=not s.gtatools_export_all_dff,
+                skip_txd=not s.gtatools_export_all_txd,
+                empty_col=empty_col)
+            # Отчёты вложенного оператора Blender в строку состояния / Info не
+            # пускает (только в консоль) — итог Export to IMG повторяем здесь:
+            # сводку сразу, Mobile — последним (после IDE/IPL).
+            from .img_ops import _export_final
+            _fin = _export_final if 'FINISHED' in res else {}
+            if _fin.get('summary'):
+                self.report(*_fin['summary'])
+            # IMG отказал (формат/имена/занят) → строки IDE/IPL на модели,
+            # которых нет в архиве, не пишем. Так же, если отказал архив
+            # части моделей (у каждой модели свой архив) или архива нет.
+            if ('FINISHED' in res
+                    and getattr(s, 'gtatools_export_all_ide_ipl', False)):
+                from .img_ops import _export_unwritten
+                if _export_unwritten:
+                    self.report({'WARNING'}, T(
+                        "IDE/IPL не записаны: часть моделей не попала в IMG"))
+                else:
+                    self._also_upsert_ide_ipl(context)
+            if _fin.get('mobile'):
+                self.report({'WARNING'}, _fin['mobile'])
             return res
 
         # Клик по файлу в браузере → его имя (без расширения) становится
@@ -1474,6 +1583,7 @@ class GTATOOLS_OT_inu_export(bpy.types.Operator, ExportHelper):
         prev_selected = list(context.selected_objects)
         prev_active = context.view_layer.objects.active
         groups = {}
+        written = []   # записанные файлы — для Mobile-предупреждения в конце
         try:
             bpy.ops.object.select_all(action='DESELECT')
             for o in mesh_objects:
@@ -1491,7 +1601,9 @@ class GTATOOLS_OT_inu_export(bpy.types.Operator, ExportHelper):
                     want_dff=self.export_dff, want_txd=self.export_txd,
                     want_col=self.export_col, backend=backend,
                     txd_merge=self.txd_merge)
-                result = _report_single_dff(self, out, errors, root, dropped)
+                result = _report_single_dff(self, out, errors, root, dropped,
+                                            mobile=False)
+                written = out
             else:
                 exported, errors, tri_warnings, txd_notes, num_groups = \
                     run_group_export(
@@ -1510,7 +1622,8 @@ class GTATOOLS_OT_inu_export(bpy.types.Operator, ExportHelper):
                         txd_merge=bool(self.txd_merge))
                 result = _report_group_export(self, exported, errors,
                                               tri_warnings, num_groups,
-                                              txd_notes)
+                                              txd_notes, mobile=False)
+                written = exported
         finally:
             bpy.ops.object.select_all(action='DESELECT')
             for o in prev_selected:
@@ -1561,6 +1674,8 @@ class GTATOOLS_OT_inu_export(bpy.types.Operator, ExportHelper):
 
         if notes:
             self.report({'INFO'}, "  ".join(notes))
+        # Mobile — последним (строка состояния), после строк IDE/IPL.
+        _warn_mobile_txd(self, written)
         return result
 
 

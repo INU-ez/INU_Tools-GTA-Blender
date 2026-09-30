@@ -324,21 +324,22 @@ class GTATOOLS_OT_auto_find_lod(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        from ..tools.model_utils import get_model_type
+        from ..tools.model_utils import get_model_type, _strip_dup_suffix
         sel = [o for o in context.selected_objects if o.type == 'MESH']
         if not sel:
             self.report({'WARNING'}, T("Выдели модели"))
             return {'CANCELLED'}
-        # Индекс всех LOD сцены по базовому имени (первый побеждает).
+        # Индекс всех LOD сцены по базовому имени (без учёта регистра; при
+        # дублях — имя без .001).
         lod_by_base = {}
         for o in context.scene.objects:
             if o.type != 'MESH':
                 continue
             mt, base = get_model_type(o)
             if mt == 'LOD' and base:
-                lod_by_base.setdefault(base.rstrip('_'), o)
+                lod_by_base.setdefault(base.rstrip('_').lower(), []).append(o)
         found = missing = in_ide = 0
-        ide_lods = None
+        ide_lods = lodix = None
         for obj in sel:
             inu = getattr(obj, 'inu', None)
             if inu is None:
@@ -346,7 +347,16 @@ class GTATOOLS_OT_auto_find_lod(bpy.types.Operator):
             mt, base = get_model_type(obj)
             if mt == 'LOD':
                 continue                       # сам LOD — не ищем ему LOD
-            lod = lod_by_base.get((base or '').rstrip('_'))
+            cands = lod_by_base.get((base or '').rstrip('_').lower(), [])
+            if not cands:
+                # III/VC: пара по правилу игры — имя с 4-го символа
+                # (LODtower ↔ ap_tower), как у Add to IDE/IPL.
+                if lodix is None:
+                    from .map_link import LodIndex
+                    lodix = LodIndex()
+                cands = lodix.tail_partners(obj, base or '')
+            lod = min(cands, key=lambda c: (c.name != _strip_dup_suffix(c.name),
+                                            c.name)) if cands else None
             if lod is not None and lod is not obj:
                 inu.lod_object = lod
                 found += 1
@@ -368,6 +378,36 @@ class GTATOOLS_OT_auto_find_lod(bpy.types.Operator):
             msg += " · " + T("в IDE: {0}").format(in_ide)
         self.report({'INFO'}, msg)
         return {'FINISHED'}
+
+
+def _model_key(obj, classify):
+    """Ключ модели объекта для «По порядку (+1)».
+
+    В игре модель = одно имя (без учёта регистра) = одна строка IDE = один
+    ID, а IPL ссылается на ID. Копиям одной модели (tree, tree.001 — Shift+D,
+    Import Map) разные ID давать нельзя: Export IDE пишет одну строку на имя,
+    IPL — ID каждой копии, и ID без строки IDE роняет SA при загрузке
+    (LoadObjectInstance 0x538090 → NULL). LOD — отдельная модель со своей
+    строкой IDE → ключ по своему имени; у COL строки IDE нет, он идёт с
+    моделью (то же базовое имя)."""
+    mt, base = classify(obj)
+    name = obj.name if mt == 'LOD' else (base or obj.name)
+    if '.' in name:                  # .001, и .1000 после .999 — копия
+        b, s = name.rsplit('.', 1)
+        if s.isdigit():
+            name = b
+    return (mt == 'LOD', name.lower())
+
+
+def _seq_ids(keys, start):
+    """«По порядку (+1)» — номер на модель: первая встреча ключа берёт
+    следующий ID, повторы (копии) — тот же. ['tree', 'tree', 'bush'],
+    20000 → {'tree': 20000, 'bush': 20001}."""
+    ids = {}
+    for k in keys:
+        if k not in ids:
+            ids[k] = start + len(ids)
+    return ids
 
 
 class GTATOOLS_OT_batch_set_distance(bpy.types.Operator):
@@ -407,8 +447,9 @@ class GTATOOLS_OT_batch_set_distance(bpy.types.Operator):
     )
     model_id_sequential: BoolProperty(
         name=T("По порядку (+1)"),
-        description=T("Первому объекту — указанный ID, каждому следующему +1 "
-                      "(объекты идут по имени). Снято — один и тот же ID всем"),
+        description=T("Первой модели — указанный ID, каждой следующей +1 "
+                      "(по имени объекта). Копии одной модели (tree, tree.001) "
+                      "получают один ID, LOD — свой. Снято — один и тот же ID всем"),
         default=True,
     )
     apply_txd: BoolProperty(
@@ -495,11 +536,16 @@ class GTATOOLS_OT_batch_set_distance(bpy.types.Operator):
         self._row(layout, "apply_flags", "ide_flags")
         self._row(layout, "apply_col_name", "col_name")
 
-        n = len(self._targets(context))
+        targets = self._targets(context)
+        n = len(targets)
         layout.label(text=f"{n} {T('объектов будет изменено')}", **inu_icon(safe_icon('INFO')))
         if self.apply_model_id and self.model_id_sequential and n > 1:
-            layout.label(text=f"ID: {self.model_id} … {self.model_id + n - 1}",
-                         **inu_icon(safe_icon('COPY_ID')))
+            # Диапазон — по числу моделей: копии одной модели делят один ID.
+            from ..tools.model_utils import get_model_type_cached
+            m = len({_model_key(o, get_model_type_cached) for o in targets})
+            if m > 1:
+                layout.label(text=f"ID: {self.model_id} … {self.model_id + m - 1}",
+                             **inu_icon(safe_icon('COPY_ID')))
 
     def execute(self, context):
         if not any((self.apply_draw, self.apply_lod, self.apply_model_id,
@@ -507,16 +553,23 @@ class GTATOOLS_OT_batch_set_distance(bpy.types.Operator):
                     self.apply_col_name)):
             self.report({'WARNING'}, T("Включите хотя бы одну галочку"))
             return {'CANCELLED'}
+        targets = self._targets(context)
+        ids = None
+        if self.apply_model_id and self.model_id_sequential:
+            # Номер на МОДЕЛЬ, а не на объект: копии одной модели — один ID.
+            from ..tools.model_utils import get_model_type
+            keys = [_model_key(o, get_model_type) for o in targets]
+            seq = _seq_ids(keys, self.model_id)
+            ids = [seq[k] for k in keys]
         count = 0
-        for obj in self._targets(context):
+        for obj in targets:
             inu = obj.inu
             if self.apply_draw:
                 inu.draw_distance = self.draw_distance
             if self.apply_lod:
                 inu.lod_draw_distance = self.lod_draw_distance
             if self.apply_model_id:
-                inu.model_id = (self.model_id + count
-                                if self.model_id_sequential else self.model_id)
+                inu.model_id = ids[count] if ids is not None else self.model_id
             if self.apply_txd:
                 inu.txd_name = self.txd_name
             if self.apply_interior:
