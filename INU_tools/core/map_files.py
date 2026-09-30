@@ -48,6 +48,7 @@ import re
 import tempfile
 import zlib
 
+from .fs_ci import path_key, resolve as _ci
 from .gta_dat import img_load_order
 from .img import SECTOR, safe_filename
 from .ipl import _read_binary_ipl, read_ipl
@@ -109,7 +110,7 @@ def region_files(text_paths, archives, region, list_entries, root=''):
     Read them by record (``read_entry``) — a name can repeat."""
     text, seen = [], set()
     for p in text_paths:
-        k = os.path.normcase(os.path.abspath(p))
+        k = path_key(p)
         if k in seen:
             continue
         rel = p
@@ -164,8 +165,7 @@ def order_archives(paths, root, dat_imgs=(), extra=()) -> list:
     alphabetically. Only when <root>/data has no game .dat: models/gta3.img,
     models/gta_int.img, ``dat_imgs`` (IMG lines of gta.dat), ``extra``.
     The same file twice (another spelling) is kept once."""
-    def key(p):
-        return os.path.normcase(os.path.abspath(p))
+    key = path_key
     order = []
     if root and os.path.isdir(root):
         try:
@@ -173,8 +173,8 @@ def order_archives(paths, root, dat_imgs=(), extra=()) -> list:
         except OSError:
             order = []
     if not order and root:
-        order = [os.path.join(root, 'models', 'gta3.img'),
-                 os.path.join(root, 'models', 'gta_int.img')] + list(dat_imgs)
+        order = [_ci(os.path.join(root, 'models', 'gta3.img')),
+                 _ci(os.path.join(root, 'models', 'gta_int.img'))] + list(dat_imgs)
     order += list(extra)
     rank = {}
     for i, p in enumerate(order):
@@ -233,7 +233,7 @@ def save_index(cdir: str, idx: dict) -> None:
 
 
 def archive_key(path: str) -> str:
-    return os.path.normcase(os.path.abspath(path))
+    return path_key(path)
 
 
 def archive_state(path: str):

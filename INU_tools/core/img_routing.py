@@ -12,10 +12,12 @@
 
 import os
 
+from .fs_ci import path_key, resolve as _ci
+
 
 def img_key(path):
     """Один архив в разном написании (регистр, «..», слэши) — один ключ."""
-    return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+    return path_key(path)
 
 
 def route_groups(own_by_base, default, isfile=os.path.isfile):
@@ -23,7 +25,11 @@ def route_groups(own_by_base, default, isfile=os.path.isfile):
     ({архив: [base]}, [base без архива]). Свой архив, которого нет на
     диске, — как без своего. Архив — путь в первом встреченном написании."""
     routes, paths, unresolved = {}, {}, []
+    if default and not isfile(default):
+        default = _ci(default)          # another letter case (Linux / macOS)
     for base, own in own_by_base.items():
+        if own and not isfile(own):
+            own = _ci(own)
         path = own if own and isfile(own) else default
         if not path or not isfile(path):
             unresolved.append(base)

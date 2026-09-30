@@ -13,6 +13,7 @@ No Blender dependency — pure Python.
 import os
 
 from .col_library import col_splice
+from .fs_ci import path_key, resolve as _ci
 from .ide import read_ide
 from .img import ImgReader, ImgWriter, remove_file
 
@@ -27,7 +28,8 @@ def txd_users(ide_paths):
     for p in ide_paths:
         if not p:
             continue
-        key = os.path.normcase(os.path.normpath(p))
+        p = _ci(p)
+        key = path_key(p)
         if key in seen or not os.path.isfile(p):
             continue
         seen.add(key)

@@ -19,6 +19,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+from .fs_ci import path_key, resolve as _ci
+
 
 @dataclass
 class GtaDatInfo:
@@ -74,12 +76,12 @@ def parse_gta_dat(filepath: str) -> GtaDatInfo:
 
 def resolve_paths(game_root: str, dat_info: GtaDatInfo) -> GtaDatInfo:
     """Convert relative paths to absolute using game root directory.
-    Backslashes are normalized to forward slashes."""
+    Backslashes are normalized to forward slashes; on a case-sensitive file
+    system the existing file is found whatever its letter case (fs_ci)."""
     def _resolve(p: str) -> str:
         # Normalize separators
         p = p.replace('\\', '/')
-        full = os.path.join(game_root, p)
-        return os.path.normpath(full)
+        return _ci(os.path.join(game_root, p))
 
     return GtaDatInfo(
         ide_paths=[_resolve(p) for p in dat_info.ide_paths],
@@ -97,7 +99,7 @@ def find_all_resources(game_root: str) -> GtaDatInfo:
     merged = GtaDatInfo()
 
     for dat_name in ('gta.dat', 'gta_int.dat'):
-        dat_path = os.path.join(game_root, 'data', dat_name)
+        dat_path = _ci(os.path.join(game_root, 'data', dat_name))
         if not os.path.isfile(dat_path):
             continue
         info = parse_gta_dat(dat_path)
@@ -124,7 +126,7 @@ def game_ide_paths(game_root: str) -> tuple[list[str], list[str]]:
     parse is skipped and not listed."""
     paths, dats, seen = [], [], set()
     for dat in GAME_DATS:
-        dat_path = os.path.join(game_root, 'data', dat)
+        dat_path = _ci(os.path.join(game_root, 'data', dat))
         if not os.path.isfile(dat_path):
             continue
         try:
@@ -134,7 +136,7 @@ def game_ide_paths(game_root: str) -> tuple[list[str], list[str]]:
             continue
         dats.append(dat)
         for p in ides:
-            key = os.path.normcase(os.path.normpath(p))
+            key = path_key(p)
             if key not in seen:
                 seen.add(key)
                 paths.append(p)
@@ -150,7 +152,7 @@ def _dat_archive_lines(game_root: str, dat_names, keyword: str,
     after the last such point are registered but never read, so dropped."""
     regs, cut = [], None
     for name in dat_names:
-        dat_path = os.path.join(game_root, 'data', name)
+        dat_path = _ci(os.path.join(game_root, 'data', name))
         if not os.path.isfile(dat_path):
             continue
         seen_ipl = False
@@ -165,7 +167,7 @@ def _dat_archive_lines(game_root: str, dat_names, keyword: str,
                 if word == 'IPL' and cut_at_ipl and not seen_ipl:
                     seen_ipl, cut = True, len(regs)
                 elif word == keyword and len(parts) == 2:
-                    regs.append(os.path.normpath(os.path.join(
+                    regs.append(_ci(os.path.join(
                         game_root, parts[1].strip().replace('\\', '/'))))
     return regs if cut is None else regs[:cut]
 
@@ -190,23 +192,23 @@ def img_load_order(game_root: str) -> list[str]:
     Not modelled: VC/III MODELS\\TXD.IMG (added only for cards without DXT).
     """
     data = os.path.join(game_root, 'data')
-    if os.path.isfile(os.path.join(data, 'gta.dat')):
-        regs = [os.path.normpath(os.path.join(game_root, 'models', n))
+    if os.path.isfile(_ci(os.path.join(data, 'gta.dat'))):
+        regs = [_ci(os.path.join(game_root, 'models', n))
                 for n in ('gta3.img', 'gta_int.img')]
         regs += _dat_archive_lines(game_root, ('default.dat', 'gta.dat'),
                                    'IMG', cut_at_ipl=True)
     else:
         main = next((n for n in ('gta_vc.dat', 'gta3.dat')
-                     if os.path.isfile(os.path.join(data, n))), None)
+                     if os.path.isfile(_ci(os.path.join(data, n)))), None)
         if main is None:
             return []
-        regs = [os.path.normpath(os.path.join(game_root, 'models', 'gta3.img'))]
+        regs = [_ci(os.path.join(game_root, 'models', 'gta3.img'))]
         regs += _dat_archive_lines(game_root, ('default.dat', main), 'CDIMAGE',
                                    cut_at_ipl=(main == 'gta_vc.dat'))
         regs.reverse()
     out, seen = [], set()
     for p in regs:
-        key = os.path.normcase(p)
+        key = path_key(p)
         if key not in seen:          # a second registration of the same file
             seen.add(key)
             out.append(p)
@@ -219,8 +221,7 @@ def order_archives(paths, game_root: str) -> list[str]:
     the first archive. Archives the game doesn't read (not in its .dat
     files), and all of them when ``game_root`` isn't a folder, go last,
     alphabetically."""
-    def key(p):
-        return os.path.normcase(os.path.abspath(p))
+    key = path_key
     order = []
     if game_root and os.path.isdir(game_root):
         try:
@@ -249,7 +250,7 @@ def dat_game(game_root: str):
     data = os.path.join(game_root, 'data')
     for name, game in (('gta.dat', 'SA'), ('gta_vc.dat', 'VC'),
                        ('gta3.dat', 'III')):
-        if os.path.isfile(os.path.join(data, name)):
+        if os.path.isfile(_ci(os.path.join(data, name))):
             return game
     return None
 
@@ -262,8 +263,8 @@ def list_ide_files(folder: str) -> list[str]:
     IDEs the game actually loads). Otherwise → recursively scan the folder
     for ``*.ide``. This lets the user point at the whole game OR at a tighter
     folder (fewer files = faster search)."""
-    has_dat = (os.path.isfile(os.path.join(folder, 'data', 'gta.dat'))
-               or os.path.isfile(os.path.join(folder, 'data', 'gta_int.dat')))
+    has_dat = (os.path.isfile(_ci(os.path.join(folder, 'data', 'gta.dat')))
+               or os.path.isfile(_ci(os.path.join(folder, 'data', 'gta_int.dat'))))
     if has_dat:
         try:
             return [p for p in find_all_resources(folder).ide_paths
