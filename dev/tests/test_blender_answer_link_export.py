@@ -389,7 +389,11 @@ def test_map_library_keeps_ide_names_and_model_groups(monkeypatch, tmp_path):
                                   split=False, notes=[], game='SA', plan={path: ('col_lib', [model])})
     ns = _funcs('INU_tools/tools/map_export.py', {'iter_export_map'}, {
         '__package__': 'INU_tools.tools', 'Optional': Optional,
+        'MapExportPrep': type(prep),
         'os': os, 'T': lambda s: s})
+    # Python <=3.13 resolves annotations during definition. Resolve them
+    # explicitly on 3.14 too so a missing dependency cannot pass unnoticed.
+    assert ns['iter_export_map'].__annotations__['prepared'] == Optional[type(prep)]
     stats = {}
     list(ns['iter_export_map'](types.SimpleNamespace(mode='OBJECT'), str(tmp_path),
                                prepared=prep, stats=stats))
