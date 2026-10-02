@@ -142,7 +142,16 @@ def _mesh_origins(obj, original, baseline_edges):
                     bool(getattr(point, 'select', False)))
         choices.sort(key=lambda i: (*rank(i), i))
         if len(choices) > 1 and rank(choices[0]) == rank(choices[1]):
-            raise ValueError('Coincident duplicated NODES identity: move the new point before exporting')
+            first, second = choices[:2]
+            a, b = mesh.vertices[first].co, mesh.vertices[second].co
+            # Equal distances to the imported position do not imply that
+            # the vertices themselves overlap (e.g. a symmetric edit).
+            if (a.x, a.y, a.z) == (b.x, b.y, b.z):
+                name = getattr(obj, 'name', obj.get('nodes_filename', 'NODES mesh'))
+                raise ValueError(
+                    f'Coincident duplicated NODES identity in "{name}" '
+                    f'(vertex indices {first} and {second}): '
+                    'move the new point or merge the overlapping vertices before exporting')
         origins[choices[0]] = slot
     return origins
 

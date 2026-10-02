@@ -26,6 +26,7 @@ Feature and bugfix update since v2.4.1. Extend existing SA roads and pedestrian 
 - **Enabling or updating the extension could fail with `_RestrictData`**, leaving classes registered and causing an `INUSceneSettings already registered` error on the next attempt. Existing path curves now initialize after registration, and disabling the extension cancels the pending initialization.
 - **Compiled NODES edits previously ignored new mesh edges and reused properties by vertex index**, producing incorrect connections after topology changes. Export now rebuilds NodeLinks and NaviNode/NaviLinks together and checks addresses, capacity limits and compressed coordinates before writing.
 - **NODES export from Edit Mode could report missing vertex identities.** It now reads the live editable mesh data, including when upgrading an unchanged legacy scene.
+- **Distinct duplicated NODES points at equal distances from the imported position could be mistaken for overlapping vertices.** They now export normally; actual ambiguous overlaps report the object name and vertex indices to help locate them.
 - **Empty NODES regions and zero IMG sector padding** now parse correctly instead of being treated as an unknown binary tail.
 - **SA LOD placement keeps its offset and relative rotation** when the main model moves, rotates or is written into another IPL. LOD draw distance is honoured across IDE, IMG, map and Ariane export, with a fallback for older scenes.
 - **Deleting base IPL rows referenced by streamed IPLs is blocked**, preserving the row numbers those files use for LOD references.
@@ -49,7 +50,7 @@ Feature and bugfix update since v2.4.1. Extend existing SA roads and pedestrian 
 ## ✅ Verification
 
 - **1810 tests passed** in the regular Python suite. Its three Blender-only IFP checks were also run successfully in native Blender; the remaining skipped GTA III `paths.ipl` check has no source file because III loads those paths from IDE.
-- **20 checks passed without skips in Blender 5.1.2:** 11 NODES scenarios and 9 IFP checks, including real Edit Mode, Extrude/Subdivide, save/reload and export of all 64 original SA regions.
+- **23 checks passed without skips in Blender 5.1.2:** 14 NODES scenarios and 9 IFP checks, including real Edit Mode, Extrude/Subdivide, symmetric duplicate moves, save/reload and export of all 64 original SA regions. The NODES Python suite also passed all 39 checks after the duplicate validation fix.
 - The **v2.5.0 extension ZIP builds and passes Blender's validator**. All 11 store-compliance checks passed; the archive contains the new path modules and excludes development files and Python bytecode.
 - The built ZIP is also checked through Blender's extension manager in a temporary local repository: enable/disable, repeated enable and initialization of an existing path curve. This check runs in the packaging CI job.
 - Runtime behaviour in GTA SA has not yet been tested.

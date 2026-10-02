@@ -278,12 +278,36 @@ def test_unchanged_one_direction_edge_keeps_direction_and_tail():
     assert result.links == [PathLink(37, 1)]
 
 
+@pytest.mark.parametrize('delta', [-10, 10])
+@pytest.mark.parametrize('selected', [False, True])
+def test_equidistant_distinct_duplicates_export_connected_graph(adapter, tmp_path, delta, selected):
+    meshes = objects(adapter, road(peds=False))
+    veh = meshes[0]
+    veh.data.vertices[1].co.x += delta
+    add_vertex(veh, 820-delta, copied_from=1)
+    veh.data.vertices[1].select = selected
+    veh.data.vertices[2].select = selected
+    edge(veh, (0, 1), (1, 2))
+    result = adapter.collect_compiled_nodes(meshes)
+    assert not result.node_remap
+    assert [(n.x, n.node_id) for n in result.vehicle_nodes] == [(800, 0), (820+delta, 1), (820-delta, 2)]
+    path = tmp_path/'nodes37.dat'
+    write_nodes(str(path), result)
+    back = read_nodes(str(path))
+    assert graph_edges(back, 37) == {(0, 1), (1, 2)}
+    validate_graph_batch({37: back})
+
+
 def test_reject_ambiguous_coincident_duplicates(adapter):
     meshes = objects(adapter, road())
+    meshes[0].name = 'NODES37_Vehicle'
     add_vertex(meshes[0], 820, copied_from=1)
     meshes[0].data.vertices[1].select = True
-    with pytest.raises(ValueError, match='Coincident'):
+    with pytest.raises(ValueError, match='Coincident') as error:
         adapter.collect_compiled_nodes(meshes)
+    assert 'NODES37_Vehicle' in str(error.value)
+    assert 'vertex indices 1 and 2' in str(error.value)
+    assert 'move the new point or merge' in str(error.value)
 
 
 def test_legacy_scene_requires_reimport_if_already_changed(adapter):

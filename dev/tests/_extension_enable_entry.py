@@ -20,7 +20,13 @@ import zipfile
 
 import addon_utils
 import bpy
-from _bpy_restrict_state import RestrictBlend
+try:
+    from _bpy_restrict_state import RestrictBlend
+except ModuleNotFoundError as error:
+    if error.name != '_bpy_restrict_state':
+        raise
+    # Blender 4.2 LTS uses the name without the leading underscore.
+    from bpy_restrict_state import RestrictBlend
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]

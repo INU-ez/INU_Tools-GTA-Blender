@@ -188,6 +188,39 @@ def test_native_duplicate_then_move_gets_a_fresh_node(tmp_path):
     assert_connected_export(tmp_path)
 
 
+@pytest.mark.parametrize('stay_in_edit_mode', [False, True])
+def test_native_symmetric_duplicate_moves_export_distinct_points(tmp_path, stay_in_edit_mode):
+    objects, vehicle = load_road(tmp_path)
+    bm = enter_edit(vehicle, vertices=(1,))
+    original = bm.verts[1]
+    duplicate = bmesh.ops.duplicate(bm, geom=[original])['vert_map'][original]
+    original.co.x -= 10
+    duplicate.co.x += 10
+    original.select_set(True)
+    duplicate.select_set(True)
+    bm.edges.new((original, duplicate))
+    bmesh.update_edit_mesh(vehicle.data)
+    if not stay_in_edit_mode:
+        bpy.ops.object.mode_set(mode='OBJECT')
+    back = assert_connected_export(tmp_path)
+    assert [n.x for n in back.vehicle_nodes] == [800, 810, 830]
+
+
+def test_native_coincident_duplicate_reports_object_and_vertices(tmp_path):
+    objects, vehicle = load_road(tmp_path)
+    bm = enter_edit(vehicle, vertices=(1,))
+    original = bm.verts[1]
+    duplicate = bmesh.ops.duplicate(bm, geom=[original])['vert_map'][original]
+    original.select_set(True)
+    duplicate.select_set(True)
+    bmesh.update_edit_mesh(vehicle.data)
+    with pytest.raises(ValueError, match='Coincident') as error:
+        collect_compiled_nodes(objects)
+    assert vehicle.name in str(error.value)
+    assert 'vertex indices 1 and 2' in str(error.value)
+    assert 'move the new point or merge' in str(error.value)
+
+
 def test_native_save_reload_preserves_ids_for_followup_edit(tmp_path):
     objects, vehicle = load_road(tmp_path)
     extrude(vehicle)
