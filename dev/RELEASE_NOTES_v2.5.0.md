@@ -23,6 +23,7 @@ Feature and bugfix update since v2.4.1. Extend existing SA roads and pedestrian 
 
 ## 🐛 Fixed
 
+- **Enabling or updating the extension could fail with `_RestrictData`**, leaving classes registered and causing an `INUSceneSettings already registered` error on the next attempt. Existing path curves now initialize after registration, and disabling the extension cancels the pending initialization.
 - **Compiled NODES edits previously ignored new mesh edges and reused properties by vertex index**, producing incorrect connections after topology changes. Export now rebuilds NodeLinks and NaviNode/NaviLinks together and checks addresses, capacity limits and compressed coordinates before writing.
 - **NODES export from Edit Mode could report missing vertex identities.** It now reads the live editable mesh data, including when upgrading an unchanged legacy scene.
 - **Empty NODES regions and zero IMG sector padding** now parse correctly instead of being treated as an unknown binary tail.
@@ -40,13 +41,15 @@ Feature and bugfix update since v2.4.1. Extend existing SA roads and pedestrian 
 
 ## ♻️ Existing scenes
 
+- If an earlier v2.5.0 enable attempt failed, restart Blender after installing the corrected ZIP to clear the classes left by that failed registration.
 - Reimport old path scenes that were already edited without persistent point identities. Old III/VC path imports may also need reimporting for corrected coordinate scale. Keep imported NODES category meshes separate; add roads through the vehicle mesh rather than manually adding navigation vertices.
 - New NODES points must stay in their region. If an edit changes old IDs, import and select all 64 regions for export. Ambiguous coincident duplicates, unsupported foreign-node deletion and unknown nonzero tails stop the export before writing. The batch is validated in advance; a late disk/OS error does not guarantee rollback of all 64 files.
 - Reimport COL primitives from old scenes if their spheres/boxes were left at the origin. Vertex alpha painted before light-cutter baking is preserved.
 
 ## ✅ Verification
 
-- **1807 tests passed** in the regular Python suite. Its three Blender-only IFP checks were also run successfully in native Blender; the remaining skipped GTA III `paths.ipl` check has no source file because III loads those paths from IDE.
+- **1810 tests passed** in the regular Python suite. Its three Blender-only IFP checks were also run successfully in native Blender; the remaining skipped GTA III `paths.ipl` check has no source file because III loads those paths from IDE.
 - **20 checks passed without skips in Blender 5.1.2:** 11 NODES scenarios and 9 IFP checks, including real Edit Mode, Extrude/Subdivide, save/reload and export of all 64 original SA regions.
 - The **v2.5.0 extension ZIP builds and passes Blender's validator**. All 11 store-compliance checks passed; the archive contains the new path modules and excludes development files and Python bytecode.
+- The built ZIP is also checked through Blender's extension manager in a temporary local repository: enable/disable, repeated enable and initialization of an existing path curve. This check runs in the packaging CI job.
 - Runtime behaviour in GTA SA has not yet been tested.

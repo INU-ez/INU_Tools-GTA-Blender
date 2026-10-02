@@ -74,6 +74,16 @@ jobs:
           zip=$(ls inu_tools_gta_sa-*.zip | head -n 1)
           "$BLENDER" --command extension validate "$zip"
 
+      - name: Test packaged extension enable and disable
+        run: |
+          set -e
+          export BLENDER_USER_CONFIG="$RUNNER_TEMP/inu-blender-enable-test"
+          export BLENDER_USER_EXTENSIONS="$RUNNER_TEMP/inu-blender-enable-extensions"
+          mkdir -p "$BLENDER_USER_CONFIG" "$BLENDER_USER_EXTENSIONS"
+          zip=$(ls inu_tools_gta_sa-*.zip | head -n 1)
+          "$HOME/blender/blender" --background --factory-startup --disable-autoexec \
+            --python-exit-code 1 --python dev/tests/_extension_enable_entry.py -- "$zip"
+
       - name: Upload zip
         uses: actions/upload-artifact@v4
         with:

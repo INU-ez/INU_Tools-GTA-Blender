@@ -21,6 +21,9 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / 'dev/tests/.blender_nodes_runtime'
 OUTPUT.mkdir(exist_ok=True)
+for environment_name in ('BLENDER_USER_CONFIG', 'BLENDER_USER_EXTENSIONS'):
+    if environment_path := os.environ.get(environment_name):
+        Path(environment_path).mkdir(parents=True, exist_ok=True)
 REPORT = OUTPUT / 'result.json'
 result = dict(status='running')
 try:
@@ -43,8 +46,13 @@ try:
     import INU_tools
     assert Path(INU_tools.__file__).resolve().parent == ROOT / 'INU_tools', INU_tools.__file__
     result['addon'] = INU_tools.__file__
-    INU_tools.register()
+    import addon_utils
+    def addon_error(error):
+        raise error
+    enabled = addon_utils.enable('INU_tools', default_set=False, handle_error=addon_error)
+    assert enabled is INU_tools
     result['addon_registered'] = True
+    result['registration_method'] = 'addon_utils.enable (restricted registration context)'
     print('[native-nodes] Blender:', bpy.app.version_string, flush=True)
     print('[native-nodes] Addon:', INU_tools.__file__, flush=True)
     args = ['-v', '-s', '-rs', '-p', 'no:cacheprovider',
@@ -62,7 +70,7 @@ try:
     result['elapsed_seconds'] = float(suite.get('time'))
     result['status'] = 'passed' if exit_code == 0 else 'failed'
     REPORT.write_text(json.dumps(result, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
-    INU_tools.unregister()
+    addon_utils.disable('INU_tools', default_set=False, handle_error=addon_error)
     if exit_code:
         raise RuntimeError('Native Blender test failure: ' + str(exit_code))
 except BaseException:

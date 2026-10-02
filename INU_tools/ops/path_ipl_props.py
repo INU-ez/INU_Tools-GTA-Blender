@@ -227,6 +227,16 @@ def _path_identity_load(_dummy):
             print(f'[INU] Path IPL identity: {exc}')
 
 
+def _path_identity_initialize():
+    import bpy
+    # addon_utils.enable registers under _RestrictContext: bpy.data has
+    # no object collections until registration returns. Migrate later.
+    if not hasattr(bpy.data, 'objects'):
+        return 0.1
+    _path_identity_load(None)
+    return None
+
+
 def register_path_identity_handlers():
     import bpy
     for handlers, callback in ((bpy.app.handlers.depsgraph_update_post, _path_identity_update),
@@ -234,11 +244,14 @@ def register_path_identity_handlers():
         bpy.app.handlers.persistent(callback)
         if callback not in handlers:
             handlers.append(callback)
-    _path_identity_load(None)
+    if not bpy.app.timers.is_registered(_path_identity_initialize):
+        bpy.app.timers.register(_path_identity_initialize, first_interval=0.1)
 
 
 def unregister_path_identity_handlers():
     import bpy
+    if bpy.app.timers.is_registered(_path_identity_initialize):
+        bpy.app.timers.unregister(_path_identity_initialize)
     for handlers, callback in ((bpy.app.handlers.depsgraph_update_post, _path_identity_update),
                                (bpy.app.handlers.load_post, _path_identity_load)):
         if callback in handlers:

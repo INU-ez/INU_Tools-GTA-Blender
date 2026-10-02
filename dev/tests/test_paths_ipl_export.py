@@ -76,6 +76,53 @@ def load_exporter():
 export = load_exporter()
 
 
+@pytest.fixture
+def identity_handler_bpy(monkeypatch):
+    pending = {}
+    handlers = types.SimpleNamespace(depsgraph_update_post=[], load_post=[],
+                                     persistent=lambda callback: callback)
+    timers = types.SimpleNamespace(
+        is_registered=lambda callback: callback in pending,
+        register=lambda callback, **options: pending.update({callback: options}),
+        unregister=lambda callback: pending.pop(callback))
+    bpy = types.SimpleNamespace(data=types.SimpleNamespace(),
+                                app=types.SimpleNamespace(handlers=handlers, timers=timers))
+    monkeypatch.setitem(sys.modules, 'bpy', bpy)
+    return bpy, pending
+
+
+def test_identity_registration_defers_restricted_data_and_is_idempotent(identity_handler_bpy):
+    bpy, pending = identity_handler_bpy
+    # Like _RestrictData during addon enable, this has no objects collection.
+    props.register_path_identity_handlers()
+    props.register_path_identity_handlers()
+    assert list(pending) == [props._path_identity_initialize]
+    assert bpy.app.handlers.load_post == [props._path_identity_load]
+    assert bpy.app.handlers.depsgraph_update_post == [props._path_identity_update]
+    assert props._path_identity_initialize() == 0.1
+
+
+def test_deferred_identity_initialization_migrates_existing_curve(identity_handler_bpy):
+    bpy, _pending = identity_handler_bpy
+    obj = Obj()
+    bpy.data.objects = [obj]
+    props.register_path_identity_handlers()
+    assert not obj.get('pn_identity_version')
+    assert props._path_identity_initialize() is None
+    assert obj['pn_identity_version'] == 1
+    assert [slot for _point, slot in props.ensure_point_slots(obj)] == [0, 1, 2]
+
+
+def test_identity_unregister_cancels_pending_initialization(identity_handler_bpy):
+    bpy, pending = identity_handler_bpy
+    props.register_path_identity_handlers()
+    props.unregister_path_identity_handlers()
+    props.unregister_path_identity_handlers()
+    assert not pending
+    assert not bpy.app.handlers.load_post
+    assert not bpy.app.handlers.depsgraph_update_post
+
+
 def test_vc_column_semantics_and_sixteenths(tmp_path):
     source = b'path\n1, -1\n\t2, -1, 1, 2233.8, 19752, 161.083, 4.5, 2, 3, 1, 6, 0.75\nend\n'
     data = parse_paths_ipl(source)
