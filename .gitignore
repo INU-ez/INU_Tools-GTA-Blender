@@ -8,6 +8,7 @@ INU_tools-*.zip
 
 # E2E test runner status file — pytest exit code from inside Blender
 dev/tests/.e2e_last_exit
+dev/tests/.blender_nodes_runtime/
 FEATURES_CHECKLIST.md
 
 # Python (доп. кэш/сборка)

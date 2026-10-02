@@ -378,20 +378,21 @@ def _read_texture_native(r, size):
     r.read_one('<B')                 # raster_type (unused)
     compression_flag = r.read_one('<B')
 
-    # Palette (PAL8 = 256 colors, PAL4 = 16 colors)
+    # D3D native streams: PAL8 = 256 entries, PAL4 = 32 entries (16 used).
+    # librw d3d8.cpp / d3d9.cpp read 4*32 for PAL4; indices are still bytes.
     has_pal8 = bool(tex.raster_format & RASTER_PAL8)
     has_pal4 = bool(tex.raster_format & RASTER_PAL4)
     has_palette = has_pal8 or has_pal4
     palette = None
-    if has_pal8:
-        pal_data = r.read_bytes(256 * 4)
-        palette = np.frombuffer(pal_data, dtype=np.uint8).reshape(256, 4).copy()
-        palette[:, [0, 2]] = palette[:, [2, 0]]  # BGRA → RGBA
-    elif has_pal4:
-        # On D3D8/D3D9 platform, PAL4 still stores 256-entry palette (32 used)
-        pal_data = r.read_bytes(256 * 4)
-        palette = np.frombuffer(pal_data, dtype=np.uint8).reshape(256, 4).copy()
-        palette[:, [0, 2]] = palette[:, [2, 0]]  # BGRA → RGBA
+    if has_palette:
+        count = 32 if has_pal4 else 256
+        pal_data = r.read_bytes(count * 4)
+        palette = np.frombuffer(pal_data, dtype=np.uint8).reshape(count, 4).copy()
+        # Both platforms store RGBA. Keep the historical D3D8 core result:
+        # ops/txd_import applies its compensating swap for paletted D3D8.
+        # D3D9 has no compensating swap and must already be RGBA here.
+        if tex.platform_id == 8:
+            palette[:, [0, 2]] = palette[:, [2, 0]]
 
     # Mip level 0 (we only need the largest)
     data_size = r.read_one('<I')

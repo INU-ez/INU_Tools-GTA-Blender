@@ -183,7 +183,7 @@ def _targets_env(arch_of_obj, arch_names, routes=None):
     ns = {"os": os, "T": lambda s: s, "shared_targets": shared_targets,
           "arch_of_obj": arch_of_obj, "arch_names": arch_names, "results": [],
           "routes": set(arch_of_obj.values()) if routes is None else routes,
-          "_mixed": {}}
+          "_mixed": {}, "required_txd": {}, "extra_arch_of_obj": {}}
     exec(compile(ast.Module(body=[fn], type_ignores=[]), str(IMG_OPS), "exec"), ns)
     return ns
 

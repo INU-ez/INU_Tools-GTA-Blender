@@ -28,7 +28,7 @@
 bl_info = {
     "name": "INU_tools(gta_sa)",
     "author": "INU",
-    "version": (2, 4, 1),
+    "version": (2, 5, 0),
     # Минимум 2.83 LTS — поддержка через tools/compat.py:
     # • bake / preview / DFF I/O работают через legacy mesh.vertex_colors
     # • prelight preview shader использует ShaderNodeMixRGB на ≤3.3
@@ -1187,7 +1187,11 @@ def _lod_dist_sync_update(self, context):
 
 
 def _zon_name_get(self):
-    return str(self.id_data.get('zon_name', '') or '')
+    ob = self.id_data
+    if ob.get('inu_zon'):
+        from .ops.zon_ops import _zone_name
+        return _zone_name(ob)
+    return str(ob.get('zon_name', '') or '')
 
 
 def _zon_name_set(self, value):
@@ -2744,7 +2748,9 @@ def _ide_entry_from_obj(obj, auto_id=False):
         try:
             from .tools.model_utils import get_model_type
             if get_model_type(obj)[0] == 'LOD':
-                draw_dist = getattr(inu, 'lod_draw_distance', draw_dist)
+                lod_dist = float(getattr(inu, 'lod_draw_distance', 0.0))
+                if lod_dist > 0:
+                    draw_dist = lod_dist
         except Exception:
             pass
     flags = getattr(inu, 'ide_flags', 0) if inu else 0
@@ -4377,7 +4383,8 @@ def _get_map_region_items(self, context):
     if game_root == _map_region_cache_root and _map_region_cache:
         return _map_region_cache
 
-    dat_path = os.path.join(game_root, 'data', 'gta.dat')
+    from .core.fs_ci import resolve
+    dat_path = resolve(os.path.join(game_root, 'data', 'gta.dat'))
     if not os.path.isfile(dat_path):
         return items
 
@@ -5017,6 +5024,9 @@ def register():
         print(f"[GTA Tools] VC Layer System register failed: {_e}")
         traceback.print_exc()
 
+    from .ops.path_ipl_props import register_path_identity_handlers
+    register_path_identity_handlers()
+
     print("[GTA Tools Panel] Addon registered!")
 
 
@@ -5278,6 +5288,8 @@ def _bake_defensive_sweep():
 
 
 def unregister():
+    from .ops.path_ipl_props import unregister_path_identity_handlers
+    unregister_path_identity_handlers()
 
     try:
         from .ops import map_watch

@@ -17,6 +17,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "INU_tools"))
 
 from core.ifp import (  # noqa: E402
@@ -85,29 +86,35 @@ def test_sample_with_zero_span_returns_first_keyframe():
 # preview_start / preview_stop wire bpy.app.handlers.frame_change_post
 # and read armature data — requires a real Blender Python.
 
-bpy = pytest.importorskip("bpy")
+@pytest.fixture
+def blender_api():
+    # Gate only the Blender wrappers, not the pure interpolation tests.
+    # Other test modules install bpy stubs; the native runtime is required.
+    pytest.importorskip('_bpy', reason='IFP preview smoke tests require the native Blender runtime')
+    return pytest.importorskip("bpy")
 
 
-def test_preview_is_inactive_by_default():
-    from ops.ifp_import import preview_is_active
+def test_preview_is_inactive_by_default(blender_api):
+    from INU_tools.ops.ifp_import import preview_is_active
     # Fresh process or after preview_stop — must report inactive.
     # If a previous test left preview running, that's a leak we want
     # surfaced here.
     if preview_is_active():
-        from ops.ifp_import import preview_stop
+        from INU_tools.ops.ifp_import import preview_stop
         preview_stop()
     assert preview_is_active() is False
 
 
-def test_preview_start_rejects_non_armature():
-    from ops.ifp_import import preview_start
+def test_preview_start_rejects_non_armature(blender_api):
+    from INU_tools.ops.ifp_import import preview_start
     ok, msg = preview_start(None, "WALK")
     assert ok is False
     assert "armature" in msg.lower()
 
 
-def test_preview_start_rejects_unknown_anim():
-    from ops.ifp_import import preview_start
+def test_preview_start_rejects_unknown_anim(blender_api):
+    from INU_tools.ops.ifp_import import preview_start
+    bpy = blender_api
     arm = bpy.data.objects.new("PreviewArm", bpy.data.armatures.new("PreviewArmData"))
     try:
         ok, msg = preview_start(arm, "ANIM_THAT_DOES_NOT_EXIST")

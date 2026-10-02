@@ -8,7 +8,7 @@
 
 <p>
   <img src="https://img.shields.io/badge/Blender-2.83%E2%80%935.1-orange?logo=blender" alt="Blender">
-  <img src="https://img.shields.io/badge/Version-2.4.1-green" alt="Version">
+  <img src="https://img.shields.io/badge/Version-2.5.0-green" alt="Version">
   <img src="https://img.shields.io/badge/License-GPL--3.0-blue" alt="License">
 </p>
 
@@ -66,6 +66,10 @@
 
 Plus: time cycles, zones (`map.zon`/`info.zon`), cameras, plants (`plants.dat`), X Radar Maker.
 Details in the **[documentation](docs/DOCS.md)**.
+
+Compiled SA NODES support adding points with Extrude/Subdivide and rebuilding
+their mesh-edge connections, including vehicle navigation. Export all 64
+regions when existing node IDs change; see [Compiled Nodes](docs/DOCS.md#compiled-nodes).
 
 ## Installation
 

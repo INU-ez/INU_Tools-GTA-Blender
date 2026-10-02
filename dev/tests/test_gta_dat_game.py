@@ -34,6 +34,26 @@ def test_default_dat_is_read_first():
                               "gta_vc.dat", "gta3.dat"}
 
 
+def test_list_ide_files_iii_excludes_unused_recursive_ide(tmp_path):
+    root = _root(tmp_path, {'default.dat': 'IDE data/default.ide\n',
+                            'gta3.dat': 'IDE data/map.ide\n'})
+    for name in ('default.ide', 'map.ide', 'unused.ide'):
+        (tmp_path / 'data' / name).write_text('objs\nend\n')
+    assert _tail(gta_dat.list_ide_files(root), root) == ['data/default.ide', 'data/map.ide']
+    info = gta_dat.find_all_resources(root)
+    assert _tail(info.ide_paths, root) == ['data/default.ide', 'data/map.ide']
+    # A non-root folder still scans recursively.
+    assert len(gta_dat.list_ide_files(str(tmp_path / 'data'))) == 3
+
+
+def test_find_all_resources_reads_vc_default_txd_and_cdimage(tmp_path):
+    root = _root(tmp_path, {'default.dat': 'TEXDICTION models/vehicle.txd\n',
+                            'gta_vc.dat': 'CDIMAGE models/mod.img\n'})
+    info = gta_dat.find_all_resources(root)
+    assert _tail(info.texdiction_paths, root) == ['models/vehicle.txd']
+    assert _tail(info.img_paths, root) == ['models/mod.img']
+
+
 def test_sa_reads_default_and_gta_dat(tmp_path):
     root = _root(tmp_path, {
         "default.dat": "# comment\nIDE data\\default.ide\nIDE data\\vehicles.ide\n"

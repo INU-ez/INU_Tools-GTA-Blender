@@ -80,7 +80,8 @@ def audit_col(models, filepath: str = '', target_game: str = ''):
     to the console the way the DFF audits are.
     """
     from ..core.col_lint import check_col_models
-    warnings = []
+    warnings = list(dict.fromkeys(w for model in models
+                                for w in getattr(model, '_export_warnings', ())))
     if target_game:
         from ..core.col import _clamp_surfaces_for_target
         for model in models:
@@ -92,7 +93,7 @@ def audit_col(models, filepath: str = '', target_game: str = ''):
     fatal, lint_warnings = check_col_models(models)
     warnings.extend(lint_warnings)
     COL_EXPORT_FATAL.extend(fatal)
-    COL_EXPORT_WARNINGS.extend(warnings)
+    COL_EXPORT_WARNINGS.extend(w for w in warnings if w not in COL_EXPORT_WARNINGS)
     tag = f" ({filepath})" if filepath else ""
     for item in fatal:
         print(f"[COL Export] ИГРА УПАДЁТ{tag}: {item}")
@@ -365,6 +366,40 @@ def _prim_local_xyz(p, t, rot):
                  for i in range(3))
 
 
+def _legacy_prim(obj, anchor, model=None):
+    """Old imports moved only the COL mesh, leaving bare primitives at
+    raw model coordinates. Recognise only an unambiguous bounds mismatch."""
+    if anchor is None or getattr(obj, 'parent', None) is not None:
+        return False
+    corners = getattr(anchor, 'bound_box', ())
+    if not corners or len(corners) != 8:
+        return False
+    t, rot = _anchor_frame(anchor)
+    scale = tuple(anchor.matrix_world.to_scale())
+    corners = [tuple(c[k] * scale[k] for k in range(3)) for c in corners]
+    lo = [min(c[k] for c in corners) for k in range(3)]
+    hi = [max(c[k] for c in corners) for k in range(3)]
+    span = max(hi[k] - lo[k] for k in range(3))
+    if max(abs(v) for v in t) <= max(10.0, span * 2.0):
+        return False
+    margin = max(0.5, span * 0.1)
+
+    def inside(p):
+        return all(lo[k] - margin <= p[k] <= hi[k] + margin for k in range(3))
+
+    raw = tuple(obj.location)
+    local = _prim_local_xyz(tuple(obj.matrix_world.translation), t, rot)
+    if inside(raw) and not inside(local):
+        warning = T("Сферы/боксы старого импорта COL — переимпортируйте COL.")
+        if model is not None:
+            model._export_warnings = [warning]
+        if warning not in COL_EXPORT_WARNINGS:
+            COL_EXPORT_WARNINGS.append(warning)
+            print(f"[COL Export] {warning}")
+        return True
+    return False
+
+
 def _prim_box_local(center, axes, t, rot):
     """(min, max) in anchor space of a box empty: ``center`` = its world
     position, ``axes`` = the three world half-axes (matrix_world columns —
@@ -445,7 +480,7 @@ def _collect_sphere(obj, model: ColModel, anchor=None):
 
     With ``anchor`` (see _prim_anchor) the centre is taken relative to it and
     the radius from the empty's world scale; without — raw location/scale."""
-    if anchor is not None:
+    if anchor is not None and not _legacy_prim(obj, anchor, model):
         t, rot = _anchor_frame(anchor)
         mw = obj.matrix_world
         center = _vec3(_prim_local_xyz(tuple(mw.translation), t, rot))
@@ -478,7 +513,7 @@ def _collect_box(obj, model: ColModel, anchor=None):
     With ``anchor`` (see _prim_anchor) the box is measured from it
     (_prim_box_local).
     """
-    if anchor is not None:
+    if anchor is not None and not _legacy_prim(obj, anchor, model):
         t, rot = _anchor_frame(anchor)
         mw = obj.matrix_world
         m3 = mw.to_3x3()
@@ -963,5 +998,3 @@ class GTATOOLS_OT_export_col(bpy.types.Operator, ExportHelper):
             self.report({'WARNING'}, w)
         for item in COL_EXPORT_FATAL:
             self.report({'ERROR'}, f"{T('Игра упадёт')}: {item}")
-
-

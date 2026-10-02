@@ -288,7 +288,9 @@ def save_game_ids(name, ids):
 
 def get_free_ids():
     """Return list of free (unassigned) IDs."""
-    return [id_num for id_num, name in _load() if name is None]
+    protected = game_ids()
+    return [id_num for id_num, name in _load()
+            if name is None and id_num not in protected]
 
 
 def get_used_ids():
@@ -330,7 +332,8 @@ class Preset:
     def is_free(self, i):
         """The ID is in the preset and none of its lines is taken."""
         pos = self._idx.get(i)
-        return bool(pos) and not any(self.entries[k][1] for k in pos)
+        return (i not in self.game and bool(pos)
+                and not any(self.entries[k][1] for k in pos))
 
     # — changes —
     def _append(self, i, name):
@@ -352,11 +355,12 @@ class Preset:
 
     _order = None
 
-    def allocate(self, name, skip, prefer=None):
+    def allocate(self, name, skip, prefer=None, restart=False):
         """First free ID in ascending order (not in ``skip``) → taken by
         ``name``. ``prefer`` goes first if it is free. None — no free IDs.
         Searches with a cursor over the sorted IDs (within one operation
-        ``skip`` only grows)."""
+        ``skip`` only grows). Set ``restart`` when a caller exempts its
+        own collision ID from skip, making an earlier slot available."""
         skip = skip or ()
         if prefer is not None and prefer not in skip and self.is_free(prefer):
             self._set(prefer, name)
@@ -364,7 +368,7 @@ class Preset:
         if self._order is None:
             self._order = sorted(self._idx)
             self._cur = 0
-        k = self._cur
+        k = 0 if restart else self._cur
         while k < len(self._order):
             i = self._order[k]
             if i not in skip and self.is_free(i):
@@ -381,7 +385,14 @@ class Preset:
         if not pos or any(self.entries[k][1] != name for k in pos):
             self._set(i, name)
 
-    def release(self, i):
+    def release(self, i, free_game=False):
+        """Free a slot; game IDs require the explicit, confirmed action."""
+        if i in self.game:
+            if not free_game:
+                return False
+            self.game.remove(i)
+            self._set(i, None)
+            return True
         if any(self.entries[k][1] for k in self._idx.get(i, ())):
             self._set(i, None)
             return True
@@ -584,10 +595,10 @@ def allocate_ids(requests, skip=None):
     return out
 
 
-def release_id(model_id):
+def release_id(model_id, free_game=False):
     """Release an ID (remove model name, keep ID as free)."""
     P = Preset()
-    if not P.release(model_id):
+    if not P.release(model_id, free_game=free_game):
         return False
     P.save()
     return True

@@ -95,10 +95,10 @@ def resolve_paths(game_root: str, dat_info: GtaDatInfo) -> GtaDatInfo:
 
 
 def find_all_resources(game_root: str) -> GtaDatInfo:
-    """Parse both gta.dat and gta_int.dat, merge and resolve all paths."""
+    """Merge every startup .dat of SA / VC / III and resolve all paths."""
     merged = GtaDatInfo()
 
-    for dat_name in ('gta.dat', 'gta_int.dat'):
+    for dat_name in GAME_DATS:
         dat_path = _ci(os.path.join(game_root, 'data', dat_name))
         if not os.path.isfile(dat_path):
             continue
@@ -258,16 +258,16 @@ def dat_game(game_root: str):
 def list_ide_files(folder: str) -> list[str]:
     """Return .ide file paths to scan under ``folder``.
 
-    If ``folder`` looks like a game root (has ``data/gta.dat`` or
-    ``data/gta_int.dat``) → use the canonical gta.dat list (fast, only the
+    If ``folder`` looks like a game root (has a startup ``data/*.dat``
+    from GAME_DATS) → use its canonical IDE list (fast, only the
     IDEs the game actually loads). Otherwise → recursively scan the folder
     for ``*.ide``. This lets the user point at the whole game OR at a tighter
     folder (fewer files = faster search)."""
-    has_dat = (os.path.isfile(_ci(os.path.join(folder, 'data', 'gta.dat')))
-               or os.path.isfile(_ci(os.path.join(folder, 'data', 'gta_int.dat'))))
+    has_dat = any(os.path.isfile(_ci(os.path.join(folder, 'data', dat)))
+                  for dat in GAME_DATS)
     if has_dat:
         try:
-            return [p for p in find_all_resources(folder).ide_paths
+            return [p for p in game_ide_paths(folder)[0]
                     if os.path.isfile(p)]
         except Exception:
             pass

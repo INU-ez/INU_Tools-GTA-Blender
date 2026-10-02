@@ -1,7 +1,7 @@
 # INU_tools.ops.path_import — Import GTA SA path files into Blender
 
 import bpy
-from ..core.paths import read_flight, read_track, read_nodes, read_paths_ipl
+from ..core.paths import read_flight, read_track, read_nodes, read_paths_ipl, PathNode
 
 
 def import_flight(filepath: str, context=None):
@@ -78,8 +78,8 @@ def import_nodes(filepath: str, context=None):
 
     Round-trip preservation: `data.extra_data` (naviLinks, linkLengths,
     pathIntersections — everything after the links section) and
-    `data.fla4` flag are stored on **every** created object so the user
-    can re-export any subset without losing them.
+    `data.fla4` flag are stored on **every** created object. The export
+    operator includes all category companions from the same import.
 
     Visualization is **integrated into the data mesh** so editing one
     thing updates the visual immediately (no separate viz curve to
@@ -92,17 +92,23 @@ def import_nodes(filepath: str, context=None):
         cube at its position; the child empty is hidden from selection
         so the user can only manipulate the underlying vertex.
     """
-    import os, base64
+    import os, base64, uuid
+    from .path_nodes_mesh import initialize_node_identity
     data = read_nodes(filepath)
 
     col = _get_or_create_collection("Path Nodes")
     name = os.path.splitext(os.path.basename(filepath))[0]
+    from collections import Counter
+    area_counts = Counter(n.area_id for n in data.vehicle_nodes + data.ped_nodes)
+    area = (int(name[5:]) if name.casefold().startswith('nodes') and name[5:].isdigit()
+            else (area_counts.most_common(1)[0][0] if area_counts else 0))
+    source_key = uuid.uuid4().hex
     created = []
 
     # Vehicle nodes — mesh + chain edges (NO Skin modifier; user
     # toggles tube geometry on via `gtatools.toggle_nodes_viz`)
     if data.vehicle_nodes:
-        veh_edges = _compute_intra_category_edges(data, is_vehicle=True)
+        veh_edges = _compute_intra_category_edges(data, is_vehicle=True, area=area)
         obj = _create_nodes_mesh(f"{name}_vehicle", data.vehicle_nodes, col,
                                  edges=veh_edges)
         obj['path_type'] = 'nodes_vehicle'
@@ -112,7 +118,7 @@ def import_nodes(filepath: str, context=None):
 
     # Ped nodes — mesh + chain edges (NO Skin modifier; same as above)
     if data.ped_nodes:
-        ped_edges = _compute_intra_category_edges(data, is_vehicle=False)
+        ped_edges = _compute_intra_category_edges(data, is_vehicle=False, area=area)
         obj = _create_nodes_mesh(f"{name}_ped", data.ped_nodes, col,
                                  edges=ped_edges)
         obj['path_type'] = 'nodes_ped'
@@ -138,6 +144,7 @@ def import_nodes(filepath: str, context=None):
         obj['navi_dy']    = [n.dir_y   for n in data.navi_nodes]
         obj['navi_flags'] = [n.flags   for n in data.navi_nodes]
         obj['navi_count'] = len(data.navi_nodes)
+        initialize_node_identity(obj, [PathNode(x=n.x, y=n.y) for n in data.navi_nodes])
 
         _assign_path_material(obj, 'NaviNode_Mat', (1.0, 0.5, 0.0, 0.8))  # Orange
         col.objects.link(obj)
@@ -145,6 +152,13 @@ def import_nodes(filepath: str, context=None):
         # the cube-empty VERTS-instance approach was tried but the
         # instances inherited the parent's selection outline, making
         # every cube look "active" by default. Plain vertices are clearer.
+        created.append(obj)
+
+    # Keep empty regions selectable for a complete 64-region reindex export.
+    if not created:
+        obj = _create_nodes_mesh(f"{name}_vehicle", [], col, edges=[])
+        obj['path_type'] = 'nodes_vehicle'
+        obj['nodes_filename'] = name + '.dat'
         created.append(obj)
 
     # Store links + post-link tail + FLA4 flag on EVERY created object.
@@ -158,6 +172,11 @@ def import_nodes(filepath: str, context=None):
     if data.extra_data and not data.parsed_extras:
         extra_b64 = base64.b64encode(data.extra_data).decode('ascii')
     for obj in created:
+        obj['nodes_area'] = area
+        obj['nodes_source_key'] = source_key
+        obj['nodes_vehicle_count'] = len(data.vehicle_nodes)
+        obj['nodes_ped_count'] = len(data.ped_nodes)
+        obj['nodes_navi_count'] = len(data.navi_nodes)
         if data.links:
             obj['link_areas'] = link_areas
             obj['link_nodes'] = link_nodes
@@ -203,7 +222,8 @@ def import_paths_ipl(filepath: str, context=None):
     Each path group becomes a curve. Vehicle = blue, Ped = green.
     Only non-empty nodes (node_type > 0) are imported as curve points.
     """
-    data = read_paths_ipl(filepath)
+    game = getattr(getattr(context, 'scene', None), 'gtatools_game', 'VC')
+    data = read_paths_ipl(filepath, game=game)
     if not data.groups:
         return []
 
@@ -216,7 +236,7 @@ def import_paths_ipl(filepath: str, context=None):
         if not real_nodes:
             continue
 
-        is_vehicle = (group.group_type == 1)
+        is_vehicle = (group.group_type != 0)
         prefix = "VehPath" if is_vehicle else "PedPath"
 
         curve = bpy.data.curves.new(f"{prefix}_{i}", type='CURVE')
@@ -232,20 +252,34 @@ def import_paths_ipl(filepath: str, context=None):
         obj['group_type'] = group.group_type
         obj['group_index'] = i
         obj['external_index'] = group.external_index
+        obj['pn_game'] = data.game
+        obj['pn_model_name'] = group.model_name
+        obj['pn_semantics_version'] = 2
+        # Keep exact source groups, padding and link graph on untouched
+        # export. Store only each object's group, not the whole map N times.
+        obj['pn_original_group'] = (group._raw_header
+                                    + ''.join(n._raw for n in group.nodes))
+        obj['pn_source_prefix'] = data._prefix
+        obj['pn_source_suffix'] = data._suffix
 
         # Store full node data for round-trip export
         for j, node in enumerate(group.nodes):
             obj[f'pn_{j}_type'] = node.node_type
             obj[f'pn_{j}_link'] = node.link_id
-            obj[f'pn_{j}_area'] = node.area_id
-            obj[f'pn_{j}_unk'] = node.unknown
+            obj[f'pn_{j}_cross'] = node.crossing
             obj[f'pn_{j}_width'] = node.width
             obj[f'pn_{j}_ll'] = node.left_lanes
             obj[f'pn_{j}_rl'] = node.right_lanes
-            obj[f'pn_{j}_mw'] = node.median_width
+            obj[f'pn_{j}_speed'] = node.speed_limit
             obj[f'pn_{j}_flags'] = node.flags
             obj[f'pn_{j}_spawn'] = node.spawn_rate
+            obj[f'pn_{j}_extra'] = ', '.join(node.extra_columns)
         obj['pn_count'] = len(group.nodes)
+        from .path_ipl_props import ensure_point_slots
+        pairs = ensure_point_slots(obj)
+        obj['pn_import_slots'] = [slot for _, slot in pairs]
+        obj['pn_import_positions'] = [v for point, _ in pairs
+                                      for v in point.co[:3]]
 
         # Style
         _setup_path_curve(curve)
@@ -314,13 +348,15 @@ def _create_nodes_mesh(name, nodes, collection, edges=None):
         obj['node_widths'] = [n.path_width for n in nodes]
         obj['node_types']  = [n.node_type  for n in nodes]
         obj['node_flags']  = [n.flags      for n in nodes]
-        obj['node_count']  = len(nodes)
+    obj['node_count'] = len(nodes)
+    from .path_nodes_mesh import initialize_node_identity
+    initialize_node_identity(obj, nodes)
 
     collection.objects.link(obj)
     return obj
 
 
-def _compute_intra_category_edges(data, is_vehicle):
+def _compute_intra_category_edges(data, is_vehicle, area=None):
     """Walk the link graph and return edges (pairs of local indices)
     that stay within one category (vehicle-vehicle OR ped-ped).
 
@@ -329,30 +365,18 @@ def _compute_intra_category_edges(data, is_vehicle):
     is per-category. Caller uses the returned edges directly with
     `mesh.from_pydata()`, and a Skin modifier turns them into tubes.
 
-    Link resolution: each ``PathLink`` stores ``(area_id, node_id)``
-    where ``node_id`` is the target node's **identifier field**, NOT
-    its position in the file array. SA files often start with a few
-    cross-region stub nodes (e.g. 5 stubs claiming area 52/45/44)
-    which shift the file index away from node_id by that count — a
-    direct ``all_nodes[link.node_id]`` lookup connects edges to the
-    wrong vertices and produces visible "spider web" geometry.
-    Correct path: build a ``(area_id, node_id) → file_idx`` map and
-    resolve through it.
+    SA GetPathNode addresses the physical vehicle-then-ped array.
+    Foreign stub identity fields do not change this addressing rule.
     """
     num_vehicle = len(data.vehicle_nodes)
     all_nodes = data.vehicle_nodes + data.ped_nodes
     if not all_nodes or not data.links:
         return []
-    # Pick the most-common area_id as "our" area — using the first node
-    # is unreliable because the first few entries are often cross-region
-    # stubs with the neighbour's area_id.
+    # Legacy callers without the file name use the most common area.
     area_counts = {}
     for node in all_nodes:
         area_counts[node.area_id] = area_counts.get(node.area_id, 0) + 1
-    our_area = max(area_counts.items(), key=lambda x: x[1])[0]
-
-    # (area_id, node_id) → global file index
-    by_aid_nid = {(n.area_id, n.node_id): i for i, n in enumerate(all_nodes)}
+    our_area = area if area is not None else max(area_counts.items(), key=lambda x: x[1])[0]
 
     edges = set()
     for i, node in enumerate(all_nodes):
@@ -368,9 +392,9 @@ def _compute_intra_category_edges(data, is_vehicle):
             link = data.links[link_idx]
             if link.area_id != our_area:
                 continue                        # cross-area
-            tgt_idx = by_aid_nid.get((link.area_id, link.node_id))
-            if tgt_idx is None:
-                continue                        # no matching node
+            tgt_idx = link.node_id
+            if not 0 <= tgt_idx < len(all_nodes):
+                continue
             tgt_is_veh = (tgt_idx < num_vehicle)
             if tgt_is_veh != is_vehicle:
                 continue                        # cross-category

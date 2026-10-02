@@ -192,7 +192,8 @@ def export_ide(filepath: str, objects: list) -> None:
             else:
                 txd_name = model_name  # default: same as model name
 
-        draw_distance = getattr(inu, 'draw_distance', 299.0) if inu else 299.0
+        from .map_link import ide_draw_distance
+        draw_distance = ide_draw_distance(obj, mt == 'LOD')
         flags = getattr(inu, 'ide_flags', 0) if inu else 0
 
         # Translate flags when the per-object source game differs from

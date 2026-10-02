@@ -625,7 +625,8 @@ def send_to_ariane(objects) -> int:
         parts = [name, "dff=1", f"txd={txd_ok}", f"col={col_ok}"]
         if want_ide:                                      # IDE draw distance back to ariane
             try:
-                dd = float(obj.inu.draw_distance)
+                from .map_link import ide_draw_distance
+                dd = float(ide_draw_distance(obj))
                 if dd > 0.0:
                     parts.append(f"dd={dd:.3f}")
             except (AttributeError, TypeError, ValueError):

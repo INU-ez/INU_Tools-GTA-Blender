@@ -542,7 +542,8 @@ class GTATOOLS_OT_batch_set_distance(bpy.types.Operator):
         if self.apply_model_id and self.model_id_sequential and n > 1:
             # Диапазон — по числу моделей: копии одной модели делят один ID.
             from ..tools.model_utils import get_model_type_cached
-            m = len({_model_key(o, get_model_type_cached) for o in targets})
+            m = len({_model_key(o, get_model_type_cached) for o in targets
+                     if get_model_type_cached(o)[0] != 'COL'})
             if m > 1:
                 layout.label(text=f"ID: {self.model_id} … {self.model_id + m - 1}",
                              **inu_icon(safe_icon('COPY_ID')))
@@ -558,9 +559,10 @@ class GTATOOLS_OT_batch_set_distance(bpy.types.Operator):
         if self.apply_model_id and self.model_id_sequential:
             # Номер на МОДЕЛЬ, а не на объект: копии одной модели — один ID.
             from ..tools.model_utils import get_model_type
-            keys = [_model_key(o, get_model_type) for o in targets]
-            seq = _seq_ids(keys, self.model_id)
-            ids = [seq[k] for k in keys]
+            keys = [None if get_model_type(o)[0] == 'COL'
+                    else _model_key(o, get_model_type) for o in targets]
+            seq = _seq_ids([k for k in keys if k is not None], self.model_id)
+            ids = [seq[k] if k is not None else None for k in keys]
         count = 0
         for obj in targets:
             inu = obj.inu
@@ -568,7 +570,7 @@ class GTATOOLS_OT_batch_set_distance(bpy.types.Operator):
                 inu.draw_distance = self.draw_distance
             if self.apply_lod:
                 inu.lod_draw_distance = self.lod_draw_distance
-            if self.apply_model_id:
+            if self.apply_model_id and (ids is None or ids[count] is not None):
                 inu.model_id = ids[count] if ids is not None else self.model_id
             if self.apply_txd:
                 inu.txd_name = self.txd_name

@@ -2518,11 +2518,38 @@ Auto-splits into groups of 12 nodes (GTA SA limit).
 
 **Import:** select multiple files (nodes0.dat, nodes1.dat, ...) at once. Each imported object gets a `nodes_filename` property with the source file name.
 
+**Add your own point:** select the imported `*_vehicle` or `*_ped` mesh,
+enter Edit Mode and use **Extrude** to extend a path, or **Subdivide** to
+insert a point in an existing segment. Connect separate vertices with mesh
+edges. Export rebuilds the local graph from these edges, assigns physical
+node IDs and writes matching navigation, length and intersection sections.
+Selecting one mesh includes its pedestrian/vehicle/navigation companions
+from the same import. An unconnected vertex remains unconnected in game.
+You can export directly from Edit Mode without leaving it.
+
+New vehicle branches have one lane in each direction. Subdividing an
+unambiguous existing segment retains its lane counts and direction. Edit
+the vehicle mesh to create navigation; adding/deleting vertices in the
+navigation mesh is rejected. New points must stay inside their region.
+
+Adding vehicle points before existing pedestrians, or deleting existing
+points, can change old IDs. In that case, import and select **all 64 regions**
+for export so incoming references in neighbouring files can be updated.
+An incomplete batch is cancelled before writing. Empty imported regions
+remain selectable. Old scenes already edited without persistent mesh IDs
+must be reimported; coincident duplicate identities, unsupported foreign
+stub deletions and unknown nonzero binary tails are reported instead of
+writing ambiguous data. Keep the imported category meshes separate.
+
+All edited binaries are validated before writing. A failed validation
+leaves existing files untouched; a late OS/disk failure during a multi-file
+replacement is still not a transaction across the whole batch.
+
 **Export** works in two modes:
 1. **By filename** — if objects have `nodes_filename` property (set on import), nodes are grouped by source files and saved with the same names
-2. **Auto-split by zones** — objects without `nodes_filename` are automatically distributed across the GTA SA map zone grid (8x8, 64 zones, 750 units per zone). Each vertex is assigned to a zone by coordinates: `gx = (X + 3000) / 750`, `gy = (3000 - Y) / 750`. Files are saved as `nodes0.dat` ... `nodes63.dat`
+2. **Auto-split by zones** — objects without `nodes_filename` are automatically distributed across the GTA SA map zone grid (8x8, 64 zones, 750 units per zone). Each vertex is assigned to a zone by coordinates: `gx = floor((X + 3000) / 750)`, `gy = floor((Y + 3000) / 750)`, clamped to 0–7. Files are saved as `nodes0.dat` ... `nodes63.dat`. These bare points do not generate connections from edges; use the imported mesh workflow above to extend an existing graph.
 
-> **Zone grid:** GTA SA map ranges from -3000 to +3000 on X and Y. Zones are numbered left-to-right, top-to-bottom (zone = gy × 8 + gx).
+> **Zone grid:** GTA SA map ranges from -3000 to +3000 on X and Y. Zones are numbered left-to-right, from negative to positive Y (zone = gy × 8 + gx).
 
 ---
 
@@ -3424,4 +3451,3 @@ Accessed via `scene.inu_settings`. 240 fields registered as a single `PointerPro
 **Map analyzer / texture browser** — input sources (IDE/IPL/IMG lists), result UILists, filters
 
 > Full list: see `INU_tools/scene_settings.py:405` (class `INUSceneSettings`). Property bag is intentionally consolidated into one PropertyGroup — extensions.blender.org review requirement (no per-prop `bpy.types.Scene.x = …` direct attachments).
-

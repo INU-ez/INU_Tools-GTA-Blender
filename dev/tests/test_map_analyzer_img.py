@@ -197,3 +197,67 @@ def test_models_in_the_archive_are_not_reported_missing(tmp_path):
     # Only the model that really isn't there is flagged.
     assert missing == [('IDE_DFF_MISSING', "Имя модели = 'b'"),
                        ('IDE_TXD_MISSING', "Имя модели = 'b'")]
+
+
+def test_modloader_loose_models_and_default_texdiction_found(tmp_path):
+    root = _game(tmp_path, 'objs\n18000, house, vehicle, 100, 0\nend\n')
+    mod = root / 'modloader' / 'my_map'
+    mod.mkdir(parents=True)
+    (mod / 'house.dff').write_bytes(b'dff')
+    (root / 'models' / 'vehicle.txd').write_bytes(b'txd')
+    (root / 'data' / 'default.dat').write_text('TEXDICTION models/vehicle.txd\n')
+    ides, _ipls, assets, err = _dat_inputs(root, 'IDE data/maps/my.ide\n')
+    assert err is None
+    assert assets == {'<loose>': {'house.dff', 'vehicle.txd'}}
+    assert _missing_or_shadowed(ides, assets) == []
+
+
+def test_loose_override_does_not_report_archive_shadowing(tmp_path):
+    ide = tmp_path / 'my.ide'
+    ide.write_text('objs\n18000, a, a, 100, 0\nend\n')
+    loose = tmp_path / 'a.dff'
+    loose.write_bytes(b'x')
+    arch = _archive(str(tmp_path / 'map.img'), ('a.dff', 'a.txd'))
+    assets = analyzer._gather_img_files([arch], [str(loose)])
+    assert _missing_or_shadowed([str(ide)], assets) == []
+
+
+def test_dat_mode_reads_default_cdimage(tmp_path):
+    root = _game(tmp_path, 'objs\n18000, a, a, 100, 0\nend\n')
+    (root / 'data' / 'default.dat').write_text('CDIMAGE models/mod.img\n')
+    _archive(str(root / 'models' / 'mod.img'), ('a.dff', 'a.txd'))
+    ides, _ipls, assets, err = _dat_inputs(root, 'IDE data/maps/my.ide\n')
+    assert err is None and _missing_or_shadowed(ides, assets) == []
+
+
+def test_folder_mode_excludes_non_streaming_archives_and_other_game(tmp_path):
+    for name in analyzer._NON_STREAMING_IMGS | {'gta3.img'}:
+        _archive(str(tmp_path / name), ('a.dff',))
+    other = tmp_path / 'other'
+    (other / 'data').mkdir(parents=True)
+    (other / 'data' / 'gta.dat').write_text('IMG other.img\n')
+    _archive(str(other / 'other.img'), ('a.dff',))
+    s = types.SimpleNamespace(gtatools_map_analyzer_mode='FOLDER',
+        gtatools_map_analyzer_folder=str(tmp_path),
+        gtatools_map_analyzer_recursive=False, gtatools_map_analyzer_check_img=True,
+        gtatools_game_root=str(other))
+    ctx = types.SimpleNamespace(scene=types.SimpleNamespace(inu_settings=s))
+    _ides, _ipls, assets, err = analyzer._collect_inputs(ctx)
+    assert err is None and list(assets) == [str(tmp_path / 'gta3.img')]
+
+
+def test_disabled_img_check_does_not_scan_assets(tmp_path, monkeypatch):
+    root = _game(tmp_path, 'objs\nend\n')
+    (root / 'data' / 'gta.dat').write_text('IDE data/maps/my.ide\n')
+    monkeypatch.setattr(analyzer, '_asset_inputs', lambda *_a, **_kw: pytest.fail('asset scan'))
+    s = types.SimpleNamespace(gtatools_map_analyzer_mode='DAT',
+        gtatools_map_analyzer_dat_path=str(root / 'data' / 'gta.dat'),
+        gtatools_map_analyzer_check_img=False, gtatools_game_root='')
+    ctx = types.SimpleNamespace(scene=types.SimpleNamespace(inu_settings=s))
+    assert analyzer._collect_inputs(ctx)[2] is None
+
+
+def test_txd_cannot_satisfy_dff_presence(tmp_path):
+    ide = tmp_path / 'my.ide'
+    ide.write_text('objs\n18000, a, a, 100, 0\nend\n')
+    assert _missing_or_shadowed([str(ide)], {'<loose>': {'a.txd'}}) == ['IDE_DFF_MISSING']

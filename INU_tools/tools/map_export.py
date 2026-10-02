@@ -137,7 +137,7 @@ def _col_prim_index(objects, col_ids):
     return by_parent, by_name
 
 
-def collect_map_models(context, objects):
+def collect_map_models(context, objects, *, collection_export=False):
     """Selection → (models {key: MapModel} in first-placement order,
     placements [MapGroup(base=model key, dff=placement)], notes).
 
@@ -150,6 +150,7 @@ def collect_map_models(context, objects):
     spheres / boxes (a model of spheres / boxes only has a collision too)."""
     from ..ops.ipl_export import _clean_model_name
     from ..ops.map_link import LodIndex, lod_model_name
+    objects = list(objects)
     notes = []
     types, lod_refs = {}, set()
     for o in context.scene.objects:
@@ -257,6 +258,7 @@ def collect_map_models(context, objects):
                                    "экспортирован: {0}").format(_names(lone))))
 
     col_idx: Dict[str, list] = {}
+    chosen = {id(o) for o in objects}
     skip = {id(g.dff) for g in placements} | used
     for oid, (o, (mt, base)) in types.items():
         if mt == 'COL' and base and oid not in skip:
@@ -264,7 +266,16 @@ def collect_map_models(context, objects):
     by_parent, by_name = _col_prim_index(
         context.scene.objects, {oid for oid, (_o, (mt, _b)) in types.items() if mt == 'COL'})
     for m in models.values():
-        group = _pick_col_group(col_idx.get(m.key, []), m.home)
+        cands = col_idx.get(m.key, [])
+        # A model imported only once can have its COL in another IPL's
+        # collection. A collection export leaves that collision there.
+        here = ([o for o in cands if id(o) in chosen] if collection_export else cands)
+        if cands and not here:
+            notes.append(('WARNING', T("COL в другой коллекции — не записан "
+                                       "для модели: {0}").format(m.name)))
+            m.cols = []
+            continue
+        group = _pick_col_group(here, m.home)
         # + spheres / boxes, after the meshes: col_export measures them
         # from the COL mesh passed with them. Those of a COL copy left out
         # above stay out with it.
@@ -925,14 +936,16 @@ def prepare_map_export(context, target_dir: str, objects=None, *,
                        split_mode: str = 'NONE',
                        cell_size: float = 256.0,
                        max_per_cell: int = 200,
-                       min_cell_size: float = 16.0) -> MapExportPrep:
+                       min_cell_size: float = 16.0,
+                       collection_export: bool = False) -> MapExportPrep:
     """Models, cells and the file plan of one export — no ID handed out,
     nothing written (that's :func:`assign_map_ids` / :func:`iter_export_map`)."""
     from ..ops.map_link import scene_game
     prep = MapExportPrep(target_dir)
     if objects is None:
         objects = list(context.selected_objects) or list(context.scene.objects)
-    prep.models, prep.placements, prep.notes = collect_map_models(context, objects)
+    prep.models, prep.placements, prep.notes = collect_map_models(
+        context, objects, collection_export=collection_export)
     if not prep.placements:
         prep.error = T("Нет моделей DFF для экспорта")
         return prep
@@ -1043,7 +1056,8 @@ def iter_export_map(context, target_dir: str, *, objects=None,
             _map_export_platform = 'PC'
     if kinds & {'col', 'col_lib'}:
         from ..ops.col_export import (_resolve_col_version, export_col as _export_col,
-                                      export_col_library as _export_col_lib)
+                                      build_col_model, audit_col)
+        from ..core.col import write_col_file
         _map_export_col_version = _resolve_col_version()
     if 'txd' in kinds:
         from ..tools.txd_export import export_txd as _export_txd, update_txd as _update_txd
@@ -1072,12 +1086,19 @@ def iter_export_map(context, target_dir: str, *, objects=None,
                         target_platform=_map_export_platform)
             stats['lod'] += 1
         elif kind == 'col':
-            _export_col(path, data.cols, version=_map_export_col_version,
-                        model_name=data.name)
+            model = _export_col(path, data.cols, version=_map_export_col_version,
+                                model_name=data.name)
+            for warning in getattr(model, '_export_warnings', ()):
+                notes.append(('WARNING', f"{fname}: {T(warning)}"))
             stats['col'] += 1
         elif kind == 'col_lib':
-            stats['col'] += _export_col_lib(path, [o for m in data for o in m.cols],
-                                            version=_map_export_col_version)
+            models = [build_col_model(m.cols, version=_map_export_col_version,
+                                      model_name=m.name) for m in data]
+            fatal, warnings = audit_col(models, path, target_game=prep.game)
+            notes.extend(('WARNING', f"{fname}: {T(warning)}") for warning in warnings)
+            notes.extend(('ERROR', f"{fname}: {warning}") for warning in fatal)
+            write_col_file(path, models, target_game=prep.game)
+            stats['col'] += len(models)
         elif kind == 'txd':
             # Merged INTO an existing .txd: textures of models that aren't
             # in this export stay (one lanlod.txd serves hundreds of LODs).
@@ -1105,7 +1126,7 @@ def iter_export_map(context, target_dir: str, *, objects=None,
                     le = _ide_entry_from_obj(m.lod)
                     le.model_name, le.txd_name = m.lod_name, m.lod_txd
                     le.model_id = _ml.lod_model_id(m.lod, m.home)
-                    le.draw_distance = m.home.inu.lod_draw_distance
+                    le.draw_distance = _ml.ide_draw_distance(m.lod, True)
                     ents.append(le)
                 for e in ents:
                     if e.model_id <= 0:
@@ -1329,6 +1350,8 @@ class GTATOOLS_OT_map_export(bpy.types.Operator):
         # Try to pre-populate the dialog's multi-checkbox from the
         # outliner state — best-effort, the user can correct it.
         outliner_colls = _gather_outliner_selected_collections(context)
+        self._captured_collection_export = bool(outliner_colls) and (
+            len(outliner_colls) > 1 or not any(o.type == 'MESH' for o in context.selected_objects))
         scene_top = {c.name for c in context.scene.collection.children}
         prefilled = {c.name for c in outliner_colls if c.name in scene_top}
         if prefilled:
@@ -1487,6 +1510,8 @@ class GTATOOLS_OT_map_export(bpy.types.Operator):
             cell_size=self.cell_size,
             max_per_cell=self.max_per_cell,
             min_cell_size=self.min_cell_size,
+            collection_export=bool(self.target_collections) or getattr(
+                self, '_captured_collection_export', False),
         )
 
     def modal(self, context, event):
@@ -1554,5 +1579,3 @@ class GTATOOLS_OT_map_export(bpy.types.Operator):
         except Exception:
             pass
         self._gen = None
-
-

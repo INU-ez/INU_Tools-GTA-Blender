@@ -8,6 +8,42 @@ import datetime
 import bpy
 
 from .. import T
+from ..core.fs_ci import resolve as _ci
+
+
+_NON_STREAMING_IMGS = {'anim.img', 'cuts.img', 'carrec.img', 'script.img',
+                       'cutscene.img', 'player.img'}
+
+
+def _asset_inputs(imgs, root, info=None, scan_folder=''):
+    """Additional game resources: startup CDIMAGE/IMG and TEXDICTION,
+    plus loose modloader overrides. Overrides count for presence only."""
+    from ..core.gta_dat import find_all_resources
+    loose = []
+    infos = [info] if info is not None else []
+    if root and os.path.isdir(root):
+        infos.append(find_all_resources(root))
+    imgs = list(imgs)
+    for dat in infos:
+        imgs.extend(p for p in dat.img_paths if os.path.isfile(p))
+        loose.extend(p for p in dat.texdiction_paths if os.path.isfile(p))
+        loose.extend(p for p in dat.modelfile_paths if os.path.isfile(p))
+    mod_dirs = []
+    if root:
+        mod_dirs.append(_ci(os.path.join(root, 'modloader')))
+    if scan_folder:
+        # FOLDER can itself be a modloader subdirectory.
+        if 'modloader' in scan_folder.replace('\\', '/').lower().split('/'):
+            mod_dirs.append(scan_folder)
+        mod_dirs.append(_ci(os.path.join(scan_folder, 'modloader')))
+    for folder in mod_dirs:
+        if not os.path.isdir(folder):
+            continue
+        for r, _dirs, files in os.walk(folder):
+            for name in files:
+                if name.lower().endswith(('.dff', '.txd')):
+                    loose.append(os.path.join(r, name))
+    return imgs, loose
 
 
 def _collect_inputs(context):
@@ -38,9 +74,12 @@ def _collect_inputs(context):
         # The game registers models/gta3.img (and gta_int.img in SA) itself,
         # ahead of the IMG lines — vanilla gta.dat doesn't list them (if a
         # .dat does, _gather_img_files reads the archive once).
-        own = [os.path.join(root, 'models', n) for n in ('gta3.img', 'gta_int.img')]
+        own = [_ci(os.path.join(root, 'models', n)) for n in ('gta3.img', 'gta_int.img')]
         img_paths = [p for p in own + info.img_paths if os.path.isfile(p)]
-        img_files = _gather_img_files(img_paths) if (s.gtatools_map_analyzer_check_img and img_paths) else None
+        img_files = None
+        if s.gtatools_map_analyzer_check_img:
+            imgs, loose = _asset_inputs(img_paths, root, info)
+            img_files = _gather_img_files(imgs, loose)
         return ides, ipls, img_files, None
 
     if mode == 'FOLDER':
@@ -58,15 +97,22 @@ def _collect_inputs(context):
                     p = os.path.join(root_dir, fn)
                     if low.endswith('.ide'): ides.append(p)
                     elif low.endswith('.ipl'): ipls.append(p)
-                    elif low.endswith('.img'): imgs.append(p)
+                    elif low.endswith('.img') and low not in _NON_STREAMING_IMGS: imgs.append(p)
         else:
             for fn in os.listdir(folder):
                 low = fn.lower()
                 p = os.path.join(folder, fn)
                 if low.endswith('.ide'): ides.append(p)
                 elif low.endswith('.ipl'): ipls.append(p)
-                elif low.endswith('.img'): imgs.append(p)
-        img_files = _gather_img_files(imgs) if (s.gtatools_map_analyzer_check_img and imgs) else None
+                elif low.endswith('.img') and low not in _NON_STREAMING_IMGS: imgs.append(p)
+        img_files = None
+        if s.gtatools_map_analyzer_check_img:
+            # FOLDER analyses the chosen folder, independent of another
+            # game's root still selected in the scene.
+            imgs, loose = _asset_inputs(imgs, folder, scan_folder=folder)
+            # Startup lists can also contain cutscene/script archives.
+            imgs = [p for p in imgs if os.path.basename(p).lower() not in _NON_STREAMING_IMGS]
+            img_files = _gather_img_files(imgs, loose)
         return ides, ipls, img_files, None
 
     if mode == 'CUSTOM':
@@ -94,13 +140,14 @@ def _collect_inputs(context):
                     for fn in files:
                         if fn.lower().endswith('.img'):
                             imgs.append(os.path.join(root_dir, fn))
-            img_files = _gather_img_files(imgs) if imgs else None
+            imgs, loose = _asset_inputs(imgs, game_root)
+            img_files = _gather_img_files(imgs, loose)
         return ides, ipls, img_files, None
 
     return None, None, None, T("Неизвестный режим input")
 
 
-def _gather_img_files(img_paths):
+def _gather_img_files(img_paths, loose_paths=()):
     """Read entry names from each .img and return ``{archive_path: {names}}``.
 
     Per-archive dict (rather than flat set) is required so map_lint
@@ -122,6 +169,10 @@ def _gather_img_files(img_paths):
                 out[path] = {e.name.lower() for e in reader.entries}
         except Exception:
             continue
+    loose = {os.path.basename(p).lower() for p in loose_paths
+             if os.path.isfile(p)}
+    if loose:
+        out['<loose>'] = loose
     return out
 
 
@@ -343,5 +394,3 @@ class GTATOOLS_OT_map_analyzer_save_report(bpy.types.Operator):
 
         self.report({'INFO'}, f"{T('Отчёт сохранён:')} {out_path}")
         return {'FINISHED'}
-
-

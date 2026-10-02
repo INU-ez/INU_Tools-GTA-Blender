@@ -740,9 +740,8 @@ def _draw_map_import(layout, context):
             op_none.enable = False
             ti_col = ti_box.column(align=True)
             for item in scene.inu_settings.gtatools_text_ipls:
-                src = "IMG" if item.img_source else "loose"
                 ti_col.prop(item, "enabled",
-                            text=f"{item.name}  [{src}]")
+                            text=f"{item.name}  [IMG]" if item.img_source else item.name)
 
     # Извлечь ресурсы — требует сохранённый .blend (кеш рядом с ним).
     saved = bool(bpy.data.filepath)
@@ -1424,24 +1423,17 @@ class GTATOOLS_MT_radar_generate(bpy.types.Menu):
         op.mode = 'SPECIFIC'
 
 
-# ── Menu: Path node traffic flags ───────────────────────────────
-# 4 traffic-light buttons (None / Normal / Rail / Bus) → one dropdown.
-# Roadblock toggle stays as a separate button (different operator
-# semantics — it's a toggle, not an enum pick).
+# ── Menu: Pedestrian crossing column in III/VC paths ─────────────
 class GTATOOLS_MT_path_traffic(bpy.types.Menu):
-    bl_label = "INU: Светофор"
+    bl_label = "INU: Crossing"
     bl_idname = "GTATOOLS_MT_path_traffic"
 
     def draw(self, context):
         layout = self.layout
-        op = layout.operator("gtatools.path_node_flag", text=T("Без светофора"))
-        op.action = 'TRAFFIC_NONE'
-        op = layout.operator("gtatools.path_node_flag", text=T("Обычный"))
-        op.action = 'TRAFFIC_NORMAL'
-        op = layout.operator("gtatools.path_node_flag", text=T("Железнодорожный"))
-        op.action = 'TRAFFIC_RAIL'
-        op = layout.operator("gtatools.path_node_flag", text=T("Автобусный"))
-        op.action = 'TRAFFIC_BUS'
+        op = layout.operator("gtatools.path_node_flag", text=T("Без перехода"))
+        op.action = 'CROSSING_OFF'
+        op = layout.operator("gtatools.path_node_flag", text=T("Пешеходный переход"))
+        op.action = 'CROSSING_ON'
 
 
 class GTATOOLS_PT_ide_ipl_map(bpy.types.Panel):
@@ -5930,15 +5922,35 @@ class GTATOOLS_PT_paths_panel(bpy.types.Panel):
         row.operator("gtatools.import_paths_ipl", text=T("Импорт"), **inu_icon(safe_icon('IMPORT')))
         row.operator("gtatools.export_paths_ipl", text=T("Экспорт"), **inu_icon(safe_icon('EXPORT')))
         box1.operator("gtatools.add_path_ipl", text=T("Создать путь"), **inu_icon(safe_icon('ADD')))
-        # Roadblocks / Traffic Lights — visible only in Edit Curve on path_ipl
+        from ..core.game_versions import game_of_scene
+        path_game = game_of_scene(context.scene)
+        if path_game == 'SA':
+            box1.label(text=T("SA игнорирует секцию path в IPL"), **inu_icon(safe_icon('INFO')))
+        elif path_game == 'III':
+            box1.label(text=T("III: пути загружаются из IDE; секция path в IPL не работает"),
+                       **inu_icon(safe_icon('INFO')))
+        if obj and obj.get('path_type') == 'path_ipl':
+            if obj.get('pn_legacy_coordinates'):
+                box1.label(text=T("Старый импорт paths.ipl: переимпортируйте для исправления масштаба /16"),
+                           **inu_icon(safe_icon('ERROR')))
+            if obj.get('pn_identity_warning') == 'COINCIDENT_DUPLICATE':
+                box1.label(text=T("Совпадающие копии точек: проверьте флаги после дублирования"),
+                           **inu_icon(safe_icon('ERROR')))
+            elif obj.get('pn_identity_warning'):
+                box1.label(text=T("Path IPL резервирует Softbody Weight для ID точек; не изменяйте его"),
+                           **inu_icon(safe_icon('ERROR')))
+        # Per-point actions apply only to the games that load these fields.
         if (obj and obj.type == 'CURVE' and obj.get('path_type') == 'path_ipl'
                 and context.mode == 'EDIT_CURVE'):
             box1.label(text=T("Флаги выделенных точек:"), **inu_icon(safe_icon('CONSTRAINT')))
-            op = box1.operator("gtatools.path_node_flag",
-                               text=T("Переключить Roadblock"))
-            op.action = 'TOGGLE_ROADBLOCK'
-            box1.menu("GTATOOLS_MT_path_traffic",
-                      text=T("Светофор"), **inu_icon(safe_icon('LIGHT')))
+            obj_game = obj.get('pn_game', path_game)
+            if obj_game == 'VC' and obj.get('group_type', 1) != 0:
+                op = box1.operator("gtatools.path_node_flag",
+                                   text=T("Переключить Roadblock"))
+                op.action = 'TOGGLE_ROADBLOCK'
+            elif obj_game != 'SA' and obj.get('group_type', 1) == 0:
+                box1.menu("GTATOOLS_MT_path_traffic",
+                          text=T("Пешеходный переход"), **inu_icon(safe_icon('LIGHT')))
 
         # Train tracks — fused inside box.
         box2 = layout.box().column(align=True)
@@ -5963,6 +5975,8 @@ class GTATOOLS_PT_paths_panel(bpy.types.Panel):
         row = box3.row(align=True)
         row.operator("gtatools.import_nodes", text=T("Импорт"), **inu_icon(safe_icon('IMPORT')))
         row.operator("gtatools.export_nodes", text=T("Экспорт"), **inu_icon(safe_icon('EXPORT')))
+        box3.label(text=T("Добавить точку: Extrude / Subdivide"))
+        box3.label(text=T("При смене ID экспортируйте все 64 района"))
         # Visualization toggle — turns Skin modifier off on all path
         # meshes so heavy maps don't lag the viewport. Mesh data
         # (verts + link arrays) survives; only the generated tube

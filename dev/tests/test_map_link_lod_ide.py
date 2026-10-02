@@ -225,6 +225,75 @@ def test_vanilla_pair_add_changes_nothing(scene, tmp_path, pick):
     assert lod.inu.ide_last_txd_name == 'lod_lan2'
 
 
+def test_add_to_another_ide_warns_for_model_and_lod_without_moving_rows(scene, tmp_path):
+    ctx, objs = scene
+    source, model, lod = _lan2(tmp_path, objs)
+    target = tmp_path / 'custom.ide'
+    rep = ml.ide_write(ctx, [model], picked=str(target), dry_run=True)
+    assert len(rep.problems()) == 2
+    assert all(level == 'WARNING' and 'уже существует в другом IDE' in text
+               and ml.norm(str(source)) in text for level, text in rep.problems())
+    assert source.read_bytes() == LAN2.encode() and not target.exists()
+    assert model.inu.ide_target_file == str(source)
+    rep = ml.ide_write(ctx, [model], picked=str(target))
+    assert len(rep.problems()) == 2 and rep.counts.get('add') == 2
+    assert source.read_bytes() == LAN2.encode()
+    assert IdeDoc.load(str(target)).by_id(model.inu.model_id).name == model.name
+    assert IdeDoc.load(str(target)).by_id(lod.inu.model_id).name == lod.name
+    assert model.inu.ide_target_file == ml.norm(str(target))
+
+
+def test_add_ide_checks_known_files_even_after_relinking(scene, tmp_path):
+    ctx, objs = scene
+    source = tmp_path / 'existing.ide'
+    source.write_bytes(b'objs\r\n5000, HOUSE, house, 299, 0\r\nend\r\n')
+    ctx.scene.inu_settings.gtatools_ide_sync_list = [NS(path=str(source))]
+    model = _obj('house', sid=1, model_id=5000)
+    objs.append(model)
+    target = tmp_path / 'custom.ide'
+    for _ in range(2):
+        rep = ml.ide_write(ctx, [model], picked=str(target))
+        assert len(rep.problems()) == 1
+        assert ml.norm(str(source)) in rep.problems()[0][1]
+    assert source.read_bytes() == b'objs\r\n5000, HOUSE, house, 299, 0\r\nend\r\n'
+    # Updating the same file with its aliases must not warn about itself.
+    ctx.scene.inu_settings.gtatools_ide_sync_list = [NS(path=str(target / '..' / target.name))]
+    rep = ml.ide_write(ctx, [model], picked=str(target))
+    assert not rep.problems()
+
+
+@pytest.mark.parametrize('renamed', [False, True])
+def test_add_ide_does_not_warn_for_stale_source_identity(scene, tmp_path, renamed):
+    ctx, objs = scene
+    source = tmp_path / 'old.ide'
+    source.write_bytes(b'objs\r\n4000, original, original, 299, 0\r\nend\r\n')
+    model = _obj('renamed' if renamed else 'original', sid=1,
+                 model_id=5000 if renamed else 4000)
+    _stamp_as_imported(model, str(source), 299.0)
+    if renamed:
+        model.inu.ide_last_model_id = 4000
+        model.inu.ide_last_name = 'original'
+    else:
+        # The file still exists, but its linked row has been removed.
+        source.write_bytes(b'objs\r\n4001, other, other, 299, 0\r\nend\r\n')
+    objs.append(model)
+    rep = ml.ide_write(ctx, [model], picked=str(tmp_path / 'new.ide'))
+    assert not rep.problems()
+
+
+def test_add_ide_warns_for_renamed_linked_model(scene, tmp_path):
+    ctx, objs = scene
+    source = tmp_path / 'old.ide'
+    source.write_bytes(b'objs\r\n5000, original, original, 299, 0\r\nend\r\n')
+    model = _obj('renamed', sid=1, model_id=5000)
+    _stamp_as_imported(model, str(source), 299.0)
+    model.inu.ide_last_name = 'original'
+    objs.append(model)
+    rep = ml.ide_write(ctx, [model], picked=str(tmp_path / 'new.ide'))
+    assert len(rep.problems()) == 1 and 'уже существует в другом IDE' in rep.problems()[0][1]
+    assert IdeDoc.load(str(source)).by_id(5000).name == 'original'
+
+
 def test_lod_own_draw_distance_wins(scene, tmp_path):
     _ctx, objs = scene
     _ide, model, lod = _lan2(tmp_path, objs)

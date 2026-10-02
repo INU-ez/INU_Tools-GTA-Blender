@@ -371,8 +371,8 @@ def test_copy_originals_file_gone_no_new_file(scene, tmp_path):
 @pytest.mark.parametrize('style, scale, warned', [
     ('SA', (2.0, 1.0, 1.0), True),
     ('SA', (1.0, 1.0, 0.5), True),
-    ('VC', (2.0, 1.0, 1.0), False),
-    ('III', (2.0, 1.0, 1.0), False),
+    ('VC', (2.0, 1.0, 1.0), True),
+    ('III', (2.0, 1.0, 1.0), True),
     ('SA', (1.00005, 1.0, 1.0), False),
     ('SA', (1.0, 1.0, 1.0), False),
 ])
@@ -398,14 +398,14 @@ def test_scaled_object_into_sa_file_warns(scene, tmp_path, dry):
     assert rep.counts.get('add') == 1                  # still written
 
 
-def test_scaled_object_into_vc_file_no_sa_warning(scene, tmp_path):
+def test_scaled_object_into_vc_file_warns_game_ignores_scale(scene, tmp_path):
     ctx, objs = scene
     path = tmp_path / 'vc.ipl'
     path.write_bytes(VC_TEXT.encode())
     tree = _obj('tree', 300, (5.0, 6.0, 7.0), sid=1, scale=(2.0, 2.0, 2.0))
     objs.append(tree)
     rep = ml.ipl_write(ctx, [tree], picked=str(path))
-    assert not rep.problems()
+    assert any('игра не применяет масштаб' in t for t in _levels(rep, 'WARNING'))
 
 
 # ── IPL «Add» into another file: the model moves ───────────────────
@@ -484,14 +484,14 @@ def test_move_keeps_neighbours_and_renumbers_their_lod(scene, tmp_path):
     assert [(r.model_id, r.lod_index) for r in rows] == [(300, 1), (301, -1)]
 
 
-def test_move_without_lod_for_new_row_warns(scene, tmp_path):
+def test_move_without_lod_mesh_carries_existing_sa_lod(scene, tmp_path):
     ctx, objs = scene
     a, b, house = _moving_house(tmp_path, objs)
-    objs[:] = [house]               # no LOD mesh, no IDE: new row has none
+    objs[:] = [house]               # the LOD's existing file row is enough
     rep = ml.ipl_write(ctx, [house], picked=str(b), move=True)
-    assert [t for t in _levels(rep, 'WARNING') if 'LOD не перенесён' in t]
+    assert not rep.problems()
     assert IplDoc.load(str(a)).rows == []
-    assert [r.inst.model_id for r in IplDoc.load(str(b)).rows] == [100]
+    assert [r.inst.model_id for r in IplDoc.load(str(b)).rows] == [100, 101]
 
 
 def test_move_skipped_when_new_row_not_written(scene, tmp_path):
@@ -571,3 +571,36 @@ def test_stream_prefix_game_folder_and_gta_dat(scene, tmp_path):
     mine = tmp_path / 'elsewhere' / 'my.ipl'
     assert ml._stream_prefix(str(mine), ctx, {}) == 'my_stream'
     assert ml._stream_prefix(str(tmp_path / 'x.ipl'), ctx, {}) == ''
+
+
+@pytest.mark.parametrize('dry', [True, False])
+@pytest.mark.parametrize('only_lod', [True, False])
+def test_remove_keeps_sa_rows_numbered_by_stream_ipls(scene, tmp_path, dry, only_lod):
+    ctx, objs = scene
+    game = tmp_path / 'game'
+    _img(game / 'models' / 'gta3.img', ['a_stream0.ipl'])
+    a, _b, house = _moving_house(tmp_path, objs, folder=game / 'data' / 'maps')
+    before = a.read_bytes()
+    target = objs[-1] if only_lod else house
+    rep = ml.ipl_remove(ctx, [target], dry_run=dry)
+    assert a.read_bytes() == before
+    assert not rep.counts.get('removed') and not rep.counts.get('lod_removed')
+    assert house.inu.ipl_target_file == str(a)
+    assert house.inu.lod_index == 1
+    assert any('a_stream*.ipl' in msg and 'строки сохранены' in msg
+               for msg in _levels(rep, 'WARNING'))
+
+
+def test_sa_add_offset_lod_and_move_between_files(scene, tmp_path):
+    ctx, objs = scene
+    text = SA_TEXT.replace('101, LODhouse, 0, 10.000000', '101, LODhouse, 0, 12.500000')
+    a, b, house = _moving_house(tmp_path, objs, text)
+    before = a.read_bytes()
+    rep = ml.ipl_write(ctx, [house])
+    assert a.read_bytes() == before and rep.counts.get('unchanged') == 1
+    house.pos = (40, 0, 0)
+    rep = ml.ipl_write(ctx, [house], picked=str(b), move=True)
+    assert not rep.problems()
+    rows = IplDoc.load(str(b)).rows
+    assert rows[1].inst.pos_x - rows[0].inst.pos_x == 2.5
+    assert IplDoc.load(str(a)).rows == []

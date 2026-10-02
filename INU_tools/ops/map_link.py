@@ -255,13 +255,20 @@ def _lod_is_model(lod, dinst):
 
 
 def _scale_note(obj, style, rep):
-    """An SA ``inst`` row has no scale column: a scaled object is written (and
-    shown in the game) at scale 1. *style* — layout of the row it went into."""
-    if style != 'SA':
-        return
+    """SA has no scale column; III/VC parse it but don't apply it either."""
     if any(abs(c - 1.0) > 1e-4 for c in obj.matrix_world.to_scale()):
-        rep.msg('WARNING', T("«{0}»: масштаб — в строке SA масштаба нет "
-                             "(записано без него)").format(obj.name))
+        rep.msg('WARNING', T("«{0}»: игра не применяет масштаб из IPL "
+                             "(модель в игре будет в масштабе 1)").format(obj.name))
+
+
+def ide_draw_distance(obj, is_lod=None):
+    """The LOD's panel field when set; old scenes keep Draw Dist."""
+    inu = getattr(obj, 'inu', None)
+    distance = getattr(inu, 'draw_distance', 299.0)
+    if is_lod is None:
+        is_lod = model_type(obj)[0] == 'LOD'
+    lod_distance = getattr(inu, 'lod_draw_distance', 0.0)
+    return lod_distance if is_lod and lod_distance > 0 else distance
 
 
 def stamp_lod_ide(dff, hit):
@@ -325,11 +332,11 @@ def _ide_names(path):
     return hit[1], hit[2]
 
 
-def _known_ides(objs, game):
+def _known_ides(objs, game, *, context=None):
     """IDE files a new LOD name is checked against: those *objs* are linked
     to, the panel's IDE and «IDE для экспорта» list, and every IDE the game
     of the game folder loads (its vanilla names)."""
-    s = bpy.context.scene.inu_settings
+    s = getattr((context or bpy.context).scene, 'inu_settings', None)
     paths = [ide_linked_file(o) for o in objs]
     paths += [getattr(s, 'gtatools_ide_path', '')]
     paths += [it.path for it in getattr(s, 'gtatools_ide_sync_list', [])]
@@ -881,10 +888,11 @@ def _stream_prefix(path, context, cache):
     the scene's game folder; none → '' (a file outside the game)."""
     from ..core.img import read_directory
     from ..core.gta_dat import find_all_resources
+    from ..core.fs_ci import resolve as _ci
     roots = []
     d = os.path.dirname(path)
     for _ in range(6):
-        if os.path.isfile(os.path.join(d, 'models', 'gta3.img')):
+        if os.path.isfile(_ci(os.path.join(d, 'models', 'gta3.img'))):
             roots.append(d)
             break
         up = os.path.dirname(d)
@@ -900,8 +908,8 @@ def _stream_prefix(path, context, cache):
     names = cache.get(root)
     if names is None:
         names = set()
-        imgs = [os.path.join(root, 'models', 'gta3.img'),
-                os.path.join(root, 'models', 'gta_int.img')]
+        imgs = [_ci(os.path.join(root, 'models', 'gta3.img')),
+                _ci(os.path.join(root, 'models', 'gta_int.img'))]
         try:
             imgs += find_all_resources(root).img_paths
         except OSError:
@@ -1005,6 +1013,7 @@ def ipl_write(context, objs, *, picked='', dry_run=False, move=False):
         groups.setdefault(path, []).append(d)
 
     ide_lods = IdeLods(context)
+    move_docs = {}
     written = {}                # id(model) → its new row got a LOD
     for path, batch in groups.items():
         doc = _load_ipl(path, rep)
@@ -1076,6 +1085,24 @@ def ipl_write(context, objs, *, picked='', dry_run=False, move=False):
                                 d.name, hit[1], os.path.basename(hit[2])))
                         if not dry_run:
                             stamp_lod_ide(d, hit)
+            if id(d) in moved and file_game(doc, game) == 'SA':
+                # Moving a linked placement into another file keeps the
+                # source LOD's offset too (the destination has no row yet).
+                from ..core.mapsync.ipl_doc import _lod_moved
+                _d, old_path, old_anchor = moved[id(d)]
+                if old_path not in move_docs:
+                    move_docs[old_path] = _load_ipl(old_path, rep)
+                old_doc = move_docs[old_path]
+                old_i = old_doc.find(old_anchor) if old_doc is not None else -1
+                old_row = old_doc.rows[old_i] if old_i >= 0 else None
+                if old_row is not None and old_row.lod is not None and old_row.lod.inst is not None:
+                    carried = _lod_moved(old_row.lod.inst, old_row.inst, dinst)
+                    if lod is None:
+                        lod = carried
+                    else:
+                        lod.pos_x, lod.pos_y, lod.pos_z = carried.pos_x, carried.pos_y, carried.pos_z
+                        lod.rot_x, lod.rot_y, lod.rot_z, lod.rot_w = (
+                            carried.rot_x, carried.rot_y, carried.rot_z, carried.rot_w)
             res = ed.place(d, dinst, anchor=anchor, lod=lod)
             placed.append(res)
             _scale_note(d, res._row.style, rep)
@@ -1213,9 +1240,17 @@ def ipl_remove(context, objs, *, picked='', target='', dry_run=False):
                 else:
                     rep.msg('WARNING', T("«{0}»: нет IPL-файла").format(d.name))
 
+    streams = {}
     for path, items in groups.items():
         doc = _load_ipl(path, rep)
         if doc is None:
+            continue
+        stream = (_stream_prefix(path, context, streams)
+                  if file_game(doc, game) == 'SA' else '')
+        if stream:
+            rep.msg('WARNING', T("{0}: строки сохранены — {1}*.ipl ссылаются "
+                                 "на их номера; удаление сдвинет LOD "
+                                 "потоковых моделей").format(os.path.basename(path), stream))
             continue
         ed = doc.editor(game=file_game(doc, game))
         _reserve_others(ed, path, [it[0] for it in items])
@@ -1584,6 +1619,7 @@ def _ide_entry(o, mt, base, dff, hd=None):
     that model's name (None: its mesh's)."""
     from .. import _ide_entry_from_obj, _clean_model_name_ide
     e = _ide_entry_from_obj(o)
+    e.draw_distance = ide_draw_distance(o, mt == 'LOD')
     if mt == 'LOD':
         if hd is None:
             hd = _clean_model_name_ide(dff.name) if dff else ''
@@ -1674,17 +1710,33 @@ def ide_write(context, objs, *, picked='', dry_run=False):
     rep = Report()
     game = scene_game(context)
     picked = norm(picked) if picked else ''
+    from ..core.fs_ci import path_key
+    entries = ide_entries(objs, rep)
+    models = [o for o, _e, _parent in entries]
+    models += [parent for _o, _e, parent in entries if parent is not None]
+    other_ides = [(path_key(p), p, _ide_names(p)[0])
+                  for p in _known_ides(models, game, context=context)]
     groups = {}
-    for o, e, parent in ide_entries(objs, rep):
+    for o, e, parent in entries:
         own = ide_linked_file(o)
         path = picked or own or (ide_linked_file(parent) if parent else '')
         if not path:
             rep.msg('ERROR', T("«{0}»: нет своего IDE — выбери файл в панели IDE").format(o.name))
             continue
-        if own and picked and own != picked and os.path.isfile(own):
-            rep.msg('WARNING', T("«{0}» была в {1} — записана в выбранный "
-                                 "{2}").format(o.name, os.path.basename(own),
-                                               os.path.basename(picked)))
+        target_key = path_key(path)
+        for source_key, source, names in other_ides:
+            if source_key == target_key:
+                continue
+            found = bool(names.get(e.model_name.lower()))
+            # A renamed linked model still owns its old row. A copied
+            # model given another ID must not inherit that old identity.
+            if (not found and source == own
+                    and int(o.inu.ide_last_model_id or 0) == int(e.model_id)):
+                found = any(mid == int(e.model_id) for mid, _name in
+                            names.get((o.inu.ide_last_name or '').lower(), ()))
+            if found:
+                rep.msg('WARNING', T("«{0}»: модель уже существует в другом IDE "
+                                     "({1}); старая строка остаётся").format(o.name, source))
         groups.setdefault(path, []).append((o, e))
     from ..core.mapsync import IdeDoc
     for path, items in groups.items():

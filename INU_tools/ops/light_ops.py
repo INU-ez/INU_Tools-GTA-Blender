@@ -644,7 +644,10 @@ class GTATOOLS_OT_light_topo_cut(bpy.types.Operator):
             pass
 
         # bake только на грани, целиком в радиусе
-        attr = compat.vcol_active(me) or compat.vcol_new(me, "Day")
+        attr = compat.vcol_active(me)
+        new_layer = attr is None
+        if new_layer:
+            attr = compat.vcol_new(me, "Day")
         compat.vcol_active(me, attr)
         n_loops = len(me.loops)
         if not n_loops:
@@ -681,7 +684,8 @@ class GTATOOLS_OT_light_topo_cut(bpy.types.Operator):
         for c in range(3):
             add[:, c] = bright * float(lamp_rgb[c])
         f4[within, 0:3] = np.clip(f4[within, 0:3] + add[within], 0.0, 1.0)
-        f4[within, 3] = 1.0
+        if new_layer:
+            f4[:, 3] = 1.0
         attr.data.foreach_set('color', f4.ravel())
         return int(within.sum())
 

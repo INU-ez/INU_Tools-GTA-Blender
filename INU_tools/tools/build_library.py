@@ -174,6 +174,7 @@ def build_classification(game_root: str, game: str = 'SA') -> dict:
     """
     from ..core import ide as ide_module
     from ..core.gta_dat import parse_gta_dat, resolve_paths
+    from ..core.fs_ci import resolve as _ci
 
     classification: dict = {}
     section_totals: dict = defaultdict(int)
@@ -268,16 +269,16 @@ def build_classification(game_root: str, game: str = 'SA') -> dict:
     # under a different name; default.dat is shared (vehicles/peds/
     # weapons across all three).
     if game == 'III':
-        _walk(os.path.join(game_root, 'data', 'gta3.dat'), required=True)
-        _walk(os.path.join(game_root, 'data', 'default.dat'), required=True)
+        _walk(_ci(os.path.join(game_root, 'data', 'gta3.dat')), required=True)
+        _walk(_ci(os.path.join(game_root, 'data', 'default.dat')), required=True)
     elif game == 'VC':
-        _walk(os.path.join(game_root, 'data', 'gta_vc.dat'), required=True)
-        _walk(os.path.join(game_root, 'data', 'default.dat'), required=True)
+        _walk(_ci(os.path.join(game_root, 'data', 'gta_vc.dat')), required=True)
+        _walk(_ci(os.path.join(game_root, 'data', 'default.dat')), required=True)
     else:
         # SA — three .dats; gta_int is only present on Steam Edition / mods.
-        _walk(os.path.join(game_root, 'data', 'gta.dat'), required=True)
-        _walk(os.path.join(game_root, 'data', 'default.dat'), required=True)
-        _walk(os.path.join(game_root, 'data', 'gta_int.dat'), required=False)
+        _walk(_ci(os.path.join(game_root, 'data', 'gta.dat')), required=True)
+        _walk(_ci(os.path.join(game_root, 'data', 'default.dat')), required=True)
+        _walk(_ci(os.path.join(game_root, 'data', 'gta_int.dat')), required=False)
 
     print(f"      sections: " + ", ".join(
         f"{k}={v}" for k, v in sorted(section_totals.items())))

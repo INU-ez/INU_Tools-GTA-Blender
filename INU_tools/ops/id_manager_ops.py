@@ -39,21 +39,41 @@ class GTATOOLS_OT_id_manager_release(bpy.types.Operator):
     bl_options = {'REGISTER'}
 
     model_id: IntProperty()
+    _confirmed_game_id = None
+
+    def invoke(self, context, event):
+        from .. import _id_preset_sync
+        from ..data.id_manager import game_ids
+        _id_preset_sync(context)
+        self._confirmed_game_id = None
+        if self.model_id in game_ids():
+            self._confirmed_game_id = self.model_id
+            return context.window_manager.invoke_props_dialog(self, width=460)
+        return self.execute(context)
+
+    def draw(self, context):
+        self.layout.label(text=T("Освободить ID игры {0}?").format(self.model_id))
+        self.layout.label(text=T("ID будет удалён из .game и доступен для назначения."))
+        self.layout.label(text=T("Новая модель с этим ID заменит модель игры в IDE."))
 
     def execute(self, context):
         from .. import _id_preset_sync
         _id_preset_sync(context)
-        from ..data.id_manager import release_id
-        # Reset model_id on scene objects that use this ID
+        from ..data.id_manager import release_id, game_ids
+        is_game = self.model_id in game_ids()
+        if is_game and self._confirmed_game_id != self.model_id:
+            self.report({'WARNING'}, T("Освобождение ID игры требует подтверждения."))
+            return {'CANCELLED'}
+        try:
+            release_id(self.model_id, free_game=is_game)
+        except OSError as e:        # preset file locked (antivirus, another program)
+            self.report({'ERROR'}, f"{T('Ошибка записи:')} {e}")
+            return {'CANCELLED'}
+        # Clear scene IDs only after the preset and its sidecar were saved.
         for obj in bpy.data.objects:
             inu = getattr(obj, 'inu', None)
             if inu and inu.model_id == self.model_id:
                 inu.model_id = 0
-        try:
-            release_id(self.model_id)
-        except OSError as e:        # preset file locked (antivirus, another program)
-            self.report({'ERROR'}, f"{T('Ошибка записи:')} {e}")
-            return {'CANCELLED'}
         self.report({'INFO'}, f"ID {self.model_id} {T('освобождён')}")
         return {'FINISHED'}
 
@@ -172,8 +192,31 @@ def _ordered_keys(objs, lodix, with_lods=True, hd_of=None):
     return keys
 
 
+def _own_col_ids(objects, hd_of=None):
+    """Model key → IDs held only by that model's own COL copies.
+    An unrelated model/COL holding the same ID still makes it occupied."""
+    from ..tools.model_utils import get_model_type
+    holders, collisions = {}, {}
+    for o in objects:
+        if o.type != 'MESH' or not getattr(o, 'inu', None):
+            continue
+        mid = o.inu.model_id
+        if mid <= 0:
+            continue
+        typed = get_model_type(o)
+        if typed[0] == 'COL':
+            key = ('DFF', (typed[1] or '').lower())
+            collisions.setdefault(key, set()).add(mid)
+            owner = key
+        else:
+            owner = (typed[0], _ide_name(o, typed, hd_of).lower())
+        holders.setdefault(mid, set()).add(owner)
+    return {key: {i for i in ids if holders[i] == {key}}
+            for key, ids in collisions.items()}
+
+
 def assign_groups(keys, by_key, preset, skip, owner_ids_of, name_of,
-                  own_ids_of=None):
+                  own_ids_of=None, col_ids_of=None):
     """Assign's loop (bpy-free — tested without Blender). For each model key
     whose objects have Model ID = 0: a copy that already has an ID gives it
     to the rest; else a new ID from ``preset.allocate`` — a LOD prefers the
@@ -211,7 +254,10 @@ def assign_groups(keys, by_key, preset, skip, owner_ids_of, name_of,
                 preset.reserve(prefer, name)     # its IDE row holds it — the preset learns it
                 nid = prefer
             else:
-                nid = preset.allocate(name, skip - own if prefer in own else skip, prefer)
+                own_col = (set(col_ids_of(key)) - new if col_ids_of else set())
+                free_skip = skip - own_col
+                nid = preset.allocate(name, free_skip - own if prefer in own else free_skip,
+                                      prefer, restart=bool(own_col))
             if nid is None:
                 left.append(name)
                 continue
@@ -299,9 +345,11 @@ class GTATOOLS_OT_id_manager_auto_assign(bpy.types.Operator):
 
         # One read and one write of the preset for the whole run.
         P = Preset(get_active_preset())
+        col_ids = _own_col_ids(bpy.data.objects, hd_of)
         done, reused, left, warn = assign_groups(
             keys, by_key, P, skip, owner_ids_of,
-            lambda o: _ide_name(o, hd_of=hd_of), own_ids_of)
+            lambda o: _ide_name(o, hd_of=hd_of), own_ids_of,
+            lambda key: col_ids.get(key, set()) - ide_ids)
 
         # Saved also when IDs ran out midway — the objects above hold theirs.
         try:
@@ -330,7 +378,8 @@ class GTATOOLS_OT_id_manager_auto_assign(bpy.types.Operator):
         return {'FINISHED'}
 
 
-def assign_from_groups(keys, by_key, preset, others, ide, start, skip_occupied, name_of):
+def assign_from_groups(keys, by_key, preset, others, ide, start, skip_occupied, name_of,
+                       col_ids_of=None):
     """«С ID…» loop (bpy-free — tested without Blender): IDs in a row from
     ``start``, one per model key — every copy of the model gets it.
     Occupied: the preset's used IDs, ``others`` (IDs of the objects not
@@ -357,7 +406,7 @@ def assign_from_groups(keys, by_key, preset, others, ide, start, skip_occupied, 
                     own.add(j)
     ide_f = set(ide) - own
     pre = preset.used()
-    used = set(pre) | others | ide_f
+    used = set(pre) | preset.game | others | ide_f
     used -= old_ids - preset.game - others - ide_f
     # A linked row's ID is free too, unless the preset gives it to another name.
     used -= {j for j in own - old_ids - preset.game - others
@@ -366,10 +415,14 @@ def assign_from_groups(keys, by_key, preset, others, ide, start, skip_occupied, 
     for key, group in groups:
         if not group:
             continue
+        own_col = set(col_ids_of(key)) if col_ids_of else set()
+        available_col = {i for i in own_col - preset.game - ide_f
+                         if not pre.get(i) or pre[i].lower() == key[1]}
+        occupied = used - (available_col - {i for _n, i in done})
         if skip_occupied:
-            while cur in used:
+            while cur in occupied:
                 cur += 1
-        elif cur in used:
+        elif cur in occupied:
             # Honour the requested start exactly, but flag the overlap so
             # the user knows two models now share this ID.
             clashes += 1
@@ -440,10 +493,12 @@ class GTATOOLS_OT_id_manager_assign_from(bpy.types.Operator):
                   if o.type == 'MESH' and o not in affected
                   and hasattr(o, 'inu') and o.inu.model_id > 0}
         P = Preset(get_active_preset())     # one read, one write per run
+        col_ids = _own_col_ids(bpy.data.objects, hd_of)
         done, clashes, freed = assign_from_groups(
             keys, by_key, P, others, _ide_ids(context, names=True),
             self.start_id, self.skip_occupied,
-            lambda o: _ide_name(o, hd_of=hd_of))
+            lambda o: _ide_name(o, hd_of=hd_of),
+            lambda key: col_ids.get(key, ()))
         try:
             P.save()
         except OSError as e:        # preset file locked (antivirus, another program)
@@ -881,5 +936,3 @@ class GTATOOLS_OT_id_preset_rename(bpy.types.Operator):
             pass
         self.report({'INFO'}, f"{T('Переименован:')} {current} → {new}")
         return {'FINISHED'}
-
-

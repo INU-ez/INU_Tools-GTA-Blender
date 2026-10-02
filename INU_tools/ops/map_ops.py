@@ -7,6 +7,7 @@
 # file came from __init__.py in batch 3b (2026-04-26).
 
 import os
+from ..core.fs_ci import resolve as _ci
 import bpy
 from bpy.props import (
     BoolProperty, StringProperty,
@@ -29,7 +30,7 @@ class GTATOOLS_OT_discover_game(bpy.types.Operator):
             self.report({'ERROR'}, T("Укажите корневую папку GTA SA"))
             return {'CANCELLED'}
 
-        dat_path = os.path.join(game_root, 'data', 'gta.dat')
+        dat_path = _ci(os.path.join(game_root, 'data', 'gta.dat'))
         if not os.path.isfile(dat_path):
             self.report({'ERROR'}, T("Не найден data/gta.dat в указанной папке"))
             return {'CANCELLED'}
@@ -535,7 +536,7 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
             self.report({'ERROR'}, T("Укажите корневую папку GTA SA"))
             return {'CANCELLED'}
 
-        dat_path = os.path.join(game_root, 'data', 'gta.dat')
+        dat_path = _ci(os.path.join(game_root, 'data', 'gta.dat'))
         if not os.path.isfile(dat_path):
             self.report({'ERROR'}, T("Не найден data/gta.dat в указанной папке"))
             return {'CANCELLED'}

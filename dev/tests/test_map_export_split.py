@@ -558,14 +558,30 @@ def test_collect_map_models(monkeypatch):
     assert "LODtree" in text and "LODshed" in text and "far_barn" not in text
 
 
-def _collect(monkeypatch, scene_objects, selection):
+def _collect(monkeypatch, scene_objects, selection, **kw):
     from INU_tools.tools import map_export
     from INU_tools.ops import map_link
     ctx = types.SimpleNamespace(scene=types.SimpleNamespace(
         objects=scene_objects, inu_settings=types.SimpleNamespace()))
     for fn in (map_export.get_model_type, map_link.LodIndex.__init__):
         monkeypatch.setattr(fn.__globals__["bpy"], "context", ctx, raising=False)
-    return map_export.collect_map_models(ctx, selection)
+    return map_export.collect_map_models(ctx, selection, **kw)
+
+
+def test_collection_export_warns_when_col_lives_in_another_ipl(monkeypatch):
+    house, col = _mesh('house'), _mesh('house_COL', textured=False)
+    house.users_collection = [types.SimpleNamespace(name='ipl_two')]
+    col.users_collection = [types.SimpleNamespace(name='ipl_one')]
+    # Ordinary model selection still picks the scene's collision.
+    models, _p, notes = _collect(monkeypatch, [house, col], [house])
+    assert models['house'].cols == [col]
+    # An explicit collection export leaves the other collection's COL out.
+    models, _p, notes = _collect(monkeypatch, [house, col], [house], collection_export=True)
+    assert models['house'].cols == []
+    assert any(level == 'WARNING' and 'house' in text and 'другой коллекции' in text
+               for level, text in notes)
+    models, _p, notes = _collect(monkeypatch, [house, col], [house, col], collection_export=True)
+    assert models['house'].cols == [col]
 
 
 def test_collect_lod_copy_with_a_model_id_is_not_the_lod(monkeypatch):

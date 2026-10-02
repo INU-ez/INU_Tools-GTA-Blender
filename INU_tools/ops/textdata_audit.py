@@ -60,22 +60,13 @@ _known_cache = {}
 
 
 def _game_ide_ids(root):
-    """Union of the ids of every IDE listed in default.dat / gta.dat
-    (and gta_int.dat) under ``root`` — the set the game actually loads.
-    None when the root has no data/gta.dat."""
+    """Union of IDs in the startup IDEs of SA / VC / III.
+    None when the root has no readable startup .dat or IDE."""
     import os
-    from ..core.gta_dat import parse_gta_dat, resolve_paths
-    paths = []
-    for dat in ('default.dat', 'gta.dat', 'gta_int.dat'):
-        dat_path = os.path.join(root, 'data', dat)
-        if not os.path.isfile(dat_path):
-            continue
-        try:
-            info = resolve_paths(root, parse_gta_dat(dat_path))
-        except Exception:
-            continue
-        paths.extend(p for p in info.ide_paths if os.path.isfile(p))
-    if not os.path.isfile(os.path.join(root, 'data', 'gta.dat')) or not paths:
+    from ..core.gta_dat import game_ide_paths
+    paths, dats = game_ide_paths(root)
+    paths = [p for p in paths if os.path.isfile(p)]
+    if not dats or not paths:
         return None
     sig = tuple((p, os.path.getmtime(p)) for p in paths)
     cached = _known_cache.get(root)

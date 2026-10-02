@@ -6106,4 +6106,60 @@ LANG = {
     "«{0}»: LOD {1} стоит в IPL не на модели — его строка оставлена как есть": "«{0}»: el LOD {1} no está colocado sobre el modelo en el IPL — su fila se deja como está",
     "«{0}»: LOD {1} — в другом IDE ({2}), VC их не свяжет": "«{0}»: el LOD {1} está en otro IDE ({2}) — VC no los vinculará",
     "«{0}»: имя LOD по правилу III/VC «{1}» уже занято ({2}) — LOD записан как «{3}» и в игре не свяжется, переименуй модель": "«{0}»: el nombre de LOD según la regla de III/VC «{1}» ya está ocupado ({2}) — el LOD se escribe como «{3}» y no se vinculará en el juego, renombra el modelo",
+    "Освободить ID игры {0}?": "¿Liberar el ID del juego {0}?",
+    "ID будет удалён из .game и доступен для назначения.":
+        "El ID se eliminará de .game y quedará disponible para asignarlo.",
+    "Новая модель с этим ID заменит модель игры в IDE.":
+        "Un modelo nuevo con este ID sustituirá al modelo del juego en el IDE.",
+    "Освобождение ID игры требует подтверждения.":
+        "Liberar un ID del juego requiere confirmación.",
+    "Сферы/боксы старого импорта COL — переимпортируйте COL.":
+        "Esferas/cajas de una importación COL antigua — vuelve a importar el COL.",
+    "COL в другой коллекции — не записан для модели: {0}":
+        "COL está en otra colección — no se ha escrito para el modelo: {0}",
+    "{0}: строки сохранены — {1}*.ipl ссылаются на их номера; удаление сдвинет LOD потоковых моделей":
+        "{0}: filas conservadas — {1}*.ipl usa sus índices; eliminarlas desplazaría los LOD de los modelos de streaming",
+    "«{0}»: игра не применяет масштаб из IPL (модель в игре будет в масштабе 1)":
+        "«{0}»: el juego no aplica la escala del IPL (el modelo tendrá escala 1 en el juego)",
+    "«{0}»: IMG LOD не найден — LOD пропущен":
+        "«{0}»: no se encontró el IMG del LOD — LOD omitido",
+    "Без перехода": "Sin paso peatonal",
+    "Пешеходный переход": "Paso peatonal",
+    "SA игнорирует секцию path в IPL": "SA ignora la sección path del IPL",
+    "III: пути загружаются из IDE; секция path в IPL не работает":
+        "III: las rutas se cargan desde IDE; la sección path del IPL no funciona",
+    "Старый импорт paths.ipl: переимпортируйте для исправления масштаба /16":
+        "Importación antigua de paths.ipl: vuelve a importar para corregir la escala /16",
+    "Path IPL резервирует Softbody Weight для ID точек; не изменяйте его":
+        "Path IPL reserva Softbody Weight para los ID de los puntos; no lo modifiques",
+    "Совпадающие копии точек: проверьте флаги после дублирования":
+        "Copias de puntos coincidentes: comprueba las banderas tras duplicar",
+    "Crossing поддерживается только для пешеходных узлов":
+        "Crossing solo se admite en nodos peatonales",
+    "Roadblock в paths.ipl поддерживается только для авто/лодок VC":
+        "Roadblock en paths.ipl solo se admite en rutas de vehículos/barcos de VC",
+    "VC: Roadblock действует только на отдельные группы с ID -1":
+        "VC: Roadblock solo funciona en grupos separados con ID -1",
+    "VC: бит 1 реальных флагов — барьер копов":
+        "VC: bit 1 de las banderas reales — bloqueo policial",
+    "Колонка Crossing для пешеходных узлов":
+        "Columna Crossing de los nodos peatonales",
+    "Новые узлы объединены с импортированным районом":
+        "Nodos nuevos combinados con el área importada",
+    "Добавление автоузлов сдвигает пешеходные ID: экспортируйте все 64 района с разобранными секциями":
+        "Añadir nodos de vehículos desplaza los ID peatonales: exporta las 64 regiones con secciones analizadas",
+    "Перенумерация узлов отменена: один из районов не подготовлен; файлы не записаны":
+        "Renumeración de nodos cancelada: una región no está preparada; no se escribió ningún archivo",
+    "«{0}»: модель уже существует в другом IDE ({1}); старая строка остаётся":
+        "«{0}»: el modelo ya existe en otro IDE ({1}); la fila original se conserva",
+    "Экспорт NODES отменён: один из районов не подготовлен; файлы не записаны":
+        "Exportación NODES cancelada: una región no está preparada; no se escribió ningún archivo",
+    "Добавить точку: Extrude / Subdivide": "Añadir punto: Extrude / Subdivide",
+    "При смене ID экспортируйте все 64 района": "Si cambian los ID, exporta las 64 regiones",
+    "Изменены ID узлов: экспортируйте все 64 района с разобранными секциями; файлы не записаны":
+        "Cambiaron los ID: exporta las 64 regiones con secciones analizadas; no se escribió ningún archivo",
+    "Тип светофора не хранится в paths.ipl":
+        "El tipo de semáforo no se almacena en paths.ipl",
+    "Тип светофора не хранится в paths.ipl: III/VC определяют его по объектам светофоров":
+        "El tipo de semáforo no se almacena en paths.ipl: III/VC lo determina a partir de los objetos de semáforos",
 }

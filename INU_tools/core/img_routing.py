@@ -40,9 +40,24 @@ def route_groups(own_by_base, default, isfile=os.path.isfile):
     return routes, unresolved
 
 
-def shared_targets(archives, has_entry):
+def lod_routes(own_by_base, model_archives, isfile=os.path.isfile):
+    """LOD → its own archive, or its model's. A missing explicit archive
+    is an error; falling back would shadow the LOD the game already loads."""
+    out, missing = {}, []
+    paths = {img_key(a): a for a in model_archives.values() if a}
+    for base, own in own_by_base.items():
+        path = _ci(own) if own else model_archives.get(base, '')
+        if not path or not isfile(path):
+            missing.append(base)
+            continue
+        out[base] = paths.setdefault(img_key(path), os.path.normpath(os.path.abspath(path)))
+    return out, missing
+
+
+def shared_targets(archives, has_entry, required=()):
     """Куда писать запись, общую для моделей из разных архивов (TXD,
     library .col): в те их архивы, где она уже есть (там её читает игра);
     нет нигде — в архив первой модели. archives — по моделям, с повторами."""
     uniq = list(dict.fromkeys(archives))
-    return [a for a in uniq if has_entry(a)] or uniq[:1]
+    targets = [a for a in uniq if has_entry(a)] or uniq[:1]
+    return list(dict.fromkeys(targets + list(required)))

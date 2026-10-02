@@ -830,7 +830,7 @@ class GTATOOLS_OT_refresh_station_markers(bpy.types.Operator):
 # ──────────────────────────── path-node flags ─────────────────────────
 
 class GTATOOLS_OT_path_node_flag(bpy.types.Operator):
-    """Переключить roadblock или задать тип светофора на выделенных точках кривой пути"""
+    """Флаги VC или переход на выделенных точках paths.ipl"""
     bl_idname = "gtatools.path_node_flag"
     bl_label = "INU: Set Path Node Flag"
     bl_options = {'REGISTER', 'UNDO'}
@@ -838,15 +838,17 @@ class GTATOOLS_OT_path_node_flag(bpy.types.Operator):
     action: bpy.props.EnumProperty(
         items=[
             ('TOGGLE_ROADBLOCK', "Toggle Roadblock",
-             "Переключить бит 12 (барьер копов) на каждой выделенной точке"),
+             T("VC: бит 1 реальных флагов — барьер копов")),
+            ('CROSSING_ON', T("Пешеходный переход"), T("Колонка Crossing для пешеходных узлов")),
+            ('CROSSING_OFF', T("Без перехода"), T("Колонка Crossing для пешеходных узлов")),
             ('TRAFFIC_NONE',   "Clear Traffic Light",
-             "Поставить traffic_light=0 на каждой выделенной точке"),
+             T("Тип светофора не хранится в paths.ipl")),
             ('TRAFFIC_NORMAL', "Normal Traffic Light",
-             "Поставить traffic_light=1 на каждой выделенной точке"),
+             T("Тип светофора не хранится в paths.ipl")),
             ('TRAFFIC_RAIL',   "Rail Traffic Light",
-             "Поставить traffic_light=2 на каждой выделенной точке"),
+             T("Тип светофора не хранится в paths.ipl")),
             ('TRAFFIC_BUS',    "Bus Traffic Light",
-             "Поставить traffic_light=3 на каждой выделенной точке"),
+             T("Тип светофора не хранится в paths.ipl")),
         ],
         default='TOGGLE_ROADBLOCK',
     )
@@ -859,44 +861,39 @@ class GTATOOLS_OT_path_node_flag(bpy.types.Operator):
                 and context.mode == 'EDIT_CURVE')
 
     def execute(self, context):
-        from ..core.paths import (
-            PATH_FLAG_ROADBLOCK, PATH_FLAG_TRAFFIC_MASK,
-            PATH_FLAG_TRAFFIC_SHIFT,
-        )
+        from ..core.paths import PATH_FLAG_ROADBLOCK
+        from .path_ipl_props import ensure_point_slots, _selected
         obj = context.active_object
-        # The spline contains only nodes with node_type > 0, but IDProps
-        # `pn_{j}_*` are stored for every node including empty padding.
-        # Build a mapping from spline-point index → full IDProp index so
-        # we write flags into the right slot.
-        pn_count = int(obj.get('pn_count', 0) or 0)
-        real_to_full: List[int] = []
-        for j in range(pn_count):
-            if int(obj.get(f'pn_{j}_type', 0) or 0) > 0:
-                real_to_full.append(j)
-
+        if self.action.startswith('TRAFFIC_'):
+            self.report({'WARNING'}, T("Тип светофора не хранится в paths.ipl: III/VC определяют его по объектам светофоров"))
+            return {'CANCELLED'}
+        game = obj.get('pn_game', getattr(context.scene, 'gtatools_game', 'VC'))
+        if game == 'SA':
+            self.report({'WARNING'}, T("SA игнорирует секцию path в IPL"))
+            return {'CANCELLED'}
+        if self.action == 'TOGGLE_ROADBLOCK' and (game != 'VC' or obj.get('group_type', 1) == 0):
+            self.report({'WARNING'}, T("Roadblock в paths.ipl поддерживается только для авто/лодок VC"))
+            return {'CANCELLED'}
+        if self.action == 'TOGGLE_ROADBLOCK' and obj.get('external_index', -1) != -1:
+            self.report({'WARNING'}, T("VC: Roadblock действует только на отдельные группы с ID -1"))
+            return {'CANCELLED'}
+        if self.action.startswith('CROSSING_') and obj.get('group_type', 1) != 0:
+            self.report({'WARNING'}, T("Crossing поддерживается только для пешеходных узлов"))
+            return {'CANCELLED'}
+        try:
+            pairs = ensure_point_slots(obj)
+        except ValueError as exc:
+            self.report({'WARNING'}, str(exc))
+            return {'CANCELLED'}
         touched = 0
-        spline_idx = 0
-        for spline in obj.data.splines:
-            for pt in spline.points:
-                if pt.select:
-                    if spline_idx >= len(real_to_full):
-                        spline_idx += 1
-                        continue
-                    full_idx = real_to_full[spline_idx]
-                    key = f'pn_{full_idx}_flags'
-                    cur = int(obj.get(key, 0) or 0)
-                    if self.action == 'TOGGLE_ROADBLOCK':
-                        cur ^= PATH_FLAG_ROADBLOCK
-                    else:
-                        tl_map = {'TRAFFIC_NONE': 0, 'TRAFFIC_NORMAL': 1,
-                                  'TRAFFIC_RAIL': 2, 'TRAFFIC_BUS': 3}
-                        tl = tl_map[self.action]
-                        cur = (cur & ~PATH_FLAG_TRAFFIC_MASK) | \
-                              ((tl << PATH_FLAG_TRAFFIC_SHIFT) & PATH_FLAG_TRAFFIC_MASK)
-                    obj[key] = cur
-                    touched += 1
-                spline_idx += 1
+        for point, slot in pairs:
+            if not _selected(point):
+                continue
+            if self.action == 'TOGGLE_ROADBLOCK':
+                key = f'pn_{slot}_flags'
+                obj[key] = int(obj.get(key, 0)) ^ PATH_FLAG_ROADBLOCK
+            else:
+                obj[f'pn_{slot}_cross'] = int(self.action == 'CROSSING_ON')
+            touched += 1
         self.report({'INFO'}, f"{touched} point(s) updated — {self.action}")
         return {'FINISHED'}
-
-

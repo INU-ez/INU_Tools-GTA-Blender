@@ -9,6 +9,7 @@
 # functions out by AST.
 
 import ast
+import builtins
 import io
 import os
 import types
@@ -32,6 +33,19 @@ _extract(ZON_OPS, {"_strip_dup_suffix", "_zone_name"}, NS)
 zon_get = NS["_zon_name_get"]
 zon_set = NS["_zon_name_set"]
 zone_name = NS["_zone_name"]
+
+
+def _import_zone(name, globals=None, locals=None, fromlist=(), level=0):
+    if level == 1 and name == "ops.zon_ops":
+        return types.SimpleNamespace(_zone_name=zone_name)
+    return builtins.__import__(name, globals, locals, fromlist, level)
+
+
+NS["__builtins__"] = dict(vars(builtins), __import__=_import_zone)
+# exec() captures the builtins mapping when functions are defined.
+_extract(INIT, {"_zon_name_get", "_zon_name_set"}, NS)
+zon_get = NS["_zon_name_get"]
+zon_set = NS["_zon_name_set"]
 
 
 class _Obj(dict):
@@ -114,3 +128,16 @@ def test_name_clash_suffix_is_stripped_on_export():
     # Blender appends .001 when «Zone_LA99» is already taken.
     ob = _Obj("Zone_LA99.001", zon_name="LA99")
     assert zone_name(ob) == "LA99"
+
+
+def test_outliner_rename_is_shown_in_the_field_and_exported():
+    ob = _zone("Zone_LA01", "LA01")
+    ob.name = "Zone_LA02.001"
+    assert zon_get(_inu(ob)) == zone_name(ob) == "LA02"
+    zon_set(_inu(ob), "SF03")
+    assert zon_get(_inu(ob)) == zone_name(ob) == "SF03"
+
+
+def test_outliner_rename_without_zone_prefix():
+    ob = _zone("Harbour", "LA01")
+    assert zon_get(_inu(ob)) == zone_name(ob) == "Harbour"

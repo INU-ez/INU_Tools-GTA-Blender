@@ -112,6 +112,39 @@ def test_allocate_ascending_skip_prefer(im, tmp_path):
     assert P.allocate("e", skip) == 321                  # freed → found again
 
 
+def test_free_game_requires_explicit_release_and_removes_sidecar(im, tmp_path):
+    _write(tmp_path, 't.txt', '500\n501\n')  # manually cleared .txt
+    _write(tmp_path, 't.game', '500\n')
+    p = im.Preset()
+    assert not p.is_free(500)
+    assert im.get_free_ids() == [501]
+    assert p.allocate('house', (), prefer=500) == 501
+    assert not p.release(500)
+    assert p.release(500, free_game=True)
+    p.save()
+    assert im.game_ids() == set()
+    assert im.Preset().allocate('new', (), prefer=500) == 500
+
+
+def test_game_release_operator_requires_confirmation(im, tmp_path, monkeypatch):
+    _write(tmp_path, 't.txt', '500-game_house\n')
+    _write(tmp_path, 't.game', '500\n')
+    obj = SimpleNamespace(inu=SimpleNamespace(model_id=500))
+    monkeypatch.setattr(_ops.bpy, 'data', SimpleNamespace(objects=[obj]))
+    op = _ops.GTATOOLS_OT_id_manager_release()
+    op.model_id = 500
+    _reports(op)
+    ctx = SimpleNamespace(window_manager=SimpleNamespace(
+        invoke_props_dialog=lambda *_a, **_kw: {'RUNNING_MODAL'}))
+    assert op.execute(ctx) == {'CANCELLED'}
+    assert obj.inu.model_id == 500 and im.game_ids() == {500}
+    assert op.invoke(ctx, None) == {'RUNNING_MODAL'}
+    assert obj.inu.model_id == 500 and im.game_ids() == {500}
+    assert op.execute(ctx) == {'FINISHED'}
+    assert obj.inu.model_id == 0 and im.game_ids() == set()
+    assert im.get_free_ids() == [500]
+
+
 def test_many_ids_one_write(im, tmp_path, writes):
     im.create_id_file()
     writes.clear()
@@ -745,6 +778,42 @@ def test_assign_from_col_only_selection(im, tmp_path, scene):
     scene.objects.append(col)
     assert _assign_from(scene, 500, col) == ({"CANCELLED"}, ({"ERROR"}, "Выделите меш объекты"))
     assert col.inu.model_id == 5
+
+
+@pytest.mark.parametrize('mode', ['auto', 'from'])
+def test_assign_own_collision_id_is_available(im, tmp_path, scene, mode):
+    _write(tmp_path, 't.txt', '500\n501\n')
+    house, col = _Mesh('house'), _Mesh('house_COL', 500, tex=False)
+    scene.objects.extend([house, col])
+    if mode == 'auto':
+        _assign(scene, house)
+    else:
+        _assign_from(scene, 500, house)
+    assert house.inu.model_id == 500
+    assert col.inu.model_id == 500  # collision itself is untouched
+
+
+@pytest.mark.parametrize('mode', ['auto', 'from'])
+def test_assign_collision_id_held_by_other_model_still_occupied(im, tmp_path, scene, mode):
+    _write(tmp_path, 't.txt', '500\n501\n')
+    house, col = _Mesh('house'), _Mesh('house_COL', 500, tex=False)
+    foreign = _Mesh('tree', 500)
+    scene.objects.extend([house, col, foreign])
+    if mode == 'auto':
+        _assign(scene, house)
+    else:
+        _assign_from(scene, 500, house)
+    assert house.inu.model_id == 501
+    assert col.inu.model_id == foreign.inu.model_id == 500
+
+
+def test_auto_assign_own_collision_id_after_earlier_model(im, tmp_path, scene):
+    _write(tmp_path, 't.txt', '500\n501\n502\n')
+    tree, house = _Mesh('tree'), _Mesh('house')
+    col = _Mesh('house_COL', 500, tex=False)
+    scene.objects.extend([tree, house, col])
+    _assign(scene, tree, house)
+    assert tree.inu.model_id == 501 and house.inu.model_id == col.inu.model_id == 500
 
 
 def test_assign_from_rerun_keeps_start_and_frees_previous(im, tmp_path, scene):

@@ -59,6 +59,7 @@ def _env(entries=(), shared=False, objects=None, layer=None):
         "context": types.SimpleNamespace(
             view_layer=types.SimpleNamespace(objects=layer)),
         "_lod_off_layer": [],
+        "active_lod": None,
     }
     body = [n for n in TREE.body
             if isinstance(n, ast.FunctionDef) and n.name in HELPERS]

@@ -1037,12 +1037,19 @@ class GTATOOLS_OT_export_all(bpy.types.Operator):
         # All → IMG: куда реально пойдут модели — как в «Экспорт в IMG»
         # (_export_routes: свой IMG модели → выбранный там → из настроек).
         # Тоже здесь: в draw браузера выделения нет.
-        self._img_routes, self._img_no_arch = [], 0
+        self._img_routes, self._img_lod_routes, self._img_no_arch = [], [], 0
         try:
-            from .img_ops import _export_routes
+            from .img_ops import _export_routes, _export_lod_routes
+            from ..tools.model_utils import find_related_models
             _r, _none = _export_routes(context, groups)
             self._img_routes = [(os.path.basename(a), len(b)) for a, b in _r.items()]
             self._img_no_arch = len(_none)
+            _lr, _lnone = _export_lod_routes(
+                context, groups, _r,
+                lambda b: bool(context.scene.inu_settings.gtatools_export_all_lod),
+                lambda b, m: m['LOD'] or find_related_models(b).get('LOD'))
+            self._img_lod_routes = [(b, os.path.basename(a)) for b, a in _lr.items()]
+            self._img_no_arch += len(_lnone)
         except Exception:
             pass
         if name:
@@ -1159,6 +1166,8 @@ class GTATOOLS_OT_export_all(bpy.types.Operator):
                 box.label(text=(f"{arch} — {T('Моделей:')} {n}"
                                 if len(routes) > 1 else arch),
                           **inu_icon(safe_icon('FILE_ARCHIVE')))
+            for base, arch in getattr(self, '_img_lod_routes', ()):
+                box.label(text=f"LOD {base} → {arch}", **inu_icon(safe_icon('MOD_DECIM')))
             if routes:
                 box.label(text=T("Папка игнорируется — экспорт в этот IMG")
                           if len(routes) == 1 else
@@ -1214,14 +1223,18 @@ class GTATOOLS_OT_export_all(bpy.types.Operator):
                              want_lod=bool(s.gtatools_export_all_lod),
                              want_col=bool(s.gtatools_export_all_col),
                              col_stub=empty_col)
-            res = bpy.ops.gtatools.export_to_img(
-                'EXEC_DEFAULT',
-                shared_txd=bool(getattr(s, 'gtatools_export_all_txd_shared', False)),
-                shared_txd_name=(getattr(s, 'gtatools_export_all_txd_shared_name', '')
-                                 or 'textures'),
-                skip_dff=not s.gtatools_export_all_dff,
-                skip_txd=not s.gtatools_export_all_txd,
-                empty_col=empty_col)
+            try:
+                res = bpy.ops.gtatools.export_to_img(
+                    'EXEC_DEFAULT',
+                    shared_txd=bool(getattr(s, 'gtatools_export_all_txd_shared', False)),
+                    shared_txd_name=(getattr(s, 'gtatools_export_all_txd_shared_name', '')
+                                     or 'textures'),
+                    skip_dff=not s.gtatools_export_all_dff,
+                    skip_txd=not s.gtatools_export_all_txd,
+                    empty_col=empty_col)
+            except RuntimeError as e:
+                self.report({'ERROR'}, str(e))
+                return {'CANCELLED'}
             # Отчёты вложенного оператора Blender в строку состояния / Info не
             # пускает (только в консоль) — итог Export to IMG повторяем здесь:
             # сводку сразу, Mobile — последним (после IDE/IPL).

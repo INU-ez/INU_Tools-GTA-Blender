@@ -6,9 +6,9 @@ from ..core.paths import (
     FlightFile, FlightPath, FlightPoint, write_flight,
     TrackFile, TrackNode, write_track,
     NodesFile, PathNode, NaviNode, PathLink, write_nodes,
-    PathIPLFile, PathIPLGroup, PathIPLNode, write_paths_ipl,
-    PATH_FLAG_ROADBLOCK, PATH_FLAG_TRAFFIC_MASK,
+    PathIPLFile, PathIPLGroup, PathIPLNode, write_paths_ipl, parse_paths_ipl,
 )
+from .path_ipl_props import ensure_point_slots, slot_values
 
 
 def export_flight(filepath: str, objects=None):
@@ -68,7 +68,9 @@ def export_track(filepath: str, obj=None):
 
 
 def export_nodes(filepath: str, objects=None, *, fla4: bool = False,
-                 emit_roadblox: bool = True, emit_connectors: bool = True):
+                 emit_roadblox: bool = True, emit_connectors: bool = True,
+                 bare_nodes=None, collect_only: bool = False,
+                 prepared_nodes=None):
     """Export mesh objects as nodes*.dat. Set ``fla4=True`` to emit the
     extended Fastman Limit Adjuster 4 format.
 
@@ -92,129 +94,44 @@ def export_nodes(filepath: str, objects=None, *, fla4: bool = False,
     listing every node tagged with the `connector` IDProperty. Used by
     FLA mods to bridge regions; harmless to write even without FLA.
     """
-    import base64
+    from .path_nodes_mesh import collect_compiled_nodes, complete_node_objects
     if objects is None:
-        objects = [o for o in bpy.context.selected_objects
-                   if o.type == 'MESH' and o.get('path_type', '').startswith('nodes_')
-                   and o.get('path_type') != 'nodes_viz']
+        objects = complete_node_objects(bpy.context.selected_objects,
+                                        bpy.context.scene.objects)
+    objects = list(objects)
+    nodes_file = (prepared_nodes if prepared_nodes is not None else
+                  collect_compiled_nodes(objects, fla4=fla4))
 
-    nodes_file = NodesFile()
-    nodes_file.fla4 = fla4
-
-    # Reconstruct post-link tail from the first object that has it.
-    # Every object from the same file carries an identical copy of
-    # the file-level metadata, so picking any one is fine.
-    #
-    # Two paths depending on what the importer stored:
-    #   * `parsed_extras=True` — naviLinks / linkLengths / pathIntersections
-    #     are stored as per-index props (`navi_link_{i}`, etc). Read them
-    #     back into lists. Editable round-trip.
-    #   * `extra_data_b64` — raw bytes fallback. Decode to `extra_data`.
     def _arr(obj, name):
-        """Read an array IDProperty as a plain Python list. Returns []
-        if missing. Importer now stores per-node/link arrays in bulk."""
-        v = obj.get(name)
-        return list(v) if v is not None else []
+        return list(obj.get(name, []))
 
-    def _at(arr, i, default=0):
-        return int(arr[i]) if 0 <= i < len(arr) else default
-
-    for obj in objects:
-        if obj.get('parsed_extras', False):
-            nodes_file.navi_links         = [int(v) for v in _arr(obj, 'navi_links')]
-            nodes_file.link_lengths       = [int(v) for v in _arr(obj, 'link_lengths')]
-            nodes_file.path_intersections = [int(v) for v in _arr(obj, 'path_intersections')]
-            nodes_file.parsed_extras = True
-            break
-        b64 = obj.get('extra_data_b64', '')
-        if b64:
-            try:
-                nodes_file.extra_data = base64.b64decode(b64)
-            except Exception as e:
-                print(f"[INU] nodes extra_data decode failed: {e}")
-            break
-
-    # Auto-upgrade FLA4 if any object came from an FLA4 file. Explicit
-    # caller `fla4=True` already on; only flip from False → True here.
-    if not nodes_file.fla4:
-        for obj in objects:
-            if obj.get('fla4', False):
-                nodes_file.fla4 = True
-                break
-
-    for obj in objects:
-        path_type = obj.get('path_type', '')
-        mat_w = obj.matrix_world
-        mesh = obj.data
-
-        # Bulk-read parallel arrays once per object — much faster than
-        # `obj.get(f'node_{i}_link')` × num_nodes which was O(n²)
-        # against the IDProperty dict.
-        node_links  = _arr(obj, 'node_links')
-        node_areas  = _arr(obj, 'node_areas')
-        node_ids    = _arr(obj, 'node_ids')
-        node_widths = _arr(obj, 'node_widths')
-        node_types  = _arr(obj, 'node_types')
-        node_flags  = _arr(obj, 'node_flags')
-
-        for i, vert in enumerate(mesh.vertices):
-            co = mat_w @ vert.co
-            node = PathNode(
-                x=co.x, y=co.y, z=co.z,
-                link_id   = _at(node_links,  i),
-                area_id   = _at(node_areas,  i),
-                node_id   = _at(node_ids,    i, i),
-                path_width= _at(node_widths, i),
-                node_type = _at(node_types,  i),
-                flags     = _at(node_flags,  i),
-                # FLA4 extension fields — currently unused, default 0
-                spawn_probability=0,
-                speed_limit_kmh=0,
-                lane_count_override=0,
-            )
-
-            if path_type == 'nodes_vehicle':
-                nodes_file.vehicle_nodes.append(node)
-            elif path_type == 'nodes_ped':
-                nodes_file.ped_nodes.append(node)
-
-        if path_type == 'nodes_navi':
-            navi_areas = _arr(obj, 'navi_areas')
-            navi_ids   = _arr(obj, 'navi_ids')
-            navi_dx    = _arr(obj, 'navi_dx')
-            navi_dy    = _arr(obj, 'navi_dy')
-            navi_flags = _arr(obj, 'navi_flags')
-            for i, vert in enumerate(mesh.vertices):
-                co = mat_w @ vert.co
-                nodes_file.navi_nodes.append(NaviNode(
-                    x=co.x, y=co.y,
-                    area_id = _at(navi_areas, i),
-                    node_id = _at(navi_ids,   i),
-                    dir_x   = _at(navi_dx,    i),
-                    dir_y   = _at(navi_dy,    i),
-                    flags   = _at(navi_flags, i),
-                ))
-
-    # Restore links from bulk arrays — ONCE, not per-object.
-    # The importer mirrors `link_areas`/`link_nodes`/`num_links` to every
-    # created object (vehicle / ped / navi) so any of them can re-emit
-    # the post-link tail; doing the loop per-object here previously
-    # duplicated the entire Links section 3× and produced corrupt files
-    # (num_links=75249 on round-trip of a 25083-link source).
-    for obj in objects:
-        num_links = int(obj.get('num_links', 0))
-        if num_links <= 0:
-            continue
-        link_areas = _arr(obj, 'link_areas')
-        link_nodes = _arr(obj, 'link_nodes')
-        for i in range(num_links):
-            nodes_file.links.append(PathLink(
-                area_id=_at(link_areas, i),
-                node_id=_at(link_nodes, i),
-            ))
-        break  # one object is enough — they all carry the same data
-
-    n_written = write_nodes(filepath, nodes_file)
+    if bare_nodes is not None:
+        from ..core.paths import merge_bare_nodes
+        merge_bare_nodes(nodes_file, bare_nodes)
+    if collect_only:
+        return nodes_file
+    if prepared_nodes is None and getattr(nodes_file, 'node_remap', {}):
+        raise ValueError('Node IDs changed: export all 64 regions with Export Path Nodes')
+    if getattr(nodes_file, 'topology_changed', False):
+        from ..core.paths_graph import validate_graph_batch
+        area = next(iter({n.area_id for n in nodes_file.vehicle_nodes + nodes_file.ped_nodes}), None)
+        validate_graph_batch({area: nodes_file})
+    if getattr(nodes_file, 'topology_changed', False):
+        # Serialize the complete binary before replacing this destination.
+        # The batch operator has already validated all region binaries.
+        import os
+        import tempfile
+        with tempfile.NamedTemporaryFile(dir=os.path.dirname(os.path.abspath(filepath)),
+                                         prefix='.inu_nodes_', delete=False) as stream:
+            temporary = stream.name
+        try:
+            n_written = write_nodes(temporary, nodes_file)
+            os.replace(temporary, filepath)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    else:
+        n_written = write_nodes(filepath, nodes_file)
 
     # Sibling files written next to the .dat — only if there's data
     # worth writing OR the file would already be expected by the game
@@ -257,30 +174,14 @@ def export_nodes(filepath: str, objects=None, *, fla4: bool = False,
     return n_written
 
 
-def _path_ipl_real_to_full(obj):
-    """Curve point index → pn_<slot>_* slot (same mapping as the
-    path_node_flag operator): the curve holds only nodes with
-    node_type > 0, import stores pn_<slot>_* for every slot incl. padding."""
-    pn_count = int(obj.get('pn_count', 0) or 0)
-    return [j for j in range(pn_count)
-            if int(obj.get(f'pn_{j}_type', 0) or 0) > 0]
-
-
-def _path_ipl_node_props(obj, slot, defaults):
-    """PathIPLNode fields of one node from pn_<slot>_*; slot None → defaults."""
-    if slot is None:
-        return defaults
-    p = f'pn_{slot}_'
-    return dict(
-        area_id=obj.get(p + 'area', defaults['area_id']),
-        unknown=obj.get(p + 'unk', defaults['unknown']),
-        width=obj.get(p + 'width', defaults['width']),
-        left_lanes=obj.get(p + 'll', defaults['left_lanes']),
-        right_lanes=obj.get(p + 'rl', defaults['right_lanes']),
-        median_width=obj.get(p + 'mw', defaults['median_width']),
-        flags=obj.get(p + 'flags', defaults['flags']),
-        spawn_rate=obj.get(p + 'spawn', defaults['spawn_rate']),
-    )
+def _path_ipl_node_props(obj, slot):
+    values = slot_values(obj, slot)
+    return dict(crossing=int(values['cross']), width=float(values['width']),
+                left_lanes=int(values['ll']), right_lanes=int(values['rl']),
+                speed_limit=int(values['speed']), flags=int(values['flags']),
+                spawn_rate=float(values['spawn']),
+                extra_columns=tuple(v.strip() for v in
+                                    obj.get(f'pn_{slot}_extra', '').split(',') if v.strip()))
 
 
 def export_paths_ipl(filepath: str, objects=None):
@@ -293,49 +194,60 @@ def export_paths_ipl(filepath: str, objects=None):
         objects = [o for o in bpy.context.selected_objects
                    if o.type == 'CURVE' and o.get('path_type') == 'path_ipl']
 
-    data = PathIPLFile()
+    games = {obj.get('pn_game', 'VC') for obj in objects}
+    if len(games) > 1:
+        raise ValueError('Cannot export mixed III/VC path formats to one file')
+    data = PathIPLFile(game=next(iter(games), 'VC'))
 
     for obj in sorted(objects, key=lambda o: o.get('group_index', 0)):
         group_type = obj.get('group_type', 1)
         mat_w = obj.matrix_world
 
-        # Collect all curve points
-        all_points = []
-        for spline in obj.data.splines:
-            for point in spline.points:
-                co = mat_w @ point.co.to_3d()
-                all_points.append(co)
+        pairs = ensure_point_slots(obj)
+        all_points = [mat_w @ (point.co.to_3d() if hasattr(point.co, 'to_3d')
+                              else point.co) for point, _ in pairs]
+        if obj.get('pn_legacy_import_scale'):
+            all_points = [co / 16.0 for co in all_points]
 
         if not all_points:
             continue
 
-        # Get default node properties from object
-        def_width = obj.get('pn_0_width', 1)
-        def_ll = obj.get('pn_0_ll', 1)
-        def_rl = obj.get('pn_0_rl', 1)
-        def_mw = obj.get('pn_0_mw', 0)
-        def_flags = obj.get('pn_0_flags', 1)
-        def_spawn = obj.get('pn_0_spawn', 0)
+        all_nodes = [(co, _path_ipl_node_props(obj, slot))
+                     for co, (_, slot) in zip(all_points, pairs)]
 
-        # Roadblock / traffic light are per-point toggles (path_node_flag):
-        # points past the slots and synthesized link nodes don't inherit
-        # them from node 0.
-        fill_flags = int(def_flags) & ~(PATH_FLAG_ROADBLOCK
-                                        | PATH_FLAG_TRAFFIC_MASK)
+        # Keep the imported link graph, external nodes and padding when
+        # topology is unchanged. The previous exporter rebuilt every
+        # vanilla graph into a chain even for an untouched curve.
+        raw = obj.get('pn_original_group', '')
+        imported_slots = list(obj.get('pn_import_slots', []))
+        if raw and imported_slots == [slot for _, slot in pairs]:
+            original = parse_paths_ipl(('path\n' + raw + 'end\n').encode('utf-8'),
+                                       game=data.game)
+            group = original.groups[0]
+            group.group_type = group_type
+            group.external_index = int(obj.get('external_index', -1))
+            group.model_name = obj.get('pn_model_name', '')
+            imported_positions = list(obj.get('pn_import_positions', []))
+            for index, (co, props) in enumerate(all_nodes):
+                node = group.nodes[imported_slots[index]]
+                base = imported_positions[index * 3:index * 3 + 3]
+                if len(base) == 3:
+                    for key, value, before in zip(('x', 'y', 'z'), (co.x, co.y, co.z), base):
+                        delta = value - before
+                        if abs(delta) > 1e-7:
+                            setattr(node, key, getattr(node, key) + delta)
+                for key, value in props.items():
+                    setattr(node, key, value)
+                values = slot_values(obj, imported_slots[index])
+                node.node_type = int(values['type'])
+                node.link_id = int(values['link'])
+            data.groups.append(group)
+            data._prefix = data._prefix or obj.get('pn_source_prefix', '')
+            data._suffix = obj.get('pn_source_suffix', 'end\n')
+            continue
 
-        # Each point keeps its own imported node (pn_<slot>_*); points past
-        # the imported slots (added later) get node 0's values minus those
-        # toggles.
-        defaults = dict(area_id=0, unknown=0.0, width=def_width,
-                        left_lanes=def_ll, right_lanes=def_rl,
-                        median_width=def_mw, flags=fill_flags,
-                        spawn_rate=def_spawn)
-        real_to_full = _path_ipl_real_to_full(obj)
-        all_nodes = [
-            (co, _path_ipl_node_props(
-                obj, real_to_full[k] if k < len(real_to_full) else None,
-                defaults))
-            for k, co in enumerate(all_points)]
+        if data.game == 'III':
+            raise ValueError('III paths belong to an IDE model and cannot be generated as detached IPL groups')
 
         # Max internal nodes per group = 10 (slot 0-9 internal, 10-11 for external links)
         MAX_INTERNAL = 10
@@ -361,20 +273,16 @@ def export_paths_ipl(filepath: str, objects=None):
             if ci < len(chunks) - 1:
                 next_co = chunks[ci + 1][0][0]
                 group.nodes.append(PathIPLNode(
-                    node_type=1, link_id=0, area_id=0,
+                    node_type=1, link_id=0,
                     x=next_co.x, y=next_co.y, z=next_co.z,
-                    width=def_width, left_lanes=def_ll, right_lanes=def_rl,
-                    flags=fill_flags,
                 ))
 
             # External link to previous group (type=1)
             if ci > 0:
                 prev_co = chunks[ci - 1][-1][0]
                 group.nodes.append(PathIPLNode(
-                    node_type=1, link_id=len(chunk) - 1, area_id=0,
+                    node_type=1, link_id=len(chunk) - 1,
                     x=prev_co.x, y=prev_co.y, z=prev_co.z,
-                    width=def_width, left_lanes=def_ll, right_lanes=def_rl,
-                    flags=fill_flags,
                 ))
 
             data.groups.append(group)

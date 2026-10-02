@@ -160,7 +160,7 @@ def test_execute_copies_get_one_id(fake_pkg):
     # by name: LODtree, bush, rock, tree, tree.001, tree.002, tree_col
     assert got == {'LODtree': 20000, 'bush': 20001, 'rock': 20002,
                    'tree': 20003, 'tree.001': 20003, 'tree.002': 20003,
-                   'tree_col': 20003}
+                   'tree_col': 0}
     assert op.reports[-1] == ({'INFO'}, "Изменено: 7")
 
 
@@ -168,6 +168,13 @@ def test_execute_unchecked_same_id_for_all(fake_pkg):
     ctx = _ctx('a', 'b', 'a.001')
     _Op(model_id_sequential=False, model_id=777).execute(ctx)
     assert [o.inu.model_id for o in ctx.selected_objects] == [777, 777, 777]
+
+
+def test_sequential_collision_does_not_take_slot_or_change_id(fake_pkg):
+    ctx = _ctx('a_col', 'b', 'c')
+    ctx.selected_objects[0].inu.model_id = 123
+    _Op(model_id=500).execute(ctx)
+    assert [o.inu.model_id for o in ctx.selected_objects] == [123, 500, 501]
 
 
 def test_draw_range_counts_models(fake_pkg):

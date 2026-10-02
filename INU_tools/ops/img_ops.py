@@ -2453,6 +2453,28 @@ def _img_report_path(blend_path):
     return os.path.join(os.path.dirname(blend_path), "_export_report.txt")
 
 
+def _export_lod_routes(context, groups, routes, want, lod_src=None):
+    """Archive of each enabled LOD (including a scene LOD not selected)."""
+    from ..core.img_routing import lod_routes
+    from ..tools.model_utils import find_related_models
+    plan = {e.model_name: e for e in context.window_manager.gtatools_txd_export_plan}
+    own = {}
+    for base, models in groups.items():
+        if not want(base):
+            continue
+        if lod_src is not None:
+            src = lod_src(base, models)
+        else:
+            entry = plan.get(base)
+            src = (bpy.data.objects.get(entry.lod_name)
+                   if entry is not None and entry.lod_found else None)
+            src = src or models['LOD'] or find_related_models(base).get('LOD')
+        tf = (getattr(getattr(src, 'inu', None), 'img_target_file', '') or ''
+              if src is not models['DFF'] else '')
+        own[base] = bpy.path.abspath(tf) if tf else ''
+    return lod_routes(own, {b: a for a, bases in routes.items() for b in bases})
+
+
 # Export to IMG: модели (base), не легшие ни в один архив (нет архива /
 # архив отказал). All → IMG тогда не пишет IDE/IPL: строки на модели, которых
 # нет в IMG. Заполняется заново каждым execute.
@@ -2625,12 +2647,15 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
         layout.prop(scn.inu_settings, "gtatools_export_img_target",
                     text=T("IMG для моделей без своего"))
         plan = {e.model_name: e for e in wm.gtatools_txd_export_plan}
+        groups = find_all_selected_model_groups()
         routes, no_arch = _export_routes(
-            context, find_all_selected_model_groups(),
+            context, groups,
             want=lambda b: b not in plan or plan[b].include
             or plan[b].inc_lod or plan[b].inc_col,
             target_img=self.target_img)
         dest = {b: os.path.basename(a) for a, bs in routes.items() for b in bs}
+        lod_dest, no_lod_arch = _export_lod_routes(
+            context, groups, routes, lambda b: b in plan and plan[b].inc_lod)
         info = layout.box()
         for arch, bases in routes.items():
             info.label(text=f"{os.path.basename(arch)} — {T('Моделей:')} {len(bases)}",
@@ -2676,9 +2701,12 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
             r2.prop(entry, "inc_lod", text="")
             rs2 = r2.row(align=True)
             rs2.active = entry.inc_lod
+            _lod_to = os.path.basename(lod_dest.get(entry.model_name, '')) or (
+                T("нет архива") if entry.model_name in no_lod_arch else '')
             rs2.label(
-                text=("LOD: " + entry.lod_name) if entry.lod_found
-                else T("LOD: основная модель (заглушка)"),
+                text=(("LOD: " + entry.lod_name) if entry.lod_found
+                      else T("LOD: основная модель (заглушка)"))
+                     + (f"  → {_lod_to}" if _lod_to else ''),
                 **inu_icon(safe_icon('MOD_DECIM')))
             # COL (с отступом).
             r3 = mb.row(align=True)
@@ -2728,6 +2756,7 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
 
         wm = context.window_manager
         plan_by_name = {}
+        active_main = active_lod = None   # set after checking every archive
         for entry in wm.gtatools_txd_export_plan:
             plan_by_name[entry.model_name] = entry
 
@@ -2737,15 +2766,18 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
         def _is_included(base):
             # DFF (и TXD) модели включены.
             e = _plan_entry(base)
-            return e.include if e is not None else True
+            return (e.include if e is not None else True) and (
+                active_main is None or base in active_main)
 
         def _inc_lod(base):
             e = _plan_entry(base)
-            return bool(e.inc_lod) if e is not None else False
+            return bool(e is not None and e.inc_lod) and (
+                active_lod is None or base in active_lod)
 
         def _inc_col(base):
             e = _plan_entry(base)
-            return bool(e.inc_col) if e is not None else False
+            return bool(e is not None and e.inc_col) and (
+                active_main is None or base in active_main)
 
         def _want_group(base):
             # Группу вообще обрабатываем, если включена хоть одна её часть.
@@ -2834,12 +2866,21 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
         # строкой в отчёте, остальные пишутся.
         routes, no_arch = _export_routes(context, model_groups, _want_group,
                                          self.target_img)
+        main_arch = {b: a for a, bases in routes.items() for b in bases}
+        lod_arch, no_lod_arch = _export_lod_routes(
+            context, model_groups, routes,
+            lambda b: _inc_lod(b) or (_is_included(b) and not self.skip_txd
+                                     and model_groups[b]['LOD'] is not None), _lod_src)
+        # LOD-only archives take the same format / writable pre-check as HD.
+        for a in lod_arch.values():
+            routes.setdefault(a, [])
         _export_unwritten.clear()
         _export_unwritten.update(no_arch)
+        _export_unwritten.update(no_lod_arch)
         if no_arch and not routes:
             self.report({'ERROR'}, T("Укажите путь к .img архиву"))
             return {'CANCELLED'}
-        _routed = {b for bs in routes.values() for b in bs}
+        _routed = {b for bs in routes.values() for b in bs} | set(lod_arch)
         model_groups = {b: m for b, m in model_groups.items() if b in _routed}
 
         # Корзины TXD — один раз: для проверки имён, прогресса, чтения
@@ -2948,6 +2989,8 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
                 # Проба записи сразу: запущенная игра даёт читать, но не
                 # писать — иначе «занят» выяснится после сборки DFF/TXD.
                 open(img_path, 'r+b').close()
+                if detect_img_version(img_path) != IMG_VERSION_2:
+                    open(_sibling_dir_path(img_path), 'r+b').close()
             except PermissionError:
                 # Архив держит игра / IMG-редактор — та же подсказка, что ниже.
                 _err = ({'WARNING'}, T(
@@ -2970,16 +3013,21 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
             if _err:
                 arch_fail.append(_err)
                 _export_unwritten.update(routes[img_path])
+                _export_unwritten.update(b for b, a in lod_arch.items() if a == img_path)
                 del routes[img_path]
         if arch_fail and not routes:
             for _lvl, _msg in arch_fail:
                 self.report(_lvl, _msg)
             return {'CANCELLED'}
-        _routed = {b for bs in routes.values() for b in bs}
+        active_main = {b for b, a in main_arch.items() if a in routes}
+        active_lod = {b for b, a in lod_arch.items() if a in routes}
+        _routed = active_main | active_lod
         model_groups = {b: m for b, m in model_groups.items() if b in _routed}
 
         results = [T("«{0}»: нет IMG-архива — выберите архив в окне").format(_b)
                    for _b in no_arch]
+        results += [T("«{0}»: IMG LOD не найден — LOD пропущен").format(_b)
+                    for _b in no_lod_arch]
         for _n in _lod_off_layer:
             results.append(T("{0}: LOD не в слое вида — его текстуры не записаны").format(_n))
 
@@ -2987,20 +3035,42 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
         # объекта-источника (TXD, библиотека COL) — архив его модели, у
         # моделей пропущенного архива тоже.
         arch_of_entry, arch_of_obj = {}, {}
+        lod_entry_targets, extra_arch_of_obj = defaultdict(list), defaultdict(list)
         for img_path, _bases in _all_routes.items():
             for _b in _bases:
                 _m = _all_groups[_b]
                 # Имя LOD — только у записываемого LOD (в III/VC его расчёт
                 # обходит сцену).
-                for _fn in ([_b + '.dff']
-                            + ([_lod_file(_b, _m) + '.dff'] if _inc_lod(_b) else [])
-                            + [_b + '.col']):
+                for _fn in ([_b + '.dff', _b + '.col']):
                     if img_path in routes:
                         arch_of_entry.setdefault(_fn.lower(), img_path)
-                for _o in (_m['DFF'], _m['LOD'], _m['COL'],
-                           _lod_src(_b, _m), _col_src(_b, _m)):
+                for _o in (_m['DFF'], _m['COL'], _col_src(_b, _m)):
                     if _o is not None:
                         arch_of_obj.setdefault(_o.name, img_path)
+
+        required_txd = defaultdict(list)
+        for _b, _a in lod_arch.items():
+            _m = _all_groups[_b]
+            _o = _lod_src(_b, _m)
+            if _a in routes and _inc_lod(_b):
+                _fn = (_lod_file(_b, _m) + '.dff').lower()
+                arch_of_entry.setdefault(_fn, _a)
+                if _a not in lod_entry_targets[_fn]:
+                    lod_entry_targets[_fn].append(_a)
+            if _o is not None and _o is not _m['DFF']:
+                arch_of_obj[_o.name] = _a
+                if _a not in extra_arch_of_obj[_o.name]:
+                    extra_arch_of_obj[_o.name].append(_a)
+                # A full TXD bucket, never a partial same-named dictionary.
+                required_txd[(_lod_txd(_b, _m, _o) + '.txd').lower()].append(_a)
+        # A selected LOD can contribute textures even with its DFF toggle off.
+        for _b, _m in _all_groups.items():
+            _o = _lod_src(_b, _m)
+            if _o is not None and _o is not _m['DFF'] and _o.name not in arch_of_obj:
+                _tf = getattr(getattr(_o, 'inu', None), 'img_target_file', '') or ''
+                arch_of_obj[_o.name] = bpy.path.abspath(_tf) if _tf else main_arch.get(_b, '')
+            if _m['DFF'] is not None and _m['DFF'].name not in arch_of_obj:
+                arch_of_obj[_m['DFF'].name] = main_arch.get(_b, '')
 
         from ..core.img_routing import shared_targets
         _mixed = {}   # общая запись моделей из разных архивов → её архивы
@@ -3013,10 +3083,15 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
             # Пропущенный архив целью не станет, но решает: запись там есть
             # (не прочитан — считаем, что есть) — новую не создаём, строка.
             # Записываемые — первыми: «архив первой модели» — из них.
-            users = sorted((arch_of_obj[o.name] for o in objs),
+            users = sorted((a for o in objs for a in extra_arch_of_obj.get(
+                o.name, [arch_of_obj[o.name]])),
                            key=lambda a: a not in routes)
+            required = (required_txd.get(entry.lower(), ())
+                        if all(any(a in routes for a in extra_arch_of_obj.get(
+                            o.name, [arch_of_obj[o.name]])) for o in objs) else ())
             out = [a for a in shared_targets(
-                users, lambda a: entry.lower() in arch_names.get(a, {entry.lower()}))
+                users, lambda a: entry.lower() in arch_names.get(a, {entry.lower()}),
+                required=required)
                 if a in routes]
             if not out:
                 results.append(T("{0}: не записан — пропущен архив {1}").format(
@@ -3031,7 +3106,8 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
         txd_targets = {}
         for _n in list(txd_buckets):
             _users = txd_buckets[_n]
-            txd_buckets[_n] = [o for o in _users if arch_of_obj.get(o.name) in routes]
+            txd_buckets[_n] = [o for o in _users if any(a in routes for a in
+                extra_arch_of_obj.get(o.name, [arch_of_obj.get(o.name)]))]
             if txd_buckets[_n]:
                 txd_targets[_n] = _targets(_n + '.txd', _users)
             if not txd_targets.get(_n):
@@ -3119,6 +3195,7 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
                 # archive (txd_targets).
                 encode_jobs: list = []  # (filename, callable_returning_bytes, label)
                 lod_files = set()  # имена LOD-файлов — для счётчика n_lod
+                lod_encoded = set()  # a shared LOD is built once, written to each target
                 # «В IMG» после записи: (имя .dff, объект) + что реально легло.
                 stamp_jobs = []
                 # Сначала всё собрать, затем одна сессия ImgWriter на архив:
@@ -3146,7 +3223,9 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
                         # Источник LOD: найденный в сцене LOD, иначе — копия
                         # основной модели (заглушка) под LOD-именем.
                         lod_obj = _lod_src(base_name, models)
-                        if lod_obj is None:
+                        if lod_name + '.dff' in lod_encoded:
+                            _tick(lod_name + '.dff')
+                        elif lod_obj is None:
                             results.append(f"{lod_name}.dff: нет геометрии-источника")
                         else:
                             try:
@@ -3160,6 +3239,7 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
                                             g.is_native_ogl = True
                                     clump.is_mobile = True
                                 encode_jobs.append((lod_name + '.dff', clump.to_bytes, f"{lod_name}.dff"))
+                                lod_encoded.add(lod_name + '.dff')
                                 # Заглушка (копия основной модели) статус не даёт.
                                 if lod_obj is not models['DFF']:
                                     stamp_jobs.append((lod_name + '.dff', lod_obj))
@@ -3254,8 +3334,9 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
                         for filename, label, fut in futures:
                             try:
                                 data = fut.result()
-                                arch_files[arch_of_entry[filename.lower()]].append(
-                                    (filename, data, "", ""))
+                                for _a in lod_entry_targets.get(
+                                        filename.lower(), [arch_of_entry[filename.lower()]]):
+                                    arch_files[_a].append((filename, data, "", ""))
                             except Exception as e:
                                 results.append(f"{filename} error: {e}")
                             _tick(label)
@@ -3368,6 +3449,7 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
                             "Файл .img занят — закрой игру перед экспортом: {0}").format(
                                 os.path.basename(img_path))))
                         _export_unwritten.update(routes[img_path])
+                        _export_unwritten.update(b for b, a in lod_arch.items() if a == img_path)
                         continue
                     except (ValueError, OSError) as e:
                         # Не IMG / битая шапка («Not a VER2») / ошибка диска.
@@ -3376,6 +3458,7 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
                             "IMG: не удалось записать {0}: {1}").format(
                                 os.path.basename(img_path), e)))
                         _export_unwritten.update(routes[img_path])
+                        _export_unwritten.update(b for b, a in lod_arch.items() if a == img_path)
                         continue
                     written_by[img_path] = written
 
@@ -3412,6 +3495,19 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
             for _lvl, _msg in arch_fail:
                 self.report(_lvl, _msg)
             return {'CANCELLED'}
+        # A failed LOD write makes its model's IDE/IPL export incomplete too.
+        for _b, _m in _all_groups.items():
+            _e = _plan_entry(_b)
+            if _inc_lod(_b):
+                _a = lod_arch.get(_b, '')
+                if (_lod_file(_b, _m) + '.dff').lower() not in written_by.get(_a, ()):
+                    _export_unwritten.add(_b)
+                if _e.include and not self.skip_txd:
+                    _o = _lod_src(_b, _m)
+                    if _o is not None and _o is not _m['DFF']:
+                        _txd = (_lod_txd(_b, _m, _o) + '.txd').lower()
+                        if _txd not in written_by.get(_a, ()):
+                            _export_unwritten.add(_b)
         # Сбой архива и куда легла общая запись — в начало: строка отчёта
         # показывает только первые 6.
         _head = [_msg for _lvl, _msg in arch_fail]
@@ -3494,5 +3590,3 @@ class GTATOOLS_OT_export_to_img(bpy.types.Operator):
             ({'INFO'}, f"IMG: {summary}{preview}{more}") if results
             else ({'WARNING'}, T("IMG: нет результатов экспорта"))))
         return {'FINISHED'}
-
-

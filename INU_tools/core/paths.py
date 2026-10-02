@@ -1,8 +1,8 @@
 """
-GTA SA path file readers/writers.
+GTA path file readers/writers (III/VC text paths, SA compiled nodes).
 
 Supported formats:
-  - paths.ipl   — path definitions for gta.dat (text, groups of 12 nodes)
+  - paths.ipl / IDE path sections — text groups of 12 nodes (VC / III)
   - tracks.dat  — train rail paths (text)
   - nodes*.dat  — compiled ped/vehicle navigation nodes (binary)
 
@@ -98,7 +98,9 @@ def write_flight(filepath: str, data: FlightFile) -> int:
 # Text file format (IPL with 'path' section):
 #   path
 #   GroupType, ExternalIndex     ← 0=ped, 1=vehicle
-#   <tab>NodeType, LinkID, AreaID, X, Y, Z, Unknown, Width, LeftLanes, RightLanes, MedianWidth, Flags, SpawnRate
+#   Type, Next, Crossing, X, Y, Z, Width, LeftLanes, RightLanes,
+#   Speed, Flags, SpawnRate (VC). III IDE paths use the first 7/9 fields.
+# Coordinates are stored in sixteenths of a world unit, not metres.
 #   ...exactly 12 nodes per group...
 #   end
 #
@@ -113,17 +115,20 @@ class PathIPLNode:
     """One node in a paths.ipl group."""
     node_type: int = 0       # 0=empty, 1=external, 2=internal
     link_id: int = -1        # Next node index (-1 = none)
-    area_id: int = 0
+    crossing: int = 0
     x: float = 0.0
     y: float = 0.0
     z: float = 0.0
-    unknown: float = 0.0
-    width: int = 1
+    width: float = 1.0
     left_lanes: int = 1
     right_lanes: int = 1
-    median_width: int = 0
-    flags: int = 1
-    spawn_rate: int = 0
+    speed_limit: int = 0
+    flags: int = 0
+    spawn_rate: float = 1.0
+    # Columns beyond the game's parser are retained, never interpreted.
+    extra_columns: tuple = field(default_factory=tuple)
+    _raw: str = field(default='', repr=False, compare=False)
+    _original: tuple = field(default_factory=tuple, repr=False, compare=False)
 
 
 @dataclass
@@ -132,154 +137,178 @@ class PathIPLGroup:
     group_type: int = 1      # 0=ped, 1=vehicle
     external_index: int = -1
     nodes: List[PathIPLNode] = field(default_factory=list)
+    model_name: str = ''
+    _raw_header: str = field(default='', repr=False, compare=False)
+    _original_header: tuple = field(default_factory=tuple, repr=False, compare=False)
 
 
 @dataclass
 class PathIPLFile:
     """Collection of path groups from a paths.ipl file."""
     groups: List[PathIPLGroup] = field(default_factory=list)
+    game: str = 'VC'
+    _source: bytes = field(default=b'', repr=False, compare=False)
+    _original: tuple = field(default_factory=tuple, repr=False, compare=False)
+    _prefix: str = field(default='', repr=False, compare=False)
+    _suffix: str = field(default='end\n', repr=False, compare=False)
 
 
 # ── PathIPLNode.flags bit constants ─────────────────────────────────
 #
-# Based on SA path-node reverse-engineering (GTAMods wiki, Fastman92):
-#   bits 0-3   : speed limit           (0 = slow, higher = faster)
-#   bits 4-7   : special behaviour     (traffic lights encoded here)
-#   bits 8-11  : traffic light kind    (0 none, 1 normal, 2 rail, 3 bus)
-#   bit 12     : roadblock             (cops spawn barriers here)
-#   bits 13-15 : reserved
-
-PATH_FLAG_ROADBLOCK       = 1 << 12
-PATH_FLAG_TRAFFIC_MASK    = 0xF << 8
-PATH_FLAG_TRAFFIC_SHIFT   = 8
-PATH_FLAG_SPEED_MASK      = 0xF
-PATH_FLAG_BEHAVIOUR_MASK  = 0xF << 4
-PATH_FLAG_BEHAVIOUR_SHIFT = 4
-
-TRAFFIC_LIGHT_NONE   = 0
-TRAFFIC_LIGHT_NORMAL = 1
-TRAFFIC_LIGHT_RAIL   = 2
-TRAFFIC_LIGHT_BUS    = 3
+# reVC FileLoader::LoadCarPathNode: flags&1 = disabled, &2 = roadblock,
+# &4 = between levels. Speed has its own column. Traffic-light types are
+# assigned at runtime from traffic-light objects, NOT packed in IPL flags.
+PATH_FLAG_DISABLED       = 1
+PATH_FLAG_ROADBLOCK       = 2
+PATH_FLAG_BETWEEN_LEVELS  = 4
+# Deprecated names: no IPL traffic-light bits exist.
+PATH_FLAG_TRAFFIC_MASK    = 0
+PATH_FLAG_TRAFFIC_SHIFT   = 0
 
 
 def decode_node_flags(flags: int) -> dict:
     """Expand the packed flags int into a readable dict."""
     return {
-        'speed_limit': flags & PATH_FLAG_SPEED_MASK,
-        'behaviour': (flags & PATH_FLAG_BEHAVIOUR_MASK) >> PATH_FLAG_BEHAVIOUR_SHIFT,
-        'traffic_light': (flags & PATH_FLAG_TRAFFIC_MASK) >> PATH_FLAG_TRAFFIC_SHIFT,
+        'disabled': bool(flags & PATH_FLAG_DISABLED),
+        'between_levels': bool(flags & PATH_FLAG_BETWEEN_LEVELS),
         'roadblock': bool(flags & PATH_FLAG_ROADBLOCK),
     }
 
 
-def encode_node_flags(*, speed_limit: int = 0, behaviour: int = 0,
-                      traffic_light: int = 0, roadblock: bool = False,
+def encode_node_flags(*, disabled: bool = False, between_levels: bool = False,
+                      roadblock: bool = False,
                       keep_bits: int = 0) -> int:
     """Pack individual fields back into the flags int. `keep_bits` lets
     callers preserve unknown bits read from an existing file."""
-    v = keep_bits & ~(PATH_FLAG_SPEED_MASK | PATH_FLAG_BEHAVIOUR_MASK
-                      | PATH_FLAG_TRAFFIC_MASK | PATH_FLAG_ROADBLOCK)
-    v |= speed_limit & PATH_FLAG_SPEED_MASK
-    v |= (behaviour << PATH_FLAG_BEHAVIOUR_SHIFT) & PATH_FLAG_BEHAVIOUR_MASK
-    v |= (traffic_light << PATH_FLAG_TRAFFIC_SHIFT) & PATH_FLAG_TRAFFIC_MASK
+    v = keep_bits & ~(PATH_FLAG_DISABLED | PATH_FLAG_BETWEEN_LEVELS
+                      | PATH_FLAG_ROADBLOCK)
+    if disabled:
+        v |= PATH_FLAG_DISABLED
+    if between_levels:
+        v |= PATH_FLAG_BETWEEN_LEVELS
     if roadblock:
         v |= PATH_FLAG_ROADBLOCK
     return v
 
 
-def read_paths_ipl(filepath: str) -> PathIPLFile:
-    """Parse a paths.ipl file (path section only)."""
-    result = PathIPLFile()
+def _ipl_node_state(n):
+    return (n.node_type, n.link_id, n.crossing, n.x, n.y, n.z, n.width,
+            n.left_lanes, n.right_lanes, n.speed_limit, n.flags,
+            n.spawn_rate, tuple(n.extra_columns))
 
-    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-        lines = f.readlines()
 
+def _ipl_file_state(data):
+    return (data.game, tuple((g.group_type, g.external_index, g.model_name,
+                             tuple(_ipl_node_state(n) for n in g.nodes))
+                            for g in data.groups))
+
+
+def read_paths_ipl(filepath: str, *, game: str = 'VC') -> PathIPLFile:
+    """Read path sections (VC IPL or III IDE), in world coordinates.
+
+    Keep original bytes for an unchanged round trip. III's IPL PATH loader
+    is unfinished; its working paths live in IDE files (re3 FileLoader).
+    """
+    with open(filepath, 'rb') as f:
+        source = f.read()
+    return parse_paths_ipl(source, game=game)
+
+
+def parse_paths_ipl(source: bytes, *, game: str = 'VC') -> PathIPLFile:
+    result = PathIPLFile(game=game.upper(), _source=source)
+    lines = source.decode('utf-8', errors='replace').splitlines(keepends=True)
     in_path = False
-    current_group = None
-
-    for raw_line in lines:
-        line = raw_line.strip()
-
-        if line == 'path':
+    group = None
+    for index, raw in enumerate(lines):
+        line = raw.split('#', 1)[0].strip()
+        if line.lower() == 'path':
             in_path = True
+            if not result._prefix:
+                result._prefix = ''.join(lines[:index + 1])
             continue
-        if line == 'end' and in_path:
-            if current_group and current_group.nodes:
-                result.groups.append(current_group)
-                current_group = None
+        if line.lower() == 'end' and in_path:
+            result._suffix = ''.join(lines[index:])
             in_path = False
+            group = None
             continue
-        if not in_path:
+        if not in_path or not line:
             continue
-
-        # Tab-indented = node line, otherwise = group header
-        if raw_line.startswith('\t') or raw_line.startswith('  '):
-            # Node line
-            if current_group is None:
-                continue
-            parts = [p.strip() for p in line.split(',')]
-            if len(parts) >= 13:
-                try:
-                    node = PathIPLNode(
-                        node_type=int(parts[0]),
-                        link_id=int(parts[1]),
-                        area_id=int(parts[2]),
-                        x=float(parts[3]),
-                        y=float(parts[4]),
-                        z=float(parts[5]),
-                        unknown=float(parts[6]),
-                        width=int(parts[7]),
-                        left_lanes=int(parts[8]),
-                        right_lanes=int(parts[9]),
-                        median_width=int(parts[10]),
-                        flags=int(parts[11]),
-                        spawn_rate=int(parts[12]),
-                    )
-                    current_group.nodes.append(node)
-                except ValueError:
-                    continue
-        else:
-            # Group header: GroupType, ExternalIndex
-            if current_group and current_group.nodes:
-                result.groups.append(current_group)
-            parts = [p.strip() for p in line.split(',')]
-            if len(parts) >= 2:
-                try:
-                    current_group = PathIPLGroup(
-                        group_type=int(parts[0]),
-                        external_index=int(parts[1]),
-                    )
-                except ValueError:
-                    current_group = None
-
-    if current_group and current_group.nodes:
-        result.groups.append(current_group)
-
+        parts = line.replace(',', ' ').split()
+        if group is None or len(group.nodes) == NODES_PER_GROUP:
+            kind = {'ped': 0, 'car': 1, 'boat': 2}.get(parts[0].lower())
+            if kind is None:
+                kind = int(parts[0])
+            group = PathIPLGroup(kind, int(parts[1]),
+                                 model_name=parts[2] if len(parts) > 2 else '')
+            group._raw_header = raw
+            group._original_header = (kind, group.external_index, group.model_name)
+            result.groups.append(group)
+            continue
+        if len(parts) < 7:
+            raise ValueError('Path node needs at least seven columns')
+        node = PathIPLNode(
+            node_type=int(parts[0]), link_id=int(parts[1]), crossing=int(parts[2]),
+            x=float(parts[3]) / 16.0, y=float(parts[4]) / 16.0,
+            z=float(parts[5]) / 16.0, width=float(parts[6]),
+            left_lanes=int(parts[7]) if len(parts) > 7 else 0,
+            right_lanes=int(parts[8]) if len(parts) > 8 else 0,
+            speed_limit=int(parts[9]) if len(parts) > 9 else 0,
+            flags=int(parts[10]) if len(parts) > 10 else 0,
+            spawn_rate=float(parts[11]) if len(parts) > 11 else 1.0,
+            extra_columns=tuple(parts[12:]), _raw=raw)
+        node._original = _ipl_node_state(node)
+        group.nodes.append(node)
+    result._original = _ipl_file_state(result)
     return result
 
 
 def write_paths_ipl(filepath: str, data: PathIPLFile) -> int:
     """Write path groups to a paths.ipl file. Returns group count."""
-    with open(filepath, 'w', encoding='utf-8', newline='\n') as f:
-        f.write('# IPL generated by INU Tools\n')
-        f.write('inst\nend\ncull\nend\npath\n')
+    if data._source and _ipl_file_state(data) == data._original:
+        with open(filepath, 'wb') as f:
+            f.write(data._source)
+        return len(data.groups)
+
+    # Fixed decimal notation retains vanilla's tenths/thousandths without
+    # the .4g truncation at map coordinates. No scientific notation.
+    def number(value):
+        return format(float(value), '.6f').rstrip('0').rstrip('.') or '0'
+
+    with open(filepath, 'w', encoding='utf-8', newline='') as f:
+        f.write(data._prefix or '# IPL generated by INU Tools\ninst\nend\ncull\nend\npath\n')
 
         for group in data.groups:
-            f.write(f"{group.group_type}, {group.external_index}\n")
+            header = (group.group_type, group.external_index, group.model_name)
+            if group._raw_header and header == group._original_header:
+                f.write(group._raw_header)
+            else:
+                kind = ({0: 'ped', 1: 'car', 2: 'boat'}[group.group_type]
+                        if data.game == 'III' else str(group.group_type))
+                name = ', ' + group.model_name if group.model_name else ''
+                f.write(f"{kind}, {group.external_index}{name}\n")
 
             # Write nodes, pad to 12
             for i in range(NODES_PER_GROUP):
                 if i < len(group.nodes):
                     n = group.nodes[i]
-                    f.write(f"\t{n.node_type}, {n.link_id}, {n.area_id}, "
-                            f"{n.x:.4g}, {n.y:.4g}, {n.z:.6g}, {n.unknown:.4g}, "
-                            f"{n.width}, {n.left_lanes}, {n.right_lanes}, "
-                            f"{n.median_width}, {n.flags}, {n.spawn_rate}\n")
+                    if n._raw and _ipl_node_state(n) == n._original:
+                        f.write(n._raw)
+                        continue
+                    values = [n.node_type, n.link_id, n.crossing,
+                              number(n.x * 16), number(n.y * 16), number(n.z * 16),
+                              number(n.width)]
+                    if data.game != 'III' or group.group_type != 0:
+                        values.extend([n.left_lanes, n.right_lanes])
+                    if data.game != 'III':
+                        values.extend([n.speed_limit, n.flags, number(n.spawn_rate)])
+                        values.extend(n.extra_columns)
+                    f.write('\t' + ', '.join(map(str, values)) + '\n')
                 else:
                     # Empty node
-                    f.write("\t0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0\n")
+                    tail = (', 0, 0' if group.group_type != 0 else '') if data.game == 'III' else ', 0, 0, 0, 0, 1'
+                    f.write('\t0, -1, 0, 0, 0, 0, 0' + tail + '\n')
 
-        f.write('end\n')
+        f.write(data._suffix)
 
     return len(data.groups)
 
@@ -674,6 +703,70 @@ def split_nodes_by_area(points, fla4: bool = False) -> dict:
             node.node_id = i
     return zones
 
+
+def merge_bare_nodes(target, extra, *, area_id=None, allow_reindex=False):
+    """Merge a region, returning the shifted (area, index) -> index map.
+
+    SA addresses index the physical node array, vehicle nodes before peds.
+    Inserting vehicles therefore shifts imported peds. The caller must
+    cover incoming references in neighbouring exported files before
+    opting into reindexing. Unknown raw-tail formats cannot be reindexed.
+    New nodes remain disconnected, as with split_nodes_by_area.
+    """
+    if area_id is None:
+        areas = {n.area_id for n in extra.vehicle_nodes + extra.ped_nodes}
+        if len(areas) != 1:
+            raise ValueError('Bare nodes must belong to one region')
+        area_id = areas.pop()
+    old_vehicle_count = len(target.vehicle_nodes)
+    added_vehicle_count = len(extra.vehicle_nodes)
+    original = target.vehicle_nodes + target.ped_nodes
+    if len(original) + len(extra.vehicle_nodes) + len(extra.ped_nodes) > 65536:
+        raise ValueError('Too many nodes in one path region')
+    remap = {}
+    if added_vehicle_count and target.ped_nodes:
+        if not allow_reindex:
+            raise ValueError('Adding vehicles shifts pedestrian indices; export all 64 regions together')
+        if target.extra_data or (target.links and not target.parsed_extras):
+            raise ValueError('Cannot reindex an unparsed nodes tail')
+        if any(n.area_id == area_id and n.node_id != i for i, n in enumerate(original)):
+            raise ValueError('Cannot reindex noncanonical imported node identities')
+        remap = {(area_id, i): i + added_vehicle_count
+                 for i in range(old_vehicle_count, len(original))}
+    for node in target.ped_nodes:
+        node.node_id = remap.get((node.area_id, node.node_id), node.node_id)
+    for i, node in enumerate(extra.vehicle_nodes, old_vehicle_count):
+        node.node_id = i
+    next_ped = len(original) + added_vehicle_count
+    for i, node in enumerate(extra.ped_nodes, next_ped):
+        node.node_id = i
+    target.vehicle_nodes.extend(extra.vehicle_nodes)
+    target.ped_nodes.extend(extra.ped_nodes)
+    target.fla4 = target.fla4 or extra.fla4
+    if not target.links and not target.extra_data:
+        target.parsed_extras = True
+    return remap
+
+
+def remap_node_references(nodes_file, remap, *, area_id=None):
+    """Update node addresses, NodeLinks and NaviNode attached-node IDs.
+
+    navi_links addresses the NaviNode array, whose order is unchanged;
+    link lengths / intersections retain their exact original values.
+    """
+    if not remap:
+        return
+    if nodes_file.extra_data or (nodes_file.links and not nodes_file.parsed_extras):
+        raise ValueError('Cannot remap an unparsed nodes tail')
+    for item in nodes_file.links + nodes_file.navi_nodes:
+        item.node_id = remap.get((item.area_id, item.node_id), item.node_id)
+    # Foreign-area stub nodes carry the other region's address. Own-area
+    # ped identities were already moved by merge_bare_nodes; don't remap
+    # them twice when old and new ranges overlap.
+    for node in nodes_file.vehicle_nodes + nodes_file.ped_nodes:
+        if area_id is not None and node.area_id != area_id:
+            node.node_id = remap.get((node.area_id, node.node_id), node.node_id)
+
 # FLA4 (Fastman Limit Adjuster 4) extension — unofficial format that
 # inflates each PathNode by 12 bytes to store per-node speed limit,
 # spawn probability and a lane override. File is tagged with the
@@ -764,6 +857,10 @@ class NodesFile:
     # Raw fallback when post-link layout doesn't match expectations.
     extra_data: bytes = b''
     fla4: bool = False       # True when loaded from / meant to write a FLA4 file
+    # Transient edit information; never serialized into the binary format.
+    node_remap: dict = field(default_factory=dict)
+    topology_changed: bool = False
+    original_node_indices: list = field(default_factory=list)
 
 
 def read_nodes(filepath: str) -> NodesFile:
@@ -907,7 +1004,14 @@ def read_nodes(filepath: str) -> NodesFile:
     expected_tail = expected_sections567 + fla4_section8
     remaining = len(data) - offset
 
-    if num_links > 0 and remaining == expected_tail:
+    # IMG entries can include an extra allocated sector as well as the
+    # sector rounding. Ignore only an all-zero suffix; retain genuinely
+    # unknown/modded nonzero tails verbatim.
+    sector_padding = data[offset + expected_tail:]
+    standard_tail = (remaining == expected_tail or
+                     (expected_tail < remaining and
+                      not any(sector_padding)))
+    if standard_tail:
         try:
             base = offset
             # Section 5 — NaviLinks

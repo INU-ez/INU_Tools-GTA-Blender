@@ -220,9 +220,10 @@ class GTATOOLS_OT_export_nodes(bpy.types.Operator):
 
     def execute(self, context):
         from .path_export import export_nodes
+        from .path_nodes_mesh import complete_node_objects
 
-        objects = [o for o in context.selected_objects
-                   if o.type == 'MESH' and o.get('path_type', '').startswith('nodes_')]
+        objects = complete_node_objects(context.selected_objects,
+                    getattr(getattr(context, 'scene', None), 'objects', ()))
         if not objects:
             self.report({'ERROR'}, T("Выделите объекты с нодами"))
             return {'CANCELLED'}
@@ -233,22 +234,19 @@ class GTATOOLS_OT_export_nodes(bpy.types.Operator):
         for obj in objects:
             fname = obj.get('nodes_filename', '')
             if fname:
-                groups.setdefault(fname, []).append(obj)
+                # One output per filename even on case-sensitive hosts;
+                # Windows considers NODES37.dat and nodes37.dat identical.
+                key = fname.casefold()
+                if key not in groups:
+                    groups[key] = (fname, [])
+                groups[key][1].append(obj)
             else:
                 auto_split.append(obj)
 
         exported = 0
 
-        # Export objects with known filename
-        for fname, objs in groups.items():
-            filepath = os.path.join(self.directory, fname)
-            try:
-                count = export_nodes(filepath=filepath, objects=objs, fla4=self.fla4)
-                exported += count
-            except Exception as e:
-                self.report({'WARNING'}, f"{fname}: {e}")
-
         # Auto-split objects by zone (8x8 grid, same area formula as the game)
+        zones = {}
         if auto_split:
             from ..core.paths import split_nodes_by_area, write_nodes
 
@@ -262,6 +260,129 @@ class GTATOOLS_OT_export_nodes(bpy.types.Operator):
 
             zones = split_nodes_by_area(_points(), fla4=self.fla4)
 
+        # Prepare every region before writing. Added vehicles shift the
+        # pedestrian part of the physical array, including references in
+        # other files; a partial export cannot safely renumber those IDs.
+        from ..core.paths import merge_bare_nodes, remap_node_references
+        from ..core.paths_graph import remap_foreign_references, validate_graph_batch
+        prepared = {}
+        for key, (fname, objs) in groups.items():
+            try:
+                nf = export_nodes(filepath='', objects=objs, fla4=self.fla4,
+                                  collect_only=True)
+                prepared[key] = (fname, objs, nf)
+            except Exception as e:
+                self.report({'WARNING'}, f"{fname}: {e}")
+        if len(prepared) != len(groups):
+            self.report({'ERROR'}, T("Экспорт NODES отменён: один из районов не подготовлен; файлы не записаны"))
+            return {'CANCELLED'}
+        region_keys = {int(os.path.splitext(key)[0][5:]) for key in prepared
+                       if os.path.splitext(key)[0].startswith('nodes')
+                       and os.path.splitext(key)[0][5:].isdigit()}
+        unparsed = [fname for fname, _, nf in prepared.values()
+                    if nf.extra_data or (nf.links and not nf.parsed_extras)]
+        remaps = {address: target for _, _, nf in prepared.values()
+                  for address, target in nf.node_remap.items()}
+        topology_changed = any(nf.topology_changed for _, _, nf in prepared.values())
+        if remaps and (region_keys != set(range(64)) or unparsed):
+            self.report({'ERROR'}, T("Изменены ID узлов: экспортируйте все 64 района с разобранными секциями; файлы не записаны"))
+            return {'CANCELLED'}
+        skipped = set()
+        for key, (fname, objs, nf) in prepared.items():
+            extra = None
+            stem = os.path.splitext(key)[0]
+            if stem.startswith('nodes') and stem[5:].isdigit():
+                extra = zones.pop(int(stem[5:]), None)
+            if extra is not None:
+                shifts_peds = bool(extra.vehicle_nodes and nf.ped_nodes)
+                if shifts_peds and (region_keys != set(range(64)) or unparsed):
+                    self.report({'WARNING'}, fname + ': ' + T(
+                        "Добавление автоузлов сдвигает пешеходные ID: экспортируйте все 64 района с разобранными секциями"))
+                    skipped.add(key)
+                    continue
+                try:
+                    merge_remap = merge_bare_nodes(nf, extra,
+                        area_id=int(stem[5:]), allow_reindex=shifts_peds)
+                    remap_node_references(nf, merge_remap, area_id=int(stem[5:]))
+                    # Merge shifts operate on the rebuilt array, whereas
+                    # incoming neighbouring links still use original IDs.
+                    for address, target in list(remaps.items()):
+                        if target is not None and address[0] == int(stem[5:]):
+                            remaps[address] = merge_remap.get((address[0], target), target)
+                    for address, target in merge_remap.items():
+                        if not nf.topology_changed:
+                            remaps[address] = target
+                    if nf.topology_changed:
+                        for current_index, original_index in enumerate(nf.original_node_indices):
+                            address = (int(stem[5:]), current_index)
+                            if original_index is not None and address in merge_remap:
+                                remaps[(address[0], original_index)] = merge_remap[address]
+                except ValueError as exc:
+                    self.report({'WARNING'}, f"{fname}: {exc}")
+                    skipped.add(key)
+                    continue
+                self.report({'WARNING'}, T("Новые узлы объединены с импортированным районом") + ': ' + fname)
+        if remaps or topology_changed:
+            # A region skipped later may still refer to the earlier
+            # shifted region. Do not commit any of that batch's files.
+            if skipped or len(prepared) != len(groups):
+                self.report({'WARNING'}, T(
+                    "Перенумерация узлов отменена: один из районов не подготовлен; файлы не записаны"))
+                return {'CANCELLED'}
+            for key, (_, _, nf) in prepared.items():
+                stem = os.path.splitext(key)[0]
+                area = int(stem[5:]) if stem.startswith('nodes') and stem[5:].isdigit() else None
+                try:
+                    remap_foreign_references(nf, remaps, area=area)
+                except ValueError as exc:
+                    self.report({'ERROR'}, f"{key}: {exc}")
+                    return {'CANCELLED'}
+            try:
+                validate_graph_batch({int(os.path.splitext(key)[0][5:]): nf
+                    for key, (_, _, nf) in prepared.items()
+                    if os.path.splitext(key)[0].startswith('nodes') and
+                       os.path.splitext(key)[0][5:].isdigit()})
+            except ValueError as exc:
+                self.report({'ERROR'}, str(exc))
+                return {'CANCELLED'}
+            # Catch common destination/readonly failures before changing
+            # any indexed region. A later OS/disk failure is still possible;
+            # this preflight is not a multi-file filesystem transaction.
+            try:
+                import stat
+                import tempfile
+                with tempfile.TemporaryFile(dir=self.directory):
+                    pass
+                for fname, _, _ in prepared.values():
+                    path = os.path.join(self.directory, fname)
+                    if os.path.exists(path) and not (os.stat(path).st_mode & stat.S_IWRITE):
+                        raise PermissionError(path)
+                    if os.path.exists(path):
+                        with open(path, 'r+b'):
+                            pass
+                # Validate every binary before opening any output file:
+                # out-of-range edited coordinates/IDs must not truncate
+                # the first region and then fail partway through a batch.
+                from ..core.paths import write_nodes
+                with tempfile.TemporaryDirectory(dir=self.directory) as staging:
+                    for fname, _, nf in prepared.values():
+                        write_nodes(os.path.join(staging, fname), nf)
+            except Exception as exc:
+                self.report({'WARNING'}, T(
+                    "Перенумерация узлов отменена: один из районов не подготовлен; файлы не записаны") + ': ' + str(exc))
+                return {'CANCELLED'}
+        for key, (fname, objs, nf) in prepared.items():
+            if key in skipped:
+                continue
+            try:
+                exported += export_nodes(filepath=os.path.join(self.directory, fname),
+                                         objects=objs, fla4=self.fla4,
+                                         prepared_nodes=nf)
+            except Exception as e:
+                self.report({'WARNING'}, f"{fname}: {e}")
+
+        if zones:
+            from ..core.paths import write_nodes
             for zone_idx, nf in zones.items():
                 fname = f"nodes{zone_idx}.dat"
                 filepath = os.path.join(self.directory, fname)
@@ -272,7 +393,7 @@ class GTATOOLS_OT_export_nodes(bpy.types.Operator):
                     self.report({'WARNING'}, f"{fname}: {e}")
 
         self.report({'INFO'}, f"Nodes: {exported} nodes exported")
-        return {'FINISHED'}
+        return {'FINISHED'} if exported else {'CANCELLED'}
 
 
 class GTATOOLS_OT_toggle_nodes_viz(bpy.types.Operator):
@@ -349,7 +470,7 @@ class GTATOOLS_OT_import_paths_ipl(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     filepath: StringProperty(subtype='FILE_PATH')
-    filter_glob: StringProperty(default="*.ipl", options={'HIDDEN'})
+    filter_glob: StringProperty(default="*.ipl;*.ide", options={'HIDDEN'})
 
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
@@ -359,6 +480,11 @@ class GTATOOLS_OT_import_paths_ipl(bpy.types.Operator):
         from .path_import import import_paths_ipl
         try:
             objects = import_paths_ipl(filepath=self.filepath, context=context)
+            game = getattr(context.scene, 'gtatools_game', 'VC')
+            if game == 'SA':
+                self.report({'WARNING'}, T("SA игнорирует секцию path в IPL"))
+            elif game == 'III' and os.path.splitext(self.filepath)[1].lower() == '.ipl':
+                self.report({'WARNING'}, T("III: пути загружаются из IDE; секция path в IPL не работает"))
             self.report({'INFO'}, f"Paths IPL: {len(objects)} groups imported")
             return {'FINISHED'}
         except Exception as e:
@@ -373,11 +499,12 @@ class GTATOOLS_OT_export_paths_ipl(bpy.types.Operator):
     bl_options = {'REGISTER'}
 
     filepath: StringProperty(subtype='FILE_PATH')
-    filter_glob: StringProperty(default="*.ipl", options={'HIDDEN'})
+    filter_glob: StringProperty(default="*.ipl;*.ide", options={'HIDDEN'})
 
     def invoke(self, context, event):
         if not self.filepath:
-            self.filepath = "paths_custom.ipl"
+            self.filepath = ("paths_custom.ide" if getattr(context.scene, 'gtatools_game', 'VC') == 'III'
+                             else "paths_custom.ipl")
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
@@ -393,6 +520,15 @@ class GTATOOLS_OT_export_paths_ipl(bpy.types.Operator):
                     objects = [o for o in col.objects
                                if o.type == 'CURVE' and o.get('path_type') == 'path_ipl']
             count = export_paths_ipl(filepath=self.filepath, objects=objects)
+            if any(o.get('pn_legacy_coordinates') for o in objects):
+                self.report({'WARNING'}, T("Старый импорт paths.ipl: переимпортируйте для исправления масштаба /16"))
+            if any(o.get('pn_identity_warning') for o in objects):
+                self.report({'WARNING'}, T("Path IPL резервирует Softbody Weight для ID точек; не изменяйте его"))
+            game = getattr(context.scene, 'gtatools_game', 'VC')
+            if game == 'SA':
+                self.report({'WARNING'}, T("SA игнорирует секцию path в IPL"))
+            elif game == 'III' and os.path.splitext(self.filepath)[1].lower() == '.ipl':
+                self.report({'WARNING'}, T("III: пути загружаются из IDE; секция path в IPL не работает"))
             self.report({'INFO'}, f"Paths IPL: {count} groups exported")
             return {'FINISHED'}
         except Exception as e:
@@ -455,20 +591,23 @@ class GTATOOLS_OT_convert_to_path(bpy.types.Operator):
         obj['external_index'] = -1
 
         # Count real points
-        total_pts = sum(len(s.points) if s.type == 'POLY' else len(s.bezier_points)
+        total_pts = sum(len(s.bezier_points) if s.type == 'BEZIER' else len(s.points)
                         for s in obj.data.splines)
         for i in range(total_pts):
             obj[f'pn_{i}_type'] = 2
             obj[f'pn_{i}_link'] = (i + 1) if i < total_pts - 1 else -1
-            obj[f'pn_{i}_area'] = 0
-            obj[f'pn_{i}_unk'] = 0.0
+            obj[f'pn_{i}_cross'] = 0
             obj[f'pn_{i}_width'] = 1
             obj[f'pn_{i}_ll'] = 1
             obj[f'pn_{i}_rl'] = 1
-            obj[f'pn_{i}_mw'] = 0
-            obj[f'pn_{i}_flags'] = 1
-            obj[f'pn_{i}_spawn'] = 0
+            obj[f'pn_{i}_speed'] = 0
+            obj[f'pn_{i}_flags'] = 0
+            obj[f'pn_{i}_spawn'] = 1.0
         obj['pn_count'] = total_pts
+        obj['pn_semantics_version'] = 2
+        obj['pn_game'] = getattr(context.scene, 'gtatools_game', 'VC')
+        from .path_ipl_props import ensure_point_slots
+        ensure_point_slots(obj)
 
         # Apply curve style
         from .path_import import _setup_path_curve
@@ -541,15 +680,18 @@ class GTATOOLS_OT_add_path_ipl(bpy.types.Operator):
         for i in range(2):
             obj[f'pn_{i}_type'] = 2  # internal
             obj[f'pn_{i}_link'] = (i + 1) if i < 1 else -1
-            obj[f'pn_{i}_area'] = 0
-            obj[f'pn_{i}_unk'] = 0.0
+            obj[f'pn_{i}_cross'] = 0
             obj[f'pn_{i}_width'] = 1
             obj[f'pn_{i}_ll'] = 1
             obj[f'pn_{i}_rl'] = 1
-            obj[f'pn_{i}_mw'] = 0
-            obj[f'pn_{i}_flags'] = 1
-            obj[f'pn_{i}_spawn'] = 0
+            obj[f'pn_{i}_speed'] = 0
+            obj[f'pn_{i}_flags'] = 0
+            obj[f'pn_{i}_spawn'] = 1.0
         obj['pn_count'] = 2
+        obj['pn_semantics_version'] = 2
+        obj['pn_game'] = getattr(context.scene, 'gtatools_game', 'VC')
+        from .path_ipl_props import ensure_point_slots
+        ensure_point_slots(obj)
 
         from .path_import import _setup_path_curve
         _setup_path_curve(curve)
@@ -665,5 +807,3 @@ class GTATOOLS_OT_mark_station(bpy.types.Operator):
         obj['station_indices'] = str(sorted(stations))
         self.report({'INFO'}, f"{toggled} points toggled, {len(stations)} stations total")
         return {'FINISHED'}
-
-

@@ -206,6 +206,8 @@ def cross_reference(
       archive) and ``IMG_TXD_SHADOWED`` (same TXD/DFF name in multiple
       archives — engine takes the one loaded first via gta.dat order
       and silently drops the rest).
+      The reserved ``'<loose>'`` key contains loose modloader assets and
+      TEXDICTION/MODELFILE names: presence only, no archive shadowing.
     - ``Set[str]`` (legacy, flat name set). Only the missing-asset check
       runs; no shadowing detection possible with a flat set.
     """
@@ -447,10 +449,14 @@ def cross_reference(
                 else:
                     base, ext = low, ''
                 normed.add(base)
-                ext_by_base.setdefault(base, {}).setdefault(ext, set()).add(arch_path)
+                # Loose modloader overrides / TEXDICTIONs satisfy presence,
+                # but are not competing streaming archive registrations.
+                if arch_path != '<loose>':
+                    ext_by_base.setdefault(base, {}).setdefault(ext, set()).add(arch_path)
             archives[arch_path] = normed
             union_names.update(normed)
 
+        present = {fn.lower() for names in archives_raw.values() for fn in names}
         # ── Per-asset missing check (asset must exist in at least one
         # archive). We dedupe by name so the same DFF used by 200
         # instances reports only once.
@@ -459,13 +465,13 @@ def cross_reference(
         for mid, entries in defined.items():
             for path, kind, name, txd in entries:
                 key_dff = name.lower()
-                if key_dff and key_dff not in union_names and key_dff not in reported_dff:
+                if key_dff and key_dff + '.dff' not in present and key_dff not in present and key_dff not in reported_dff:
                     reported_dff.add(key_dff)
                     issues.append(LintIssue('WARN', 'IDE_DFF_MISSING',
                         path, f"{kind} '{name}' (ID = {mid})",
                         f"Имя модели = '{name}'\nИщется = {name}.dff\nВ IMG = не найдено"))
                 key_txd = (txd or '').lower()
-                if key_txd and key_txd not in union_names and key_txd not in reported_txd:
+                if key_txd and key_txd + '.txd' not in present and key_txd not in present and key_txd not in reported_txd:
                     reported_txd.add(key_txd)
                     issues.append(LintIssue('WARN', 'IDE_TXD_MISSING',
                         path, f"{kind} '{name}' (ID = {mid})",

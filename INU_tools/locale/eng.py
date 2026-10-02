@@ -6354,4 +6354,60 @@ LANG = {
         "«{0}»: LOD {1} is in another IDE ({2}) — VC won't pair them",
     "«{0}»: имя LOD по правилу III/VC «{1}» уже занято ({2}) — LOD записан как «{3}» и в игре не свяжется, переименуй модель":
         "«{0}»: the III/VC rule's LOD name «{1}» is already taken ({2}) — the LOD is written as «{3}» and won't be paired in the game, rename the model",
+    "Освободить ID игры {0}?": "Free game ID {0}?",
+    "ID будет удалён из .game и доступен для назначения.":
+        "The ID will be removed from .game and become available for assignment.",
+    "Новая модель с этим ID заменит модель игры в IDE.":
+        "A new model with this ID will replace the game's model in the IDE.",
+    "Освобождение ID игры требует подтверждения.":
+        "Freeing a game ID requires confirmation.",
+    "Сферы/боксы старого импорта COL — переимпортируйте COL.":
+        "Spheres/boxes from an old COL import — reimport the COL.",
+    "COL в другой коллекции — не записан для модели: {0}":
+        "COL is in another collection — not written for model: {0}",
+    "{0}: строки сохранены — {1}*.ipl ссылаются на их номера; удаление сдвинет LOD потоковых моделей":
+        "{0}: rows kept — {1}*.ipl refers to their indices; deleting them would shift streamed models' LODs",
+    "«{0}»: игра не применяет масштаб из IPL (модель в игре будет в масштабе 1)":
+        "«{0}»: the game does not apply IPL scale (the model will have scale 1 in the game)",
+    "«{0}»: IMG LOD не найден — LOD пропущен":
+        "«{0}»: LOD IMG not found — LOD skipped",
+    "Без перехода": "No crossing",
+    "Пешеходный переход": "Pedestrian crossing",
+    "SA игнорирует секцию path в IPL": "SA ignores the path section in IPL",
+    "III: пути загружаются из IDE; секция path в IPL не работает":
+        "III: paths are loaded from IDE; the path section in IPL does not work",
+    "Старый импорт paths.ipl: переимпортируйте для исправления масштаба /16":
+        "Old paths.ipl import: reimport to correct the /16 coordinate scale",
+    "Path IPL резервирует Softbody Weight для ID точек; не изменяйте его":
+        "Path IPL reserves Softbody Weight for point IDs; do not change it",
+    "Совпадающие копии точек: проверьте флаги после дублирования":
+        "Coincident point copies: check the flags after duplication",
+    "Crossing поддерживается только для пешеходных узлов":
+        "Crossing is supported only for pedestrian nodes",
+    "Roadblock в paths.ipl поддерживается только для авто/лодок VC":
+        "Roadblock in paths.ipl is supported only for VC vehicle/boat paths",
+    "VC: Roadblock действует только на отдельные группы с ID -1":
+        "VC: Roadblock only works on detached groups with ID -1",
+    "VC: бит 1 реальных флагов — барьер копов":
+        "VC: bit 1 of the actual flags — police roadblock",
+    "Колонка Crossing для пешеходных узлов":
+        "Crossing column for pedestrian nodes",
+    "Новые узлы объединены с импортированным районом":
+        "New nodes merged with the imported area",
+    "Добавление автоузлов сдвигает пешеходные ID: экспортируйте все 64 района с разобранными секциями":
+        "Adding vehicle nodes shifts pedestrian IDs: export all 64 regions with parsed sections",
+    "Перенумерация узлов отменена: один из районов не подготовлен; файлы не записаны":
+        "Node reindexing cancelled: a region is not ready; no files were written",
+    "«{0}»: модель уже существует в другом IDE ({1}); старая строка остаётся":
+        "«{0}»: the model already exists in another IDE ({1}); the original row is kept",
+    "Экспорт NODES отменён: один из районов не подготовлен; файлы не записаны":
+        "NODES export cancelled: a region is not ready; no files were written",
+    "Добавить точку: Extrude / Subdivide": "Add a point: Extrude / Subdivide",
+    "При смене ID экспортируйте все 64 района": "When IDs change, export all 64 regions",
+    "Изменены ID узлов: экспортируйте все 64 района с разобранными секциями; файлы не записаны":
+        "Node IDs changed: export all 64 regions with parsed sections; no files were written",
+    "Тип светофора не хранится в paths.ipl":
+        "Traffic-light type is not stored in paths.ipl",
+    "Тип светофора не хранится в paths.ipl: III/VC определяют его по объектам светофоров":
+        "Traffic-light type is not stored in paths.ipl: III/VC determine it from traffic-light objects",
 }

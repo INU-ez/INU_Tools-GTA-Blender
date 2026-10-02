@@ -55,7 +55,7 @@ EXP = _load(os.path.join(OPS, "col_export.py"),
              "_prim_anchor", "_collect_sphere", "_collect_box",
              "_group_objects_by_base", "_is_import_prim"},
             dict({k: getattr(col, k) for k in dir(col) if not k.startswith("__")},
-                 T=lambda s: s, __package__=_PKG + ".ops",
+                 T=lambda s: s, COL_EXPORT_WARNINGS=[], __package__=_PKG + ".ops",
                  __name__=_PKG + ".ops.col_export"))
 IMP = _load(os.path.join(OPS, "col_import.py"), {"_place_on_models"}, {})
 
@@ -141,6 +141,34 @@ class _Obj:
         self.location, self.scale = _V(*location), _V(*scale)
         self.empty_display_type, self.empty_display_size = display, size
         self.matrix_world = mw or _Mat(location, IDENT, scale)
+
+
+@pytest.mark.parametrize("kind", ["sphere", "box"])
+def test_legacy_primitive_keeps_raw_coordinates_and_warns(kind):
+    EXP['COL_EXPORT_WARNINGS'].clear()
+    anchor = _Obj('x_COL', 'MESH', 'COL', location=(100, 50, 0))
+    anchor.bound_box = [(x, y, z) for x in (-3, 3) for y in (-3, 3) for z in (-3, 3)]
+    prim = _Obj('x_' + kind + '_0', location=(1, 2, 0),
+                display='CUBE' if kind == 'box' else 'SPHERE')
+    old, actual = ColModel(), ColModel()
+    collect = EXP['_collect_' + kind]
+    collect(prim, old)
+    collect(prim, actual, anchor)
+    assert write_col([actual]) == write_col([old])
+    assert EXP['COL_EXPORT_WARNINGS'] == [
+        'Сферы/боксы старого импорта COL — переимпортируйте COL.']
+
+
+def test_legacy_detection_does_not_change_current_parented_import():
+    EXP['COL_EXPORT_WARNINGS'].clear()
+    anchor = _Obj('x_COL', 'MESH', 'COL', location=(100, 50, 0))
+    anchor.bound_box = [(x, y, z) for x in (-3, 3) for y in (-3, 3) for z in (-3, 3)]
+    prim = _Obj('x_sphere_0', parent=anchor, location=(1, 2, 0),
+                mw=_Mat((101, 52, 0)))
+    model = ColModel()
+    EXP['_collect_sphere'](prim, model, anchor)
+    assert model.spheres[0].center == col.Vec3(1, 2, 0)
+    assert not EXP['COL_EXPORT_WARNINGS']
 
 
 # ── pure math ────────────────────────────────────────────────────────────

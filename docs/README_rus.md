@@ -8,7 +8,7 @@
 
 <p>
   <img src="https://img.shields.io/badge/Blender-2.83%E2%80%935.1-orange?logo=blender" alt="Blender">
-  <img src="https://img.shields.io/badge/Version-2.4.1-green" alt="Version">
+  <img src="https://img.shields.io/badge/Version-2.5.0-green" alt="Version">
   <img src="https://img.shields.io/badge/License-GPL--3.0-blue" alt="License">
 </p>
 
@@ -63,6 +63,11 @@
 | **CST** | ✅ | ✅ | ✅ | Текстовый формат Steve's COL Editor |
 | **water.dat** | ✅ | ✅ | ✅ | Вода: типы, snap, waterclear256 |
 | **paths / tracks / nodes / flight** | ✅ | ✅ | ✅ | Пути машин/педов, ж/д, path nodes, маршруты полётов |
+
+В Compiled NODES GTA SA можно добавлять точки через Extrude/Subdivide:
+связи строятся по рёбрам импортированной сетки, автомобильная навигация
+создаётся при экспорте. Если меняются существующие ID, экспортируйте все
+64 района. Подробности: [Скомпилированные ноды](DOCS_rus.md#скомпилированные-ноды).
 
 Плюс: тайм-циклы, зоны (`map.zon`/`info.zon`), камеры, растительность (`plants.dat`), X Radar Maker.
 Подробности — в **[документации](DOCS_rus.md)**.

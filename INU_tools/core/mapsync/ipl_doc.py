@@ -156,6 +156,42 @@ def inst_drifted(inst: IplInstance, anchor: 'Anchor') -> bool:
         (inst.rot_x, inst.rot_y, inst.rot_z, inst.rot_w), anchor.rot))
 
 
+def _lod_moved(lod, before, after):
+    """Carry an existing SA LOD's own transform with its model.
+
+    IPL quaternions are the inverse of the scene rotation. The same
+    rigid delta applies to the offset and rotation, without normalizing
+    an untouched vanilla LOD (which must keep its original line).
+    """
+    old_p = (before.pos_x, before.pos_y, before.pos_z)
+    new_p = (after.pos_x, after.pos_y, after.pos_z)
+    old_q = (before.rot_x, before.rot_y, before.rot_z, before.rot_w)
+    new_q = (after.rot_x, after.rot_y, after.rot_z, after.rot_w)
+    out = copy.copy(lod)
+    offset = (lod.pos_x - old_p[0], lod.pos_y - old_p[1], lod.pos_z - old_p[2])
+    if not rot_close(old_q, new_q):
+        def unit(q):
+            length = sum(v * v for v in q) ** 0.5
+            return tuple(v / length for v in q) if length > 1e-9 else (0, 0, 0, 1)
+
+        def conj(q):
+            return (-q[0], -q[1], -q[2], q[3])
+
+        def mul(a, b):
+            x, y, z, w = a
+            i, j, k, r = b
+            return (w*i + x*r + y*k - z*j, w*j - x*k + y*r + z*i,
+                    w*k + x*j - y*i + z*r, w*r - x*i - y*j - z*k)
+
+        old_q, new_q = unit(old_q), unit(new_q)
+        delta = mul(conj(new_q), old_q)    # scene's new * inverse(old)
+        offset = mul(mul(delta, (*offset, 0)), conj(delta))[:3]
+        lq = (lod.rot_x, lod.rot_y, lod.rot_z, lod.rot_w)
+        out.rot_x, out.rot_y, out.rot_z, out.rot_w = mul(lq, conj(delta))
+    out.pos_x, out.pos_y, out.pos_z = (new_p[k] + offset[k] for k in range(3))
+    return out
+
+
 def _is_lod_of(lod_name: str, name: str) -> bool:
     """III/VC pair a model with its LOD by name (FindRelatedModel: equal
     after the first 3 characters); «LOD<name>» is the addon's own spelling."""
@@ -515,6 +551,20 @@ class IplEditor:
         self.claimed.add(id(row))
         res._row = row
 
+        # Vanilla SA LODs can be offset / turned independently. Even when
+        # its mesh isn't in the scene, carry the file row with the model.
+        if (row.style == 'SA' and row.inst is not None and row.lod is not None
+                and row.lod.inst is not None and not row.lod.deleted):
+            moved = _lod_moved(row.lod.inst, row.inst, new)
+            if lod is None:
+                if inst_drifted(new, Anchor.of(row.inst)):
+                    lod = moved
+            else:
+                lod = copy.copy(lod)
+                lod.pos_x, lod.pos_y, lod.pos_z = moved.pos_x, moved.pos_y, moved.pos_z
+                lod.rot_x, lod.rot_y, lod.rot_z, lod.rot_w = (
+                    moved.rot_x, moved.rot_y, moved.rot_z, moved.rot_w)
+
         if lod is not None:
             lod_new = copy.copy(lod)
             lod_new.lod_index = -1
@@ -522,6 +572,19 @@ class IplEditor:
             if cur is None and row.style != 'SA':
                 cur = self._lod_by_content(row, lod_new)
             if (cur is not None and not cur.deleted and cur.inst is not None
+                    and int(cur.inst.model_id) == int(lod_new.model_id)):
+                lod_new.model_name = cur.inst.model_name
+            same_shared = (row.style == 'SA' and row.line is not None and row.lod is cur
+                           and cur is not None and not cur.deleted and cur.cur is not None
+                           and _same_values(_format_inst_line(lod_new, fla_extended=cur.fla,
+                                                              game=cur.style),
+                                            _format_inst_line(cur.cur, fla_extended=cur.fla,
+                                                              game=cur.style)))
+            if same_shared:
+                # Sharing an untouched file LOD is safe. A moved owner gets
+                # its own row below; the remaining owners keep this one.
+                res.lod_action = 'unchanged'
+            elif (cur is not None and not cur.deleted and cur.inst is not None
                     and id(cur) not in self.claimed
                     and id(cur) not in self.reserved
                     and self._refcount(cur, excluding=row) == 0):
