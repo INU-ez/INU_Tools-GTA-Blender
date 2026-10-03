@@ -7,11 +7,10 @@
 #     highway/lane counts) live on the Curve object as `sapath_*`
 #     IDProperties, mirroring how Kams' MaxScript stores them on the
 #     SplineShape.
-#   - GTATOOLS_OT_curves_to_nodes: rebuild a single nodes mesh from the
-#     active Curve selection so the existing path_export.write_nodes
-#     pipeline can serialise it. Knot order along the curve defines
-#     link ordering; cross-curve links are derived from shared knot
-#     coordinates within `NODE_DIST_LIMIT` metres.
+#   - GTATOOLS_OT_curves_to_nodes: retained to report a blocked export.
+#     The legacy curve writer loses original IDs and foreign links,
+#     then combines rebuilt links with unrelated navigation/tail data.
+#     Use the Compiled NODES mesh exporter until this path is rebuilt.
 
 from __future__ import annotations
 
@@ -33,6 +32,11 @@ from ..core.paths import (
 # default of 0.25 — chosen because consecutive nodes in vanilla SA
 # rarely sit closer than 1 m and a 25 cm fudge swallows authoring drift.
 NODE_DIST_LIMIT = 0.25
+
+_CURVES_EXPORT_BLOCKED = (
+    "Экспорт NODES через Curves временно заблокирован: связи могут повреждаться. "
+    "Используйте обычный экспорт Compiled NODES из исходных мешей."
+)
 
 
 # ── Curve ↔ flags property mapping ──────────────────────────────
@@ -586,21 +590,16 @@ def _merge_imported_extras(nf):
 
 
 class GTATOOLS_OT_curves_to_nodes(bpy.types.Operator):
-    """Bake selected Curve objects into a single nodes mesh + nodes*.dat.
+    """Block the legacy Curve writer before opening or changing files.
 
-    Each Curve becomes a sequence of PathNode entries; cross-curve links
-    are stitched where knots coincide. Output is a temporary in-memory
-    NodesFile fed through `core.paths.write_nodes` to the user-picked
-    .dat path.
-
-    Round-trip safety: if the scene also contains a `nodes_navi` mesh
-    from an earlier import (or any `nodes_*` object carrying parsed-
-    extras / `extra_data_b64`), those are merged into the output so the
-    result is equivalent to the full mesh-pipeline export. Without this
-    merge, a vanilla region (~370 NaviNodes) would lose them silently
-    and in-game vehicle traffic would break."""
+    Keep the operator ID for old layouts/scripts and saved scenes. All
+    curves are blocked, including new curves and old converted curves
+    whose original meshes have been deleted. Bounds checks cannot catch
+    incorrect connections that still address existing nodes.
+    """
     bl_idname = "gtatools.curves_to_nodes"
     bl_label = "INU: Curves → nodes*.dat"
+    bl_description = T(_CURVES_EXPORT_BLOCKED)
     bl_options = {'REGISTER'}
 
     filepath: StringProperty(subtype='FILE_PATH',
@@ -640,82 +639,12 @@ class GTATOOLS_OT_curves_to_nodes(bpy.types.Operator):
         return any(o.type == 'CURVE' for o in context.selected_objects)
 
     def invoke(self, context, event):
-        if not self.filepath:
-            self.filepath = "nodes0.dat"
-        context.window_manager.fileselect_add(self)
-        return {'RUNNING_MODAL'}
+        self.report({'ERROR'}, T(_CURVES_EXPORT_BLOCKED))
+        return {'CANCELLED'}
 
     def execute(self, context):
-        from ..core.paths import write_nodes, NodesFile
-        import os
-        curves = [o for o in context.selected_objects if o.type == 'CURVE']
-        if not curves:
-            self.report({'ERROR'},
-                        T("Выделите хотя бы одну Curve"))
-            return {'CANCELLED'}
-
-        path_set_n = int(self.path_set)
-
-        try:
-            nf = build_nodes_file_from_curves(curves, path_set=path_set_n)
-            nf.fla4 = self.fla4
-            # Preserve NaviNodes + post-link tail from the originally
-            # imported mesh objects. Without this, a vanilla region
-            # round-tripped via curves loses ~370 NaviNodes and breaks
-            # vehicle traffic in-game.
-            merged = _merge_imported_extras(nf)
-            n = write_nodes(self.filepath, nf)
-        except Exception as ex:
-            self.report({'ERROR'}, f"Path export: {ex}")
-            return {'CANCELLED'}
-
-        # Entire-map mode: create empty nodesN.dat files for every region
-        # of the chosen pathSet that wasn't written above. Vanilla SA's
-        # streaming loader expects all 64 files to exist; FLA4 grids
-        # work the same way at larger counts.
-        empties_written = 0
-        if self.entire_map:
-            folder = os.path.dirname(self.filepath) or '.'
-            # Pull the region index out of the user's filename: nodes123.dat
-            # → 123. We then emit nodes0.dat..nodes(N-1).dat skipping 123.
-            base_idx = -1
-            base_name = os.path.basename(self.filepath)
-            stem = os.path.splitext(base_name)[0]
-            if stem.lower().startswith('nodes'):
-                try:
-                    base_idx = int(stem[5:])
-                except ValueError:
-                    base_idx = -1
-            empty_nf = NodesFile()
-            empty_nf.fla4 = self.fla4
-            # Zero-link file still needs the parsed_extras-driven
-            # writer path (Section 4 filler + Section 7 +192 + Section 8
-            # FLA4 marker). Provide empty arrays so the writer hits
-            # that branch.
-            empty_nf.navi_links = []
-            empty_nf.link_lengths = []
-            empty_nf.path_intersections = [0] * 192
-            empty_nf.parsed_extras = True
-            for region in range(path_set_n):
-                if region == base_idx:
-                    continue
-                p = os.path.join(folder, f"nodes{region}.dat")
-                if os.path.isfile(p):
-                    continue
-                try:
-                    write_nodes(p, empty_nf)
-                    empties_written += 1
-                except Exception as e:
-                    print(f"[INU] empty nodes{region}.dat failed: {e}")
-
-        suffix = ""
-        if merged:
-            suffix += f" [+{merged}]"
-        if empties_written:
-            suffix += f" + {empties_written} {T('пустых')}"
-        self.report({'INFO'},
-                    f"{n} {T('нод записано в')} {self.filepath}{suffix}")
-        return {'FINISHED'}
+        self.report({'ERROR'}, T(_CURVES_EXPORT_BLOCKED))
+        return {'CANCELLED'}
 
 
 # ── Selection helpers (ZZPuma DEBUGPATH_ROL: bt_selPeds/Vehs/allp) ─
@@ -1291,5 +1220,4 @@ class GTATOOLS_OT_toggle_path_debug(bpy.types.Operator):
                 if area.type == 'VIEW_3D':
                     area.tag_redraw()
         return {'FINISHED'}
-
 

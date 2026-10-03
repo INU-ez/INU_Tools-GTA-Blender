@@ -3984,6 +3984,12 @@ LANG = {
         'Malla → Curves',
     'Curves → .dat':
         'Curves → .dat',
+    'Экспорт NODES через Curves временно заблокирован: связи могут повреждаться. Используйте обычный экспорт Compiled NODES из исходных мешей.':
+        'La exportación de Curves a NODES está bloqueada temporalmente porque puede dañar las conexiones. Usa Exportar Compiled NODES con las mallas originales.',
+    'Экспорт Curves временно отключён':
+        'La exportación de Curves está desactivada',
+    'Используйте обычный экспорт NODES':
+        'Usa la exportación normal de NODES',
     'Атрибуты:':
         'Atributos:',
 

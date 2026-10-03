@@ -5997,9 +5997,13 @@ class GTATOOLS_PT_paths_panel(bpy.types.Panel):
         cv_row.operator("gtatools.nodes_to_curves",
                         text=T("Меш → Curves"),
                         **inu_icon(safe_icon('OUTLINER_OB_CURVE')))
-        cv_row.operator("gtatools.curves_to_nodes",
+        export_row = cv_row.row(align=True)
+        export_row.enabled = False
+        export_row.operator("gtatools.curves_to_nodes",
                         text=T("Curves → .dat"),
                         **inu_icon(safe_icon('EXPORT')))
+        box4.label(text=T("Экспорт Curves временно отключён"), **inu_icon(safe_icon('ERROR')))
+        box4.label(text=T("Используйте обычный экспорт NODES"))
 
         # Selection helpers — pick Ped / Vehicle / All path curves at once.
         sel_row = box4.row(align=True)

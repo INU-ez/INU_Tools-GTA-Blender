@@ -14,6 +14,7 @@ Feature and bugfix update since v2.4.1. Extend existing SA roads and pedestrian 
 
 ## 🔧 Changed
 
+- **Curves → .dat is temporarily blocked.** The legacy curve exporter can corrupt node connections, lose links to neighbouring regions and mismatch navigation data. Use the regular Compiled NODES Export on the original meshes. The block also protects previously converted scenes and direct operator calls before any files are written.
 - **IMG export follows each resource's archive.** Models and LODs use their own linked archives, shared LODs reach the archives of their related models, TXDs merge with existing dictionaries, and collision models go into their COL libraries. Missing or unwritable resource targets prevent the corresponding IDE/IPL rows from being written.
 - **Remove from IMG checks shared resources.** It uses the model's archive and removes a TXD only when no loaded IDE still needs it. COL libraries are handled as libraries; the dialog lists the planned removals first.
 - **Collection export respects collision ownership.** A COL in another collection is left there with a warning. Selection export keeps the existing related-COL lookup.
@@ -50,7 +51,7 @@ Feature and bugfix update since v2.4.1. Extend existing SA roads and pedestrian 
 ## ✅ Verification
 
 - **1810 tests passed** in the regular Python suite. Its three Blender-only IFP checks were also run successfully in native Blender; the remaining skipped GTA III `paths.ipl` check has no source file because III loads those paths from IDE.
-- **23 checks passed without skips in Blender 5.1.2:** 14 NODES scenarios and 9 IFP checks, including real Edit Mode, Extrude/Subdivide, symmetric duplicate moves, save/reload and export of all 64 original SA regions. The NODES Python suite also passed all 39 checks after the duplicate validation fix.
+- **27 checks passed without skips in Blender 5.1.2:** 18 NODES scenarios and 9 IFP checks, including real Edit Mode, Extrude/Subdivide, symmetric duplicate moves, save/reload, curve-export protection and export of all 64 original SA regions. The NODES Python suite also passed all 39 checks, alongside 11 store-compliance checks.
 - The **v2.5.0 extension ZIP builds and passes Blender's validator**. All 11 store-compliance checks passed; the archive contains the new path modules and excludes development files and Python bytecode.
 - The built ZIP is also checked through Blender's extension manager in a temporary local repository: enable/disable, repeated enable and initialization of an existing path curve. This check runs in the packaging CI job.
 - Runtime behaviour in GTA SA has not yet been tested.

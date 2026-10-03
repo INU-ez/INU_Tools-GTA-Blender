@@ -47,6 +47,28 @@ def fail(error):
     raise error
 
 
+def check_curve_export_guard(obj):
+    for selected in bpy.context.selected_objects:
+        selected.select_set(False)
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    with tempfile.TemporaryDirectory(prefix='curve_guard_', dir=OUTPUT) as directory:
+        folder = Path(directory)
+        existing = folder / 'nodes37.dat'
+        existing.write_bytes(b'INU existing file must remain unchanged')
+        before = {p.name: p.read_bytes() for p in folder.iterdir()}
+        for call_context in ('EXEC_DEFAULT', 'INVOKE_DEFAULT'):
+            for destination in (existing, folder / 'nodes28.dat'):
+                try:
+                    bpy.ops.gtatools.curves_to_nodes(
+                        call_context, filepath=str(destination), entire_map=True)
+                except RuntimeError as error:
+                    assert 'Compiled NODES' in str(error), str(error)
+                else:
+                    raise AssertionError('Unsafe Curve export was not blocked')
+                assert {p.name: p.read_bytes() for p in folder.iterdir()} == before
+
+
 try:
     with zipfile.ZipFile(archive) as package:
         manifest = tomllib.loads(package.read('blender_manifest.toml').decode('utf-8'))
@@ -97,6 +119,9 @@ try:
         assert bpy.app.timers.is_registered(props._path_identity_initialize)
         assert bpy.app.handlers.load_post.count(props._path_identity_load) == 1
         assert bpy.app.handlers.depsgraph_update_post.count(props._path_identity_update) == 1
+        if cycle == 0:
+            check_curve_export_guard(obj)
+            result['curve_export_blocked_before_writing'] = True
         if cycle != 1:
             # Exercise both timer paths without blocking the background
             # process on Blender's interactive event loop.

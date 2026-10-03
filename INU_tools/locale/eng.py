@@ -4191,6 +4191,12 @@ LANG = {
         'Mesh → Curves',
     'Curves → .dat':
         'Curves → .dat',
+    'Экспорт NODES через Curves временно заблокирован: связи могут повреждаться. Используйте обычный экспорт Compiled NODES из исходных мешей.':
+        'Curves to NODES export is temporarily blocked because it can corrupt connections. Use Compiled NODES Export on the original meshes.',
+    'Экспорт Curves временно отключён':
+        'Curve export is temporarily disabled',
+    'Используйте обычный экспорт NODES':
+        'Use the regular NODES Export',
     'Атрибуты:':
         'Attributes:',
 

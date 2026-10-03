@@ -221,6 +221,33 @@ def test_native_coincident_duplicate_reports_object_and_vertices(tmp_path):
     assert 'move the new point or merge' in str(error.value)
 
 
+@pytest.mark.parametrize('call_context', ['EXEC_DEFAULT', 'INVOKE_DEFAULT'])
+@pytest.mark.parametrize('keep_source_meshes', [False, True])
+def test_native_curve_export_guard_leaves_all_files_unchanged(tmp_path, call_context, keep_source_meshes):
+    objects, vehicle = load_road(tmp_path)
+    assert bpy.ops.gtatools.nodes_to_curves() == {'FINISHED'}
+    curve = next(o for o in bpy.context.scene.objects
+                 if o.type == 'CURVE' and o.get('sapath_type') == 2)
+    if not keep_source_meshes:
+        for obj in objects:
+            bpy.data.objects.remove(obj, do_unlink=True)
+    activate(curve)
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    # Exercise direct calls and the interactive invocation, both with an
+    # existing destination and a new destination. Entire-map mode must
+    # also leave every other region untouched and create no empty files.
+    for destination in (tmp_path/'nodes37.dat', tmp_path/'nodes28.dat'):
+        with pytest.raises(RuntimeError, match='Compiled NODES'):
+            bpy.ops.gtatools.curves_to_nodes(call_context, filepath=str(destination), entire_map=True)
+        assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+    # Conversion remains available for viewing; normal mesh export is
+    # still the supported route and must preserve the untouched DAT.
+    if keep_source_meshes:
+        activate(vehicle)
+        assert bpy.ops.gtatools.export_nodes(directory=str(tmp_path)) == {'FINISHED'}
+        assert (tmp_path/'nodes37.dat').read_bytes() == before['nodes37.dat']
+
+
 def test_native_save_reload_preserves_ids_for_followup_edit(tmp_path):
     objects, vehicle = load_road(tmp_path)
     extrude(vehicle)

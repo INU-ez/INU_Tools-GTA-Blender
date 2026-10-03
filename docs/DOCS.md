@@ -2511,6 +2511,13 @@ Auto-splits into groups of 12 nodes (GTA SA limit).
 
 ### Compiled Nodes
 
+**Curve export protection:** `Curves → .dat` is temporarily disabled because
+the legacy exporter can corrupt connections and navigation. This also
+blocks direct operator calls and previously converted scenes before any
+files are written. `Mesh → Curves` remains available for viewing; export
+through the regular Compiled NODES **Export** using the original meshes.
+If those meshes were deleted, reimport the source DAT files.
+
 | Button | Description |
 |--------|-------------|
 | Import NODES.dat | Load compiled binary path nodes (multi-file selection) |
