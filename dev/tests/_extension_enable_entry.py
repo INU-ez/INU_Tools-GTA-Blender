@@ -20,6 +20,8 @@ import zipfile
 
 import addon_utils
 import bpy
+
+
 try:
     from _bpy_restrict_state import RestrictBlend
 except ModuleNotFoundError as error:
@@ -37,7 +39,7 @@ for environment_name in ('BLENDER_USER_CONFIG', 'BLENDER_USER_EXTENSIONS'):
         Path(environment_path).mkdir(parents=True, exist_ok=True)
 REPORT = OUTPUT / 'extension-enable-result.json'
 arguments = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
-archive = Path(arguments[0]).resolve() if arguments else ROOT / 'inu_tools_gta_sa-2.5.0.zip'
+archive = Path(arguments[0]).resolve() if arguments else ROOT / 'inu_tools_gta_sa-2.5.1.zip'
 result = dict(status='running', blender=bpy.app.version_string, archive=str(archive))
 repo = None
 module_name = None
@@ -67,6 +69,42 @@ def check_curve_export_guard(obj):
                 else:
                     raise AssertionError('Unsafe Curve export was not blocked')
                 assert {p.name: p.read_bytes() for p in folder.iterdir()} == before
+
+
+def check_packaged_curve_roundtrip(package_module):
+    paths = importlib.import_module(package_module + '.core.paths')
+    importer = importlib.import_module(package_module + '.ops.path_import')
+    graph = importlib.import_module(package_module + '.core.paths_graph')
+    nf = paths.NodesFile(
+        vehicle_nodes=[
+            paths.PathNode(x=800, y=100, z=1, area_id=37, node_id=0, flags=0xF0001, path_width=8),
+            paths.PathNode(x=820, y=100, z=1, area_id=37, node_id=1, flags=0xF0001, path_width=13, link_id=1)],
+        ped_nodes=[paths.PathNode(x=805, y=110, z=1, area_id=37, node_id=2, is_vehicle=False)],
+        navi_nodes=[paths.NaviNode(x=810, y=100, area_id=37, node_id=0, dir_x=-100,
+                                   flags=paths.encode_navi_flags(left_lanes=0, right_lanes=2))],
+        links=[paths.PathLink(37, 1), paths.PathLink(37, 0)],
+        navi_links=[graph.navi_address(37, 0)]*2, link_lengths=[20, 20],
+        path_intersections=[3, 1]+[7]*192, parsed_extras=True)
+    with tempfile.TemporaryDirectory(prefix='curve_roundtrip_', dir=OUTPUT) as directory:
+        path = Path(directory) / 'nodes37.dat'
+        paths.write_nodes(str(path), nf)
+        before = path.read_bytes()
+        imported = importer.import_nodes(str(path), context=bpy.context)
+        for mesh in imported:
+            if mesh.get('path_type') not in ('nodes_vehicle', 'nodes_ped'):
+                continue
+            for selected in bpy.context.selected_objects:
+                selected.select_set(False)
+            mesh.select_set(True)
+            bpy.context.view_layer.objects.active = mesh
+            assert bpy.ops.gtatools.nodes_to_curves() == {'FINISHED'}
+        for mesh in imported:
+            bpy.data.objects.remove(mesh, do_unlink=True)
+        assert bpy.ops.gtatools.curves_to_nodes(filepath=str(path)) == {'FINISHED'}
+        assert path.read_bytes() == before
+        for item in list(bpy.context.scene.objects):
+            if item.get('inu_nodes_curve_source'):
+                bpy.data.objects.remove(item, do_unlink=True)
 
 
 try:
@@ -121,7 +159,9 @@ try:
         assert bpy.app.handlers.depsgraph_update_post.count(props._path_identity_update) == 1
         if cycle == 0:
             check_curve_export_guard(obj)
-            result['curve_export_blocked_before_writing'] = True
+            result['legacy_curve_export_blocked_before_writing'] = True
+            check_packaged_curve_roundtrip(module_name)
+            result['compiled_nodes_curve_roundtrip_byte_exact'] = True
         if cycle != 1:
             # Exercise both timer paths without blocking the background
             # process on Blender's interactive event loop.

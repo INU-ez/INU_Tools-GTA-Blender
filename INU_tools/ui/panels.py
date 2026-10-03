@@ -5986,10 +5986,7 @@ class GTATOOLS_PT_paths_panel(bpy.types.Panel):
                       **inu_icon(safe_icon('MODIFIER')))
 
         # ── Curve-based authoring (Kams / ZZPuma style) ──
-        # Параллельный workflow к меш-пайплайну: один объект Blender
-        # Curve = один lane chain с sapath_* user-props на всю кривую,
-        # как в Max + Kams скриптах. Хорош для авторинга новых путей
-        # с нуля или для миграции на формат совместимый с ZZPuma.
+        # Converted curves retain node identities and a region snapshot.
         box4 = layout.box().column(align=True)
         box4.label(text=T("Curve workflow (Kams / ZZPuma):"),
                    **inu_icon(safe_icon('CURVE_BEZCURVE')))
@@ -5998,12 +5995,11 @@ class GTATOOLS_PT_paths_panel(bpy.types.Panel):
                         text=T("Меш → Curves"),
                         **inu_icon(safe_icon('OUTLINER_OB_CURVE')))
         export_row = cv_row.row(align=True)
-        export_row.enabled = False
         export_row.operator("gtatools.curves_to_nodes",
                         text=T("Curves → .dat"),
                         **inu_icon(safe_icon('EXPORT')))
-        box4.label(text=T("Экспорт Curves временно отключён"), **inu_icon(safe_icon('ERROR')))
-        box4.label(text=T("Используйте обычный экспорт NODES"))
+        box4.label(text=T("Curves сохраняют ID и связи исходного NODES"))
+        box4.label(text=T("Старые Curves: повторите Меш → Curves"))
 
         # Selection helpers — pick Ped / Vehicle / All path curves at once.
         sel_row = box4.row(align=True)

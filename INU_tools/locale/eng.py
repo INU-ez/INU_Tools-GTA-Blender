@@ -6416,4 +6416,11 @@ LANG = {
         "Traffic-light type is not stored in paths.ipl",
     "Тип светофора не хранится в paths.ipl: III/VC определяют его по объектам светофоров":
         "Traffic-light type is not stored in paths.ipl: III/VC determine it from traffic-light objects",
+    "Экспорт кривых с сохранением ID и связей Compiled NODES":
+        "Export curves while preserving Compiled NODES IDs and connections",
+    "Curves сохраняют ID и связи исходного NODES": "Curves preserve source NODES IDs and connections",
+    "Старые Curves: повторите Меш → Curves": "Older curves: repeat Mesh -> Curves",
+    "Включить все импортированные регионы и обновить межрегионные ссылки при изменении ID точек":
+        "Include all imported regions and update inter-region references when node IDs change",
+    "файлов экспортировано": "files exported",
 }

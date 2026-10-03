@@ -2511,12 +2511,29 @@ Auto-splits into groups of 12 nodes (GTA SA limit).
 
 ### Compiled Nodes
 
-**Curve export protection:** `Curves → .dat` is temporarily disabled because
-the legacy exporter can corrupt connections and navigation. This also
-blocks direct operator calls and previously converted scenes before any
-files are written. `Mesh → Curves` remains available for viewing; export
-through the regular Compiled NODES **Export** using the original meshes.
-If those meshes were deleted, reimport the source DAT files.
+**Compiled NODES → Curves → DAT (v2.5.1):** select an imported vehicle or
+pedestrian mesh, use **Mesh → Curves**, edit the resulting curves, then use
+**Curves → .dat**. Selecting one chain includes all curves from that same
+region. Unconverted categories, original directed links, foreign-region
+connections and navigation data are preserved. Extrude adds points;
+Subdivide retains an unambiguous segment's lane counts and direction.
+New branches use one lane each way unless you explicitly change the lane
+controls. Unchanged per-node flags and widths remain individual.
+
+Curve identities and their region data survive saving/reloading `.blend`
+and deleting the source meshes. Keep the hidden `NODES… Curve Source` object.
+At shared junctions, move all copies together; conflicting positions stop
+export. Duplicate points in Edit Mode rather than duplicating whole curve
+objects. Old converted curves and arbitrary curves have no recoverable
+Compiled NODES identities: reimport the original DAT and convert again.
+
+If IDs change, import all 64 regions and enable **Entire map**. Interactive
+export enables that option automatically when needed. It updates incoming
+references and includes existing imported regions, without creating empty
+replacement regions. All graph checks and binary serialization finish
+before output files are replaced. A late disk/OS error can still interrupt
+replacement of a batch. Curve editing currently supports the 64-region
+SA grid; use the mesh exporter for extended grids.
 
 | Button | Description |
 |--------|-------------|

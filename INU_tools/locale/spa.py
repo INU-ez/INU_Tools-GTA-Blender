@@ -6168,4 +6168,11 @@ LANG = {
         "El tipo de semáforo no se almacena en paths.ipl",
     "Тип светофора не хранится в paths.ipl: III/VC определяют его по объектам светофоров":
         "El tipo de semáforo no se almacena en paths.ipl: III/VC lo determina a partir de los objetos de semáforos",
+    "Экспорт кривых с сохранением ID и связей Compiled NODES":
+        "Exportar curvas conservando los ID y conexiones de Compiled NODES",
+    "Curves сохраняют ID и связи исходного NODES": "Las curvas conservan los ID y conexiones de NODES",
+    "Старые Curves: повторите Меш → Curves": "Curvas antiguas: repetir Mesh -> Curves",
+    "Включить все импортированные регионы и обновить межрегионные ссылки при изменении ID точек":
+        "Incluir las regiones importadas y actualizar las referencias entre regiones si cambian los ID",
+    "файлов экспортировано": "archivos exportados",
 }

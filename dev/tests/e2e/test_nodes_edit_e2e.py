@@ -223,7 +223,7 @@ def test_native_coincident_duplicate_reports_object_and_vertices(tmp_path):
 
 @pytest.mark.parametrize('call_context', ['EXEC_DEFAULT', 'INVOKE_DEFAULT'])
 @pytest.mark.parametrize('keep_source_meshes', [False, True])
-def test_native_curve_export_guard_leaves_all_files_unchanged(tmp_path, call_context, keep_source_meshes):
+def test_native_legacy_curve_export_guard_leaves_all_files_unchanged(tmp_path, call_context, keep_source_meshes):
     objects, vehicle = load_road(tmp_path)
     assert bpy.ops.gtatools.nodes_to_curves() == {'FINISHED'}
     curve = next(o for o in bpy.context.scene.objects
@@ -231,6 +231,8 @@ def test_native_curve_export_guard_leaves_all_files_unchanged(tmp_path, call_con
     if not keep_source_meshes:
         for obj in objects:
             bpy.data.objects.remove(obj, do_unlink=True)
+    # Simulate a saved curve from the old converter, without recoverable IDs.
+    del curve['inu_nodes_curve_source']
     activate(curve)
     before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
     # Exercise direct calls and the interactive invocation, both with an
@@ -265,6 +267,229 @@ def test_native_save_reload_preserves_ids_for_followup_edit(tmp_path):
     imported = import_nodes(str(tmp_path/'nodes37.dat'), context=bpy.context)
     veh = next(o for o in imported if o.get('path_type') == 'nodes_vehicle')
     assert {tuple(sorted(e.vertices)) for e in veh.data.edges} == {(0, 1), (1, 2)}
+
+
+def converted_curves(objects, categories=('nodes_vehicle', 'nodes_ped')):
+    for obj in objects:
+        if obj.get('path_type') in categories:
+            activate(obj)
+            assert bpy.ops.gtatools.nodes_to_curves() == {'FINISHED'}
+    curves = [o for o in bpy.context.scene.objects if o.type == 'CURVE' and o.get('inu_nodes_curve_source')]
+    activate(curves[0])
+    return curves
+
+
+def curve_extrude(curve):
+    activate(curve)
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.curve.select_all(action='DESELECT')
+    curve.data.splines[0].points[-1].select = True
+    assert bpy.ops.curve.extrude_move(TRANSFORM_OT_translate={'value': (20, 0, 0)}) == {'FINISHED'}
+
+
+@pytest.mark.parametrize('convert_peds', [False, True])
+def test_native_curves_roundtrip_survives_mesh_deletion_and_reload(tmp_path, convert_peds):
+    objects, vehicle = load_road(tmp_path, peds=True)
+    before = (tmp_path/'nodes37.dat').read_bytes()
+    curves = converted_curves(objects, ('nodes_vehicle', 'nodes_ped') if convert_peds else ('nodes_vehicle',))
+    for obj in objects:
+        bpy.data.objects.remove(obj, do_unlink=True)
+    blend = tmp_path/'curves.blend'
+    bpy.ops.wm.save_as_mainfile(filepath=str(blend))
+    bpy.ops.wm.open_mainfile(filepath=str(blend), load_ui=False)
+    curve = next(o for o in bpy.context.scene.objects if o.type == 'CURVE' and o.get('sapath_type') == 2)
+    activate(curve)  # Selecting one chain includes all companion curves/category data.
+    assert bpy.ops.gtatools.curves_to_nodes(filepath=str(tmp_path/'nodes37.dat')) == {'FINISHED'}
+    assert (tmp_path/'nodes37.dat').read_bytes() == before
+
+
+@pytest.mark.parametrize('edit', ['extrude', 'subdivide', 'duplicate'])
+def test_native_curve_point_edits_rebuild_navigation(tmp_path, edit):
+    objects, _ = load_road(tmp_path)
+    curve = converted_curves(objects)[0]
+    if edit == 'extrude':
+        curve_extrude(curve)
+        expected = {(0, 1), (1, 2)}
+    else:
+        activate(curve)
+        bpy.ops.object.mode_set(mode='EDIT')
+        if edit == 'subdivide':
+            bpy.ops.curve.select_all(action='SELECT')
+            assert bpy.ops.curve.subdivide(number_cuts=1) == {'FINISHED'}
+            expected = {(0, 2), (1, 2)}
+        else:
+            bpy.ops.curve.select_all(action='DESELECT')
+            curve.data.splines[0].points[-1].select = True
+            assert bpy.ops.curve.duplicate_move(TRANSFORM_OT_translate={'value': (20, 0, 0)}) == {'FINISHED'}
+            expected = {(0, 1)}  # A duplicated isolated point has no invented edge.
+    # Read the live Curve Edit Mode data, without forcing an Object Mode switch.
+    assert bpy.ops.gtatools.curves_to_nodes(filepath=str(tmp_path/'nodes37.dat')) == {'FINISHED'}
+    nf = read_nodes(str(tmp_path/'nodes37.dat'))
+    assert len(nf.vehicle_nodes) == 3
+    assert graph_edges(nf, 37) == expected
+    assert [n.node_id for n in nf.vehicle_nodes] == [0, 1, 2]
+    assert len(nf.links) == len(nf.navi_links) == len(nf.link_lengths)
+    validate_graph_batch({37: nf})
+    if edit == 'subdivide':
+        assert len(nf.navi_nodes) == 3
+        assert all(n.flags == road().navi_nodes[0].flags for n in nf.navi_nodes)
+
+
+def test_native_curve_partial_reindex_leaves_files_unchanged(tmp_path):
+    objects, _ = load_road(tmp_path, peds=True)
+    curve = next(c for c in converted_curves(objects) if c.get('sapath_type') == 2)
+    curve_extrude(curve)
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    with pytest.raises(RuntimeError, match='all 64 regions'):
+        bpy.ops.gtatools.curves_to_nodes(filepath=str(tmp_path/'nodes37.dat'))
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+def test_native_curves_keep_distinct_coincident_originals_and_per_node_properties(tmp_path):
+    nf = road(peds=True)
+    nf.vehicle_nodes[1].path_width = 13
+    nf.vehicle_nodes[1].flags |= 1 << 8
+    nf.ped_nodes.append(PathNode(x=805, y=110, z=1, area_id=37, node_id=3, is_vehicle=False, node_type=3))
+    path = tmp_path/'nodes37.dat'
+    write_nodes(str(path), nf)
+    before = path.read_bytes()
+    objects = import_nodes(str(path), context=bpy.context)
+    curves = converted_curves(objects)
+    assert len(curves) == 3  # One road chain and two separate isolated pedestrian nodes.
+    assert bpy.ops.gtatools.curves_to_nodes(filepath=str(path)) == {'FINISHED'}
+    assert path.read_bytes() == before
+    vehicle_curve = next(o for o in curves if o.get('sapath_type') == 2)
+    vehicle_curve['sapath_width'] = 2.5
+    activate(vehicle_curve)
+    assert bpy.ops.gtatools.curves_to_nodes(filepath=str(path)) == {'FINISHED'}
+    back = read_nodes(str(path))
+    assert [n.path_width for n in back.vehicle_nodes] == [20, 20]
+    assert back.vehicle_nodes[1].flags & (1 << 8)
+    assert back.links == nf.links and back.navi_nodes == nf.navi_nodes
+
+
+def test_native_curves_shared_junction_conflict_is_blocked(tmp_path):
+    from INU_tools.core.paths_graph import rebuild_graph
+    nodes = [PathNode(x=x, y=y, z=1, area_id=37, node_id=i, flags=0xF0000, path_width=8)
+             for i, (x, y) in enumerate([(800, 100), (820, 100), (800, 120), (780, 100)])]
+    nf, _, _ = rebuild_graph(NodesFile(parsed_extras=True), nodes, [None]*4,
+                              {(0, 1), (0, 2), (0, 3)}, area=37, vehicle_count=4)
+    path = tmp_path/'nodes37.dat'
+    write_nodes(str(path), nf)
+    before = path.read_bytes()
+    curves = converted_curves(import_nodes(str(path), context=bpy.context))
+    assert len(curves) == 3
+    curves[0].data.splines[0].points[0].co.x += 2
+    with pytest.raises(RuntimeError, match='Shared NODES junction'):
+        bpy.ops.gtatools.curves_to_nodes(filepath=str(path))
+    assert path.read_bytes() == before
+    for curve in curves[1:]:
+        curve.data.splines[0].points[0].co.x += 2
+    assert bpy.ops.gtatools.curves_to_nodes(filepath=str(path)) == {'FINISHED'}
+    assert read_nodes(str(path)).vehicle_nodes[0].x == 802
+
+
+def test_native_curves_cycle_and_reversed_direction_keep_original_ids(tmp_path):
+    from INU_tools.core.paths_graph import rebuild_graph
+    nodes = [PathNode(x=x, y=y, z=1, area_id=37, node_id=i, flags=0xF0000, path_width=8)
+             for i, (x, y) in enumerate([(800, 100), (820, 100), (800, 120)])]
+    nf, _, _ = rebuild_graph(NodesFile(parsed_extras=True), nodes, [None]*3,
+                              {(0, 1), (1, 2), (0, 2)}, area=37, vehicle_count=3)
+    path = tmp_path/'nodes37.dat'
+    write_nodes(str(path), nf)
+    before = path.read_bytes()
+    curve = converted_curves(import_nodes(str(path), context=bpy.context))[0]
+    assert len(curve.data.splines[0].points) == 4
+    activate(curve)
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.curve.select_all(action='SELECT')
+    assert bpy.ops.curve.switch_direction() == {'FINISHED'}
+    assert bpy.ops.gtatools.curves_to_nodes(filepath=str(path)) == {'FINISHED'}
+    assert path.read_bytes() == before
+
+
+def test_native_curves_lane_controls_use_spline_direction(tmp_path):
+    from INU_tools.core.paths import decode_navi_flags
+    objects, _ = load_road(tmp_path)
+    curve = converted_curves(objects)[0]
+    curve['sapath_laneleft'] = 1
+    curve['sapath_laneright'] = 3
+    curve['sapath_traffic'] = 2
+    assert bpy.ops.gtatools.curves_to_nodes(filepath=str(tmp_path/'nodes37.dat')) == {'FINISHED'}
+    nf = read_nodes(str(tmp_path/'nodes37.dat'))
+    flags = decode_navi_flags(nf.navi_nodes[0].flags)
+    assert (flags['left_lanes'], flags['right_lanes'], flags['traffic_light']) == (3, 1, 2)
+    assert nf.links == road().links
+
+
+def test_native_curves_missing_source_and_whole_object_duplicates_are_blocked(tmp_path):
+    objects, _ = load_road(tmp_path)
+    curve = converted_curves(objects)[0]
+    path = tmp_path/'nodes37.dat'
+    before = path.read_bytes()
+    duplicate = curve.copy()
+    duplicate.data = curve.data.copy()
+    bpy.context.scene.collection.objects.link(duplicate)
+    duplicate.location.y += 10
+    with pytest.raises(RuntimeError, match='Duplicated NODES curve objects'):
+        bpy.ops.gtatools.curves_to_nodes(filepath=str(path))
+    assert path.read_bytes() == before
+    bpy.data.objects.remove(duplicate, do_unlink=True)
+    source = next(o for o in bpy.context.scene.objects if o.get('inu_nodes_curve_snapshot'))
+    bpy.data.objects.remove(source, do_unlink=True)
+    with pytest.raises(RuntimeError, match='source is missing'):
+        bpy.ops.gtatools.curves_to_nodes(filepath=str(path))
+    assert path.read_bytes() == before
+
+
+def test_native_curves_binary_preflight_preserves_all_destinations(tmp_path):
+    from INU_tools.ops.path_nodes_curves import write_curve_export
+    valid, invalid = road(), road()
+    invalid.vehicle_nodes[0].x = 10000  # Cannot fit the vanilla signed 16-bit coordinate.
+    for area in (37, 42):
+        (tmp_path/f'nodes{area}.dat').write_bytes(b'Keep existing region')
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    with pytest.raises(struct.error):
+        write_curve_export(str(tmp_path/'nodes37.dat'), {37: valid, 42: invalid})
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+def test_native_curves_vanilla28_roundtrip_keeps_every_arc(vanilla_files, tmp_path):
+    source = next(p for p in vanilla_files if p.stem.lower() == 'nodes28')
+    original = read_nodes(str(source))
+    path = tmp_path/'nodes28.dat'
+    write_nodes(str(path), original)
+    before = path.read_bytes()
+    objects = import_nodes(str(source), context=bpy.context)
+    curves = converted_curves(objects)
+    for obj in objects:
+        bpy.data.objects.remove(obj, do_unlink=True)
+    activate(curves[-1])
+    assert bpy.ops.gtatools.curves_to_nodes(filepath=str(path)) == {'FINISHED'}
+    assert path.read_bytes() == before  # IDs, directed/foreign arcs, navigation and all tail sections.
+
+
+def test_native_curves_full_vanilla_reindex_updates_foreign_regions(vanilla_files, tmp_path):
+    imported, originals = [], {}
+    for path in vanilla_files:
+        originals[int(path.stem[5:])] = read_nodes(str(path))
+        imported.extend(import_nodes(str(path), context=bpy.context))
+    region = [o for o in imported if o.get('nodes_area') == 37]
+    curves = converted_curves(region)
+    curve = next(o for o in curves if o.get('sapath_type') == 2 and len(o.data.splines[0].points) > 1)
+    curve_extrude(curve)
+    assert bpy.ops.gtatools.curves_to_nodes(filepath=str(tmp_path/'nodes37.dat'), entire_map=True) == {'FINISHED'}
+    result = {area: read_nodes(str(tmp_path/f'nodes{area}.dat')) for area in range(64)}
+    validate_graph_batch(result)
+    old_vehicle_count = len(originals[37].vehicle_nodes)
+    assert len(result[37].vehicle_nodes) == old_vehicle_count + 1
+    assert result[37].ped_nodes[0].node_id == old_vehicle_count + 1
+    for area, original in originals.items():
+        if area == 37:
+            continue
+        expected = [(l.area_id, l.node_id+1 if l.area_id == 37 and l.node_id >= old_vehicle_count else l.node_id)
+                    for l in original.links]
+        assert [(l.area_id, l.node_id) for l in result[area].links] == expected
 
 
 @pytest.fixture(scope='module')

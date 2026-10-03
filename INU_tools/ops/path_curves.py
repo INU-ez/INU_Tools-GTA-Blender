@@ -7,36 +7,17 @@
 #     highway/lane counts) live on the Curve object as `sapath_*`
 #     IDProperties, mirroring how Kams' MaxScript stores them on the
 #     SplineShape.
-#   - GTATOOLS_OT_curves_to_nodes: retained to report a blocked export.
-#     The legacy curve writer loses original IDs and foreign links,
-#     then combines rebuilt links with unrelated navigation/tail data.
-#     Use the Compiled NODES mesh exporter until this path is rebuilt.
+#   - GTATOOLS_OT_curves_to_nodes: export persistent point identities
+#     through the same graph/navigation rebuild as the mesh exporter.
 
 from __future__ import annotations
 
 import bpy
 from bpy.props import StringProperty, FloatProperty, BoolProperty
-import math
+import struct
 
 from .. import T
 from ..tools.compat import safe_icon, inu_icon
-from ..core.paths import (
-    PathNode, NodesFile,
-    decode_path_node_flags, encode_path_node_flags,
-    get_area_id, PATHSET_VANILLA,
-)
-
-
-# Two knots are considered the same path node when their world-space
-# distance is below this threshold. Mirrors ZZPuma's `nodeDistLimit`
-# default of 0.25 — chosen because consecutive nodes in vanilla SA
-# rarely sit closer than 1 m and a 25 cm fudge swallows authoring drift.
-NODE_DIST_LIMIT = 0.25
-
-_CURVES_EXPORT_BLOCKED = (
-    "Экспорт NODES через Curves временно заблокирован: связи могут повреждаться. "
-    "Используйте обычный экспорт Compiled NODES из исходных мешей."
-)
 
 
 # ── Curve ↔ flags property mapping ──────────────────────────────
@@ -115,252 +96,6 @@ def _set_curve_defaults(curve_obj):
     if curve_obj.get('sapath_laneleft') is None:    curve_obj['sapath_laneleft'] = 1
 
 
-def _curve_to_path_nodes(curve_obj, path_set: int = PATHSET_VANILLA,
-                          starting_node_id: int = 0):
-    """Walk every knot of every spline in a Curve and emit PathNode
-    instances. Properties on the Curve object propagate to each node's
-    flags. Returns ``(nodes, links)`` where ``links`` is a list of
-    (from_idx, to_idx) tuples within the curve, suitable for feeding
-    into a global cross-curve link reconciliation pass."""
-    nodes = []
-    links = []
-    mw = curve_obj.matrix_world
-    is_vehicle = int(curve_obj.get('sapath_type', 1)) == 2
-
-    # Build flag value once — same flags apply to every node in this
-    # curve since shape-level props are shape-level (Kams convention).
-    flags = encode_path_node_flags(
-        roadblock=bool(curve_obj.get('sapath_roadblock', 0)),
-        boats=bool(curve_obj.get('sapath_boats', 0)),
-        emergency=bool(curve_obj.get('sapath_emergency', 0)),
-        highway=bool(curve_obj.get('sapath_highway', 0)),
-        parking=bool(curve_obj.get('sapath_parking', 0)),
-        spawn=int(round(float(curve_obj.get('sapath_spawn', 1.0)) * 15)),
-    )
-    width_byte = int(round(float(curve_obj.get('sapath_width', 0.0)) * 8))
-
-    if curve_obj.type != 'CURVE':
-        return nodes, links
-
-    next_id = starting_node_id
-    for spline in curve_obj.data.splines:
-        first_in_spline = next_id
-        points = (spline.bezier_points if spline.type == 'BEZIER'
-                  else spline.points)
-        for i, p in enumerate(points):
-            co = p.co
-            wpos = mw @ (co.xyz if hasattr(co, 'xyz') else co)
-            area_id = get_area_id(wpos.x, wpos.y, path_set)
-            node = PathNode(
-                x=wpos.x, y=wpos.y, z=wpos.z,
-                link_id=0,         # Filled in by reconciliation pass.
-                area_id=area_id,
-                node_id=next_id,
-                path_width=width_byte,
-                node_type=0,
-                flags=flags,
-                is_vehicle=is_vehicle,
-            )
-            nodes.append(node)
-            if i > 0:
-                # Consecutive knots in a spline are always linked.
-                links.append((next_id - 1, next_id))
-                links.append((next_id, next_id - 1))
-            next_id += 1
-        # Closed splines wrap the last knot to the first.
-        if getattr(spline, 'use_cyclic_u', False) and next_id - first_in_spline > 1:
-            links.append((next_id - 1, first_in_spline))
-            links.append((first_in_spline, next_id - 1))
-
-    return nodes, links
-
-
-def _stitch_cross_curve_links(curves, all_nodes, all_links):
-    """Deprecated — superseded by ``_dedup_coincident_nodes``.
-
-    Previously: for each knot pair within ``NODE_DIST_LIMIT`` of each
-    other, appended a bidirectional link between the two PathNode
-    indices. This left both nodes in the output, producing 22-30 %
-    duplicate path nodes per export pass (cumulative on multiple
-    re-exports) and a denser-than-needed path graph in-game.
-
-    Now: merging is done in ``_dedup_coincident_nodes`` which collapses
-    coincident knots into a single canonical PathNode and remaps all
-    link references. Kept as a no-op stub for backward compat with
-    older call sites; can be removed once nothing references it.
-    """
-    return
-
-
-def _dedup_coincident_nodes(all_nodes, all_links):
-    """Merge nodes whose positions coincide within ``NODE_DIST_LIMIT``.
-
-    When ``Mesh → Curves`` splits a path graph into chains by junctions,
-    every chain that touches an intersection ends with a control point
-    at the junction's position. Two adjacent chains → two duplicate
-    PathNodes at the intersection. Without deduplication the round-trip
-    grows the node count by ~20 % each pass and the game ends up with
-    redundant path nodes that bloat memory and slow A*.
-
-    Algorithm:
-      1. Grid-bucket nodes by floor(pos / threshold) so we only compare
-         neighbours within ±1 cell (O(N) instead of O(N²)).
-      2. For each node, find any earlier-indexed node within
-         ``NODE_DIST_LIMIT`` and same category (vehicle vs ped). Mark
-         it as a duplicate of that canonical.
-      3. Remap every link reference from duplicates to their canonical.
-      4. Drop self-links and dedup link pairs while preserving order.
-      5. Return the compacted node list and remapped link list.
-
-    Note: only same-category (vehicle↔vehicle, ped↔ped) merges are
-    performed — a vehicle knot and a ped knot sharing a coordinate are
-    intentional (cross-category intersection points) and stay separate.
-    """
-    threshold2 = NODE_DIST_LIMIT * NODE_DIST_LIMIT
-    # Bucket key: (cell_x, cell_y, cell_z, is_vehicle)
-    buckets = {}
-
-    def _cell(n):
-        return (int(n.x / NODE_DIST_LIMIT),
-                int(n.y / NODE_DIST_LIMIT),
-                int(n.z / NODE_DIST_LIMIT),
-                bool(n.is_vehicle))
-
-    # canonical[i] = index of the kept node that i collapses into.
-    # If canonical[i] == i, node i is kept.
-    canonical = list(range(len(all_nodes)))
-    for i, ni in enumerate(all_nodes):
-        cell = _cell(ni)
-        # Inspect this cell + 26 neighbours (±1 in x/y/z).
-        merged = False
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for dz in (-1, 0, 1):
-                    neighbour_cell = (cell[0] + dx, cell[1] + dy,
-                                      cell[2] + dz, cell[3])
-                    for j in buckets.get(neighbour_cell, ()):
-                        nj = all_nodes[j]
-                        ddx = ni.x - nj.x
-                        ddy = ni.y - nj.y
-                        ddz = ni.z - nj.z
-                        if ddx * ddx + ddy * ddy + ddz * ddz <= threshold2:
-                            canonical[i] = canonical[j]
-                            merged = True
-                            break
-                    if merged:
-                        break
-                if merged:
-                    break
-            if merged:
-                break
-        if not merged:
-            buckets.setdefault(cell, []).append(i)
-
-    # Build compact node list (only canonicals, in original order) and
-    # a remap old_idx → new_idx.
-    remap = {}
-    new_nodes = []
-    for old_i, c in enumerate(canonical):
-        if c == old_i:
-            remap[old_i] = len(new_nodes)
-            new_nodes.append(all_nodes[old_i])
-    # Non-canonical old indices map to their canonical's NEW index.
-    for old_i, c in enumerate(canonical):
-        if c != old_i:
-            remap[old_i] = remap[c]
-
-    # Renumber node_id within each (area, category) so node_id field
-    # stays consecutive 0..N-1 — the writer's link section uses these
-    # values, downstream tools may rely on it.
-    veh_counter = {}
-    ped_counter = {}
-    for n in new_nodes:
-        if n.is_vehicle:
-            n.node_id = veh_counter.get(n.area_id, 0)
-            veh_counter[n.area_id] = n.node_id + 1
-        else:
-            n.node_id = ped_counter.get(n.area_id, 0)
-            ped_counter[n.area_id] = n.node_id + 1
-
-    # Remap link endpoints, drop self-links and duplicates.
-    seen = set()
-    new_links = []
-    for from_i, to_i in all_links:
-        a = remap.get(from_i)
-        b = remap.get(to_i)
-        if a is None or b is None or a == b:
-            continue
-        key = (a, b)
-        if key in seen:
-            continue
-        seen.add(key)
-        new_links.append(key)
-
-    return new_nodes, new_links
-
-
-def build_nodes_file_from_curves(curves, path_set: int = PATHSET_VANILLA) -> NodesFile:
-    """Convert a list of Curve objects into a single NodesFile."""
-    nf = NodesFile()
-    all_nodes = []
-    all_links = []
-
-    next_id = 0
-    for c in curves:
-        _set_curve_defaults(c)
-        nodes, links = _curve_to_path_nodes(c, path_set, next_id)
-        all_nodes.extend(nodes)
-        all_links.extend(links)
-        next_id += len(nodes)
-
-    # Merge knots that coincide across curves (intersections) so the
-    # exported graph has one PathNode per real-world position instead
-    # of one per visiting curve. Replaces the legacy stitch-only path.
-    all_nodes, all_links = _dedup_coincident_nodes(all_nodes, all_links)
-
-    # Update each node's link_id (offset of its first outgoing link in
-    # the global link list) and pack link_count into flags low nibble.
-    by_from = {}
-    for from_idx, to_idx in all_links:
-        by_from.setdefault(from_idx, []).append(to_idx)
-
-    # Build PathLink entries grouped by source node order.
-    link_offset = 0
-    for i, node in enumerate(all_nodes):
-        outgoing = by_from.get(i, [])
-        node.link_id = link_offset
-        # Re-pack flags with updated link_count low nibble.
-        decoded = decode_path_node_flags(node.flags)
-        decoded['link_count'] = min(len(outgoing), 15)
-        node.flags = encode_path_node_flags(**{
-            k: v for k, v in decoded.items() if k != 'not_highway'
-        })
-        for to_idx in outgoing:
-            target = all_nodes[to_idx]
-            from ..core.paths import PathLink
-            nf.links.append(PathLink(
-                area_id=target.area_id, node_id=target.node_id))
-            link_offset += 1
-
-    # Split into vehicle vs ped pools.
-    for node in all_nodes:
-        if node.is_vehicle:
-            nf.vehicle_nodes.append(node)
-        else:
-            nf.ped_nodes.append(node)
-
-    # Initialise post-link arrays at link count length so write_nodes
-    # emits a complete file (parsed_extras path). Zero defaults are
-    # game-acceptable — user can tune later.
-    n_links = len(nf.links)
-    nf.navi_links = [0] * n_links
-    nf.link_lengths = [0] * n_links
-    nf.path_intersections = [0] * (n_links + 192)
-    nf.parsed_extras = True
-
-    return nf
-
-
 # ── Operator: build curves from a nodes mesh ──────────────────────
 
 class GTATOOLS_OT_nodes_to_curves(bpy.types.Operator):
@@ -382,224 +117,31 @@ class GTATOOLS_OT_nodes_to_curves(bpy.types.Operator):
         return obj.get('path_type') in ('nodes_vehicle', 'nodes_ped')
 
     def execute(self, context):
-        mesh_obj = context.active_object
-        mesh = mesh_obj.data
-        if not mesh.edges:
-            self.report({'ERROR'},
-                        T("Меш не содержит рёбер — путь не построен"))
+        from .path_nodes_curves import convert_mesh
+        try:
+            curves = convert_mesh(context, context.active_object,
+                                  _set_curve_defaults, _set_curve_wirecolor)
+        except (ValueError, KeyError, TypeError) as error:
+            self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
-
-        is_vehicle = mesh_obj.get('path_type') == 'nodes_vehicle'
-
-        # Adjacency list from edges (undirected).
-        adj = {i: [] for i in range(len(mesh.vertices))}
-        for e in mesh.edges:
-            adj[e.vertices[0]].append(e.vertices[1])
-            adj[e.vertices[1]].append(e.vertices[0])
-
-        # Trace chains: start from any vertex with degree != 2 (junction
-        # or endpoint), walk until hitting another such vertex. Fall back
-        # to closed-loop tracing for graphs that are pure cycles.
-        visited_edges = set()
-        chains = []
-
-        def _edge_key(a, b):
-            return (a, b) if a < b else (b, a)
-
-        def _walk(start, first_step):
-            chain = [start, first_step]
-            visited_edges.add(_edge_key(start, first_step))
-            cursor = first_step
-            prev = start
-            while True:
-                nexts = [n for n in adj[cursor]
-                         if n != prev and _edge_key(cursor, n) not in visited_edges]
-                if not nexts or len(adj[cursor]) != 2:
-                    break
-                nxt = nexts[0]
-                visited_edges.add(_edge_key(cursor, nxt))
-                chain.append(nxt)
-                prev = cursor
-                cursor = nxt
-            return chain
-
-        for v in range(len(mesh.vertices)):
-            if len(adj[v]) == 2:
-                continue
-            for nb in adj[v]:
-                ek = _edge_key(v, nb)
-                if ek in visited_edges:
-                    continue
-                chains.append(_walk(v, nb))
-
-        # Sweep remaining cycles (pure loops with all-degree-2 vertices).
-        for v in range(len(mesh.vertices)):
-            for nb in adj[v]:
-                ek = _edge_key(v, nb)
-                if ek not in visited_edges:
-                    chains.append(_walk(v, nb))
-
-        if not chains:
-            self.report({'ERROR'},
-                        T("Не нашли цепочек путей в меше"))
-            return {'CANCELLED'}
-
-        # Build curves.
-        col_name = "Path Curves"
-        if col_name not in bpy.data.collections:
-            bpy.data.collections.new(col_name)
-            context.scene.collection.children.link(bpy.data.collections[col_name])
-        col = bpy.data.collections[col_name]
-
-        mw = mesh_obj.matrix_world
-        # Bulk-read per-vertex flags + width if present on the source mesh.
-        flags_arr = list(mesh_obj.get('node_flags', []))
-        width_arr = list(mesh_obj.get('node_widths', []))
-
-        base_name = mesh_obj.name + "_curves"
-        new_curves = []
-        for ci, chain in enumerate(chains):
-            curve_data = bpy.data.curves.new(
-                name=f"{base_name}_{ci:03d}", type='CURVE')
-            curve_data.dimensions = '3D'
-            spline = curve_data.splines.new('POLY')
-            spline.points.add(len(chain) - 1)
-            for pi, vi in enumerate(chain):
-                wco = mw @ mesh.vertices[vi].co
-                spline.points[pi].co = (wco.x, wco.y, wco.z, 1.0)
-
-            curve_obj = bpy.data.objects.new(curve_data.name, curve_data)
-            curve_obj['sapath_type'] = 2 if is_vehicle else 1
-            # Seed sapath_* from the first node's flags / width.
-            if flags_arr and chain[0] < len(flags_arr):
-                decoded = decode_path_node_flags(int(flags_arr[chain[0]]))
-                curve_obj['sapath_roadblock'] = int(decoded['roadblock'])
-                curve_obj['sapath_boats']     = int(decoded['boats'])
-                curve_obj['sapath_emergency'] = int(decoded['emergency'])
-                curve_obj['sapath_highway']   = int(decoded['highway'])
-                curve_obj['sapath_parking']   = int(decoded['parking'])
-                curve_obj['sapath_spawn']     = decoded['spawn'] / 15.0
-            else:
-                _set_curve_defaults(curve_obj)
-            if width_arr and chain[0] < len(width_arr):
-                curve_obj['sapath_width'] = float(width_arr[chain[0]]) / 8.0
-            _set_curve_wirecolor(curve_obj)
-            col.objects.link(curve_obj)
-            new_curves.append(curve_obj)
-
-        # Tag the source mesh as "consumed" so a follow-up export knows
-        # to read from curves instead. The mesh stays around for visual
-        # reference — user can delete it manually.
-        mesh_obj['path_curves_built'] = True
-
-        self.report({'INFO'},
-                    f"{len(new_curves)} {T('кривых построено')}")
+        if curves and context.mode == 'OBJECT':
+            for obj in context.selected_objects:
+                obj.select_set(False)
+            for obj in curves:
+                obj.select_set(True)
+            context.view_layer.objects.active = curves[0]
+        self.report({'INFO'}, f"{len(curves)} {T('кривых построено')}")
         return {'FINISHED'}
 
 
 # ── Operator: export curves to nodes.dat ──────────────────────────
 
 
-def _merge_imported_extras(nf):
-    """Pull NaviNodes + post-link tail from imported scene objects into
-    ``nf`` so a Curve-only export still produces a complete file
-    equivalent to the full export path.
-
-    Background: ``build_nodes_file_from_curves`` only knows about path
-    nodes and links — it has no curve representation for NaviNodes
-    (those are sub-graph intersections, not lane-followable paths) nor
-    for the post-link tail (naviLinks / linkLengths / pathIntersections).
-    Without merging, exporting a vanilla region (which has 300+
-    NaviNodes) silently drops them and breaks in-game vehicle traffic.
-
-    Strategy: walk ``bpy.data.objects`` and pull:
-      * ``path_type='nodes_navi'`` — NaviNode coordinates + per-vert
-        parallel arrays (areas, ids, dx, dy, flags).
-      * ``parsed_extras=True`` or ``extra_data_b64`` on any ``nodes_*``
-        object — the post-link tail. Importer stores these on every
-        created mesh, picking any one is fine.
-
-    Returns a short summary (e.g. ``"369 navi, extras"``) for the UX
-    report so the user sees what was preserved.
-    """
-    import base64
-    from ..core.paths import NaviNode
-    pulled = []
-
-    def _at(arr, i, default=0):
-        return int(arr[i]) if 0 <= i < len(arr) else default
-
-    # 1. NaviNodes
-    navi_obj = next(
-        (o for o in bpy.data.objects
-         if o.get('path_type') == 'nodes_navi' and o.type == 'MESH'),
-        None,
-    )
-    if navi_obj is not None:
-        mat_w = navi_obj.matrix_world
-        navi_areas = list(navi_obj.get('navi_areas', []) or [])
-        navi_ids   = list(navi_obj.get('navi_ids',   []) or [])
-        navi_dx    = list(navi_obj.get('navi_dx',    []) or [])
-        navi_dy    = list(navi_obj.get('navi_dy',    []) or [])
-        navi_flags = list(navi_obj.get('navi_flags', []) or [])
-        nf.navi_nodes = []
-        for i, vert in enumerate(navi_obj.data.vertices):
-            co = mat_w @ vert.co
-            nf.navi_nodes.append(NaviNode(
-                x=co.x, y=co.y,
-                area_id=_at(navi_areas, i),
-                node_id=_at(navi_ids,   i),
-                dir_x  =_at(navi_dx,    i),
-                dir_y  =_at(navi_dy,    i),
-                flags  =_at(navi_flags, i),
-            ))
-        if nf.navi_nodes:
-            pulled.append(f"{len(nf.navi_nodes)} navi")
-
-    # 2. Post-link tail — first match wins (every imported obj carries
-    #    an identical copy of the file-level metadata).
-    for obj in bpy.data.objects:
-        ptype = obj.get('path_type', '')
-        if not ptype.startswith('nodes_') or ptype == 'nodes_viz':
-            continue
-        if obj.get('parsed_extras', False):
-            nl = list(obj.get('navi_links',         []) or [])
-            ll = list(obj.get('link_lengths',       []) or [])
-            pi = list(obj.get('path_intersections', []) or [])
-            if nl:
-                nf.navi_links = [int(v) for v in nl]
-            if ll:
-                nf.link_lengths = [int(v) for v in ll]
-            if pi:
-                nf.path_intersections = [int(v) for v in pi]
-            if nl or ll or pi:
-                nf.parsed_extras = True
-                pulled.append("extras")
-            break
-        b64 = obj.get('extra_data_b64', '')
-        if b64:
-            try:
-                nf.extra_data = base64.b64decode(b64)
-                nf.parsed_extras = False
-                pulled.append("extra_data")
-            except Exception as e:
-                print(f"[INU] extra_data decode failed: {e}")
-            break
-
-    return ", ".join(pulled)
-
-
 class GTATOOLS_OT_curves_to_nodes(bpy.types.Operator):
-    """Block the legacy Curve writer before opening or changing files.
-
-    Keep the operator ID for old layouts/scripts and saved scenes. All
-    curves are blocked, including new curves and old converted curves
-    whose original meshes have been deleted. Bounds checks cannot catch
-    incorrect connections that still address existing nodes.
-    """
+    """Export converted Compiled NODES curves with persistent identities."""
     bl_idname = "gtatools.curves_to_nodes"
     bl_label = "INU: Curves → nodes*.dat"
-    bl_description = T(_CURVES_EXPORT_BLOCKED)
+    bl_description = T("Экспорт кривых с сохранением ID и связей Compiled NODES")
     bl_options = {'REGISTER'}
 
     filepath: StringProperty(subtype='FILE_PATH',
@@ -628,9 +170,8 @@ class GTATOOLS_OT_curves_to_nodes(bpy.types.Operator):
     entire_map: BoolProperty(
         name=T("Записать всю карту"),
         description=T(
-            "Создать пустые nodes*.dat для всех регионов pathSet'а, "
-            "не только для тех где есть Curve'ы. Vanilla SA требует "
-            "наличия всех 64 файлов"),
+            "Включить все импортированные регионы и обновить межрегионные "
+            "ссылки при изменении ID точек"),
         default=False,
     )
 
@@ -639,12 +180,42 @@ class GTATOOLS_OT_curves_to_nodes(bpy.types.Operator):
         return any(o.type == 'CURVE' for o in context.selected_objects)
 
     def invoke(self, context, event):
-        self.report({'ERROR'}, T(_CURVES_EXPORT_BLOCKED))
-        return {'CANCELLED'}
+        from .path_nodes_curves import prepare_curve_export, SOURCE, _carrier, _decode
+        try:
+            selected = [o for o in context.selected_objects if o.type == 'CURVE']
+            if selected and selected[0].get(SOURCE):
+                carrier = _carrier(selected[0][SOURCE], context.scene.objects)
+                if not self.properties.is_property_set('fla4'):
+                    self.fla4 = _decode(carrier['inu_nodes_curve_snapshot']).fla4
+                if not self.filepath:
+                    self.filepath = carrier['nodes_filename']
+            # Reindexing needs neighbouring regions; include them automatically
+            # when opening the file selector, then validate before it opens.
+            from .path_nodes_curves import collect_curve_region
+            if any(collect_curve_region(_carrier(source, context.scene.objects),
+                                        context.scene.objects).node_remap
+                   for source in {o[SOURCE] for o in selected if o.get(SOURCE)}):
+                self.entire_map = True
+            prepare_curve_export(selected, context.scene.objects, entire_map=self.entire_map,
+                                 fla4=self.fla4, path_set=int(self.path_set))
+        except (ValueError, KeyError, TypeError) as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
 
     def execute(self, context):
-        self.report({'ERROR'}, T(_CURVES_EXPORT_BLOCKED))
-        return {'CANCELLED'}
+        from .path_nodes_curves import prepare_curve_export, write_curve_export
+        try:
+            regions = prepare_curve_export(context.selected_objects, context.scene.objects,
+                                           entire_map=self.entire_map, fla4=self.fla4,
+                                           path_set=int(self.path_set))
+            write_curve_export(self.filepath, regions)
+        except (ValueError, KeyError, TypeError, OSError, OverflowError, struct.error) as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"{len(regions)} NODES {T('файлов экспортировано')}")
+        return {'FINISHED'}
 
 
 # ── Selection helpers (ZZPuma DEBUGPATH_ROL: bt_selPeds/Vehs/allp) ─
