@@ -6175,4 +6175,8 @@ LANG = {
     "Включить все импортированные регионы и обновить межрегионные ссылки при изменении ID точек":
         "Incluir las regiones importadas y actualizar las referencias entre regiones si cambian los ID",
     "файлов экспортировано": "archivos exportados",
+    "INU: LightMap из папки": "INU: LightMap desde carpeta",
+    "INU: LightMap день/ночь": "INU: LightMap de día/noche",
+    "INU: Найти LOD автоматически": "INU: Buscar LOD automáticamente",
+    "INU: Разделить на чанки": "INU: Dividir en bloques",
 }

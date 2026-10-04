@@ -343,6 +343,9 @@ def get_locale():
         view = bpy.context.preferences.view
         if not getattr(view, 'use_translate_interface', True):
             return 'en_US'   # Blender shows English source → so do we
+        language = getattr(view, 'language', 'DEFAULT')
+        if language and language != 'DEFAULT':
+            return language
         return bpy.app.translations.locale or 'en_US'
     except Exception:
         return 'en_US'
@@ -4639,6 +4642,11 @@ def _register_blender_translations():
     }
 
     blender_dict = {}
+    from .tools.ui_language import translation_entries, CONTEXT
+    english = get_translation('eng') or {}
+    russian_entries = translation_entries(english, {}, (CONTEXT,), russian=True)
+    for loc in ('ru_RU', 'ru'):
+        blender_dict[loc] = dict(russian_entries)
     for lang_code in available_languages():
         blender_locales = LANG_TO_BLENDER_LOCALES.get(lang_code)
         if not blender_locales:
@@ -4650,6 +4658,9 @@ def _register_blender_translations():
         for k, v in lang_dict.items():
             for ctx in contexts:
                 entries[(ctx, k)] = v
+        # RNA labels use English source so disabled UI translation still
+        # displays English. Keep Russian-key entries for dynamic T() callers.
+        entries.update(translation_entries(english, lang_dict, (CONTEXT,)))
         for blender_locale in blender_locales:
             blender_dict[blender_locale] = entries
 
@@ -4708,41 +4719,29 @@ classes = classes + (
 
 def register():
     # Hook the addon's localization into Blender's i18n FIRST — before
-    # we touch class bl_descriptions. Once registered, raw Russian
-    # strings on bl_label/bl_description get translated dynamically by
-    # Blender at draw time when the user is on a non-Russian UI.
+    # we touch class descriptions. RNA uses English source strings so
+    # untranslated Blender interfaces also display English. Registered
+    # translations restore Russian/Spanish when UI translation is enabled.
     _register_blender_translations()
 
-    # Blender's native i18n only kicks in when "Translate Interface" is ON.
-    # This addon's source strings are Russian, so with that toggle OFF a
-    # non-Russian user sees raw Russian everywhere (only English-source labels
-    # like "Lighting" render, and Blender translates those itself). Auto-enable
-    # it for a non-Russian locale so our registered translations actually apply.
-    # Russian/empty/unknown locales are left untouched — the source already IS
-    # Russian, and we must not force-translate Blender's own UI for them.
-    try:
-        _loc = (bpy.app.translations.locale or '').lower()
-        _view = bpy.context.preferences.view
-        if (_loc and not _loc.startswith('ru')
-                and not getattr(_view, 'use_translate_interface', True)):
-            _view.use_translate_interface = True
-    except Exception:                                    # noqa: BLE001
-        pass
+    from .tools.ui_language import source_translator, prepare_class
+    from .locale import available_languages
+    english_source = source_translator(get_translation('eng') or {},
+        [get_translation(code) or {} for code in available_languages()])
 
     # Load our PNG icons into a bpy.utils.previews collection so
     # `icon_value=icon_previews.get('NAME')` works in panel draw().
     from .data import icon_previews
     icon_previews.register()
 
-    # Auto-fill operator tooltip from the class docstring when one
-    # isn't explicitly set. We assign the *raw* Russian text rather
-    # than T(...) — Blender's translation system above handles the
-    # locale switch dynamically. Using T() here would snapshot the
-    # text in whatever locale the addon loaded with and freeze it.
+    # Tooltips and deferred RNA properties get an English source rather
+    # than a snapshot of the import-time UI language. Native translations
+    # follow later language changes without changing user preferences.
     for cls in classes:
         doc = getattr(cls, '__doc__', None)
         if doc and doc.strip():
             cls.bl_description = doc.strip()
+        prepare_class(cls, english_source)
         try:
             bpy.utils.register_class(cls)
         except ValueError:
@@ -4768,6 +4767,7 @@ def register():
 
     # Scene properties — consolidated in INUSceneSettings PropertyGroup.
     # See scene_settings.py for the full field list.
+    prepare_class(INUSceneSettings, english_source)
     bpy.utils.register_class(INUSceneSettings)
     bpy.types.Scene.inu_settings = bpy.props.PointerProperty(type=INUSceneSettings)
 

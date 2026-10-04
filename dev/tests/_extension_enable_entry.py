@@ -107,6 +107,25 @@ def check_packaged_curve_roundtrip(package_module):
                 bpy.data.objects.remove(item, do_unlink=True)
 
 
+def check_packaged_ui_language(package_module):
+    module = importlib.import_module(package_module)
+    panels = importlib.import_module(package_module + '.ui.panels')
+    helper = importlib.import_module(package_module + '.tools.ui_language')
+    view = bpy.context.preferences.view
+    previous = view.language, view.use_translate_interface
+    try:
+        for language, enabled, expected in (
+                ('en_US', False, 'Paths'), ('en_US', True, 'Paths'),
+                ('ru_RU', True, 'Пути'), ('ru_RU', False, 'Paths')):
+            view.language = language
+            view.use_translate_interface = enabled
+            assert module.T('Пути') == expected
+            assert bpy.app.translations.pgettext_iface(
+                panels.GTATOOLS_PT_paths_panel.bl_label, helper.CONTEXT) == expected
+    finally:
+        view.language, view.use_translate_interface = previous
+
+
 try:
     with zipfile.ZipFile(archive) as package:
         manifest = tomllib.loads(package.read('blender_manifest.toml').decode('utf-8'))
@@ -162,6 +181,8 @@ try:
             result['legacy_curve_export_blocked_before_writing'] = True
             check_packaged_curve_roundtrip(module_name)
             result['compiled_nodes_curve_roundtrip_byte_exact'] = True
+            check_packaged_ui_language(module_name)
+            result['interface_language_switching'] = True
         if cycle != 1:
             # Exercise both timer paths without blocking the background
             # process on Blender's interactive event loop.

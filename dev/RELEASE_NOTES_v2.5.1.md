@@ -4,6 +4,7 @@ Fixes the incorrect connections (“spider web”) produced by the old Compiled 
 
 ## Fixed
 
+- Match Blender's interface language for panel labels, operator names and property labels, including English with Translate Interface disabled. Language changes no longer require re-enabling the addon, and the addon no longer changes Blender's translation preference.
 - Preserve vehicle and pedestrian ID order, original directed links, links to neighbouring regions, navigation records and parallel link sections.
 - Preserve individual node flags and widths until curve properties are explicitly changed. Lane and traffic-light edits use the spline direction.
 - Preserve isolated nodes, cycles and shared junction identities without merging unrelated nearby or coincident original nodes.
