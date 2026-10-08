@@ -4,7 +4,7 @@
 
 # INU_Tools (GTA SA)
 
-**Blender addon for GTA San Andreas modding — full pipeline from modeling to IMG archive.**
+**Blender addon for GTA SA/VC/III modding — full pipeline from modeling to IMG archive.**
 
 <p>
   <img src="https://img.shields.io/badge/Blender-2.83%E2%80%935.1-orange?logo=blender" alt="Blender">
