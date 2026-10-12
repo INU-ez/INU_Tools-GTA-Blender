@@ -851,6 +851,13 @@ _img_tex_index_cache = {}   # (path, size) -> {texture_lower: set(txd_lower)}
 def _get_img_texture_index(img_path):
     """{texture_name → {txd_name}} для всех текстур в IMG. Кэш по (путь, размер)
     — строится один раз (scan_img читает только имена, без декода)."""
+    if os.path.isdir(img_path):
+        from ..core.texture_index import scan_folder
+        idx = {}
+        for entry in scan_folder(img_path):
+            if entry.texture_name:
+                idx.setdefault(entry.texture_name.lower(), set()).add(entry.txd_name.lower())
+        return idx
     try:
         key = (os.path.normcase(img_path), os.path.getsize(img_path))
     except OSError:
@@ -999,23 +1006,31 @@ def _col_index_for(archives):
 
 
 class GTATOOLS_OT_import_from_img(bpy.types.Operator):
-    """Импорт всех моделей из IMG: по IPL (с расстановкой) ИЛИ по IDE (все
+    """Импорт моделей из IMG или папки: по IPL (с расстановкой) ИЛИ по IDE (все
     определённые модели, разложенные сеткой). Геометрия и ТЕКСТУРЫ достаются
     из IMG on-the-fly (текстуры — по содержимому, IDE не требуется)."""
     bl_idname = "gtatools.import_from_img"
-    bl_label = "INU: Import from IMG"
+    bl_label = "INU: Импорт карты"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         # Быстрая проверка, затем МОДАЛЬНЫЙ запуск: прогресс внизу и без
         # зависания Blender (как «Импорт карт»). Тяжёлый цикл — в _work-генераторе.
         img_path = bpy.path.abspath(context.scene.inu_settings.gtatools_img_path)
+        s = context.scene.inu_settings
+        models_root = getattr(s, 'gtatools_models_root', '')
+        if models_root and s.gtatools_game_root:
+            self.report({'ERROR'}, T("Укажите только одну папку: игры или моделей"))
+            return {'CANCELLED'}
+        if models_root and not os.path.isdir(bpy.path.abspath(models_root)):
+            self.report({'ERROR'}, T("Папка моделей не найдена"))
+            return {'CANCELLED'}
         _found = [p for p in
                   (context.scene.get('gtatools_found_imgs', '') or '').split('\n')
                   if p and os.path.isfile(p)]
         # IMG-строку убрали: базой могут быть найденные архивы («Найти IMG»).
         # Ошибка только если совсем нет ни ручного IMG, ни найденных.
-        if (not img_path or not os.path.isfile(img_path)) and not _found:
+        if not models_root and (not img_path or not os.path.isfile(img_path)) and not _found:
             self.report({'ERROR'},
                         T("Нет IMG: нажми «Найти IMG» или укажи архив"))
             return {'CANCELLED'}
@@ -1027,7 +1042,7 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
         wm.progress_begin(0, 1)
         self._timer = wm.event_timer_add(0.02, window=context.window)
         wm.modal_handler_add(self)
-        context.workspace.status_text_set(T("Импорт из IMG..."))
+        context.workspace.status_text_set(T("Импорт карты..."))
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
@@ -1059,7 +1074,7 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
         if self._total:
             wm.progress_update(min(1.0, self._done / self._total))
         context.workspace.status_text_set(
-            f"{T('Импорт из IMG:')} {self._done}/{self._total or '?'}")
+            f"{T('Импорт карты:')} {self._done}/{self._total or '?'}")
         return {'RUNNING_MODAL'}
 
     def _finish(self, context):
@@ -1083,12 +1098,24 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
         ide_path = bpy.path.abspath(scene.inu_settings.gtatools_ide_path)
         ipl_path = bpy.path.abspath(scene.inu_settings.gtatools_ipl_path)
         game_root = bpy.path.abspath(scene.inu_settings.gtatools_game_root)
+        model_root = getattr(scene.inu_settings, 'gtatools_models_root', '')
+        model_root = bpy.path.abspath(model_root) if model_root else ''
+        folder_source = None
+        if model_root:
+            img_path = ''
+            game_root = ''
+            from ..core.model_folder import ModelFolder
+            folder_source = ModelFolder(model_root)
+            read_directory = folder_source.read_directory
+            extract_file = folder_source.extract_file
+            if folder_source.duplicates:
+                self.report({'WARNING'}, T("В папке есть повторяющиеся имена моделей; используется первый файл"))
 
         # Архивы: основной IMG + найденные «Найти IMG», без повторов, в порядке
         # загрузки игрой (SA — первый зарегистрированный, III/VC — последний
         # CDIMAGE): модель из нескольких архивов берётся как в игре.
         from ..core.gta_dat import order_archives, dat_game
-        archives = order_archives(
+        archives = [model_root] if folder_source else order_archives(
             [p for p in [img_path] + (scene.get('gtatools_found_imgs', '') or '').split('\n')
              if p and os.path.isfile(p)], game_root)
 
@@ -1100,7 +1127,7 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
             from ..core import game_versions as gv
             detected = gv.detect_game_from_img(
                 img_path if os.path.isfile(img_path)
-                else (archives[0] if archives else ''))
+                else (archives[0] if archives and not folder_source else ''))
             # IMG у III и VC одинаковый (VER1 + .dir) — III узнаём по папке игры.
             if detected == gv.GAME_VC and dat_game(game_root) == gv.GAME_III:
                 detected = gv.GAME_III
@@ -1137,7 +1164,8 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
                     ide_models[a.model_id] = a
                     ide_source[a.model_id] = p
 
-        use_gta_dat = getattr(scene.inu_settings, 'gtatools_img_use_gta_dat', False)
+        use_gta_dat = (not model_root and
+                       getattr(scene.inu_settings, 'gtatools_img_use_gta_dat', False))
         skip_lod = getattr(scene.inu_settings, 'gtatools_img_skip_lod', False)
         load_txd = getattr(scene.inu_settings, 'gtatools_img_load_txd', True)
         load_col = getattr(scene.inu_settings, 'gtatools_map_load_col', True)
@@ -1205,14 +1233,15 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
         else:
             if ide_path and os.path.isfile(ide_path):
                 _load_ide_into(ide_path)
-            elif ipl_list and game_root and os.path.isdir(game_root):
+            elif (ipl_list and (game_root or model_root)
+                  and not getattr(scene.inu_settings, 'gtatools_ide_sync_list', [])):
                 # Авто-IDE: IDE не выбран, но задана папка с IDE — читаем ВСЕ
                 # .ide из неё (корень игры → по gta.dat, иначе рекурсивный скан).
                 # Только при IPL: модель находится по имени из IPL; IDE лишь
                 # даёт TXD/дальность/флаги, лишние определения не участвуют.
                 # Без IPL сетку по ним не строим — только из явно выбранных IDE.
                 from ..core.gta_dat import list_ide_files
-                for p in list_ide_files(game_root):
+                for p in list_ide_files(model_root or game_root):
                     if os.path.isfile(p):
                         _load_ide_into(p)
 
@@ -1226,7 +1255,8 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
         # проставятся для ВСЕХ моделей IPL (кастомная карта часто разложена по
         # нескольким IDE). Уже загруженные из выбранного IDE имеют приоритет.
         _found_ides = [p for p in
-                       (scene.get('gtatools_found_ides', '') or '').split('\n')
+                       ([it.path for it in getattr(scene.inu_settings, 'gtatools_ide_sync_list', [])]
+                        + (scene.get('gtatools_found_ides', '') or '').split('\n'))
                        if p and os.path.isfile(p)]
         for _p in _found_ides:
             _load_ide_into(_p)
@@ -1278,7 +1308,8 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
         # Коллизия: {модель: (архив, запись .col, смещение, длина)} по именам из
         # заголовков COL тех же `archives` — ванильная лежит в библиотеках (один
         # .col на много моделей), своя — в <модель>.col; находятся обе.
-        col_index = _col_index_for(archives) if load_col else {}
+        col_index = ((folder_source.col_index() if folder_source else _col_index_for(archives))
+                     if load_col else {})
         col_bytes = {}          # (архив, запись) → байты .col, одна распаковка
         col_mat_cache = {}      # материалы поверхностей COL — общие на прогон
         n_col = 0               # моделей, получивших коллизию
@@ -1458,6 +1489,8 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
                     dff_path = os.path.join(tmpdir, dff_filename)
                     with open(dff_path, 'wb') as f:
                         f.write(dff_data)
+                    if folder_source:
+                        dff_path = folder_source.files[dff_filename.lower()].path
 
                     try:
                         before = set(context.scene.objects)
@@ -1612,7 +1645,7 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
                             # для экспорта модели в IMG.
                             _src_img = img_index.get(dff_filename.lower(),
                                                      ('', ''))[0]
-                            if _src_img:
+                            if _src_img and not folder_source:
                                 obj.inu.img_target_file = _src_img
                             if inst.model_id in ide_models:
                                 ide_obj = ide_models[inst.model_id]
@@ -1669,6 +1702,11 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
             if load_txd:
                 _rescue_textures_from_img(archives, img_index, tmpdir,
                                           extract_file, inu_import_txd)
+                if folder_source:
+                    from .dff_import import _pull_loose_textures
+                    scope_mats = {slot.material for objects in imported_models.values()
+                                  for obj in objects for slot in obj.material_slots if slot.material}
+                    _pull_loose_textures([model_root], scope_mats)
 
             # ── LOD-привязка: inu.lod_object из IPL lod_index ──
             # lod_index инстанса указывает на позицию LOD-инстанса в этом же IPL.
@@ -2183,7 +2221,7 @@ class GTATOOLS_OT_scan_ide_for_ipl(bpy.types.Operator):
         from ..core.gta_dat import list_ide_files
         s = context.scene.inu_settings
         ipl_paths = _ipl_paths_for_import(s)
-        ide_root = bpy.path.abspath(s.gtatools_game_root)
+        ide_root = bpy.path.abspath(getattr(s, 'gtatools_models_root', '') or s.gtatools_game_root)
         if not ipl_paths:
             self.report({'ERROR'}, T("Выберите IPL-файл"))
             return {'CANCELLED'}

@@ -8,7 +8,7 @@
 
 <p>
   <img src="https://img.shields.io/badge/Blender-2.83%E2%80%935.1-orange?logo=blender" alt="Blender">
-  <img src="https://img.shields.io/badge/Version-2.5.1-green" alt="Version">
+  <img src="https://img.shields.io/badge/Version-2.5.2-green" alt="Version">
   <img src="https://img.shields.io/badge/License-GPL--3.0-blue" alt="License">
 </p>
 
@@ -26,6 +26,7 @@
 
 - **Live Ariane bridge** — two-way, real-time editing with the Ariane map editor: import on click, send models / positions / instances back.
 - **Native parsers** DFF / COL / TXD / IDE / IPL / IMG / IFP / FXP — zero external dependencies.
+- **Unpacked map import** — load DFF/TXD/COL and textures from a models folder using selected IDE/IPL files, including subfolders.
 - **Full map round-trip** — IMG → Blender → edit DFF + COL + TXD → IMG.
 - **Export checked against the engine** — every writer is audited against what `gta_sa.exe` actually reads; anything the game would crash on is named before the file is written.
 - **Reliable IDE / IPL sync** — rows are found by their content, not by line numbers: copies keep their own placement and LOD, other people's rows are never overwritten, files are written atomically with a backup.

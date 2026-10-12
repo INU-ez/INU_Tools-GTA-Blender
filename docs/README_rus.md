@@ -8,7 +8,7 @@
 
 <p>
   <img src="https://img.shields.io/badge/Blender-2.83%E2%80%935.1-orange?logo=blender" alt="Blender">
-  <img src="https://img.shields.io/badge/Version-2.5.1-green" alt="Version">
+  <img src="https://img.shields.io/badge/Version-2.5.2-green" alt="Version">
   <img src="https://img.shields.io/badge/License-GPL--3.0-blue" alt="License">
 </p>
 
@@ -26,6 +26,7 @@
 
 - **Живой мост с Ariane** — двусторонняя правка в реальном времени: импорт по клику, отправка моделей / позиций / инстансов обратно.
 - **Нативные парсеры** DFF / COL / TXD / IDE / IPL / IMG / IFP / FXP — без внешних зависимостей.
+- **Импорт распакованной карты** — DFF/TXD/COL и текстуры из папки моделей по выбранным IDE/IPL, включая подпапки.
 - **Полный round-trip карты** — IMG → Blender → правка DFF + COL + TXD → IMG.
 - **Экспорт сверен с движком** — каждый писатель проверяется по тому, что реально читает `gta_sa.exe`: всё, на чём игра упадёт, названо до записи файла.
 - **Надёжная синхронизация IDE / IPL** — строка ищется по содержимому, а не по номеру: у копий своя расстановка и свой LOD, чужие строки не перезаписываются, файл пишется атомарно с резервной копией.
@@ -120,4 +121,4 @@
 
 **Автор:** INU (Discord `1.n.u` · [сервер](https://discord.gg/sqtGAVTGdy)) · зеркало анимаций — **yeezyk** · нарезка карты — **[milevskiy](https://github.com/milevskiy27)** · фикс тайминга ключей ANP3 — **[sexorcist00](https://github.com/sexorcist00)**
 
-**Лицензия:** [GPL-3.0](LICENSE)
+**Лицензия:** [GPL-3.0](../LICENSE)

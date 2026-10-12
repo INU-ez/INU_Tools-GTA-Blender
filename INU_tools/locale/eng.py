@@ -1044,9 +1044,7 @@ LANG = {
     "Быстрые пресеты:": "Quick presets:",
     "Стекло": "Glass",
     "Краска": "Paint",
-    "Сброс": "Reset",
     "Копировать на выделенные": "Copy to selected",
-    "Имя": "Name",
     "Только активную анимацию": "Active animation only",
     "Экспортировать ТОЛЬКО активную Action арматуры — одну анимацию, а не весь пак. По умолчанию экспорт собирает все импортированные (ifp_source) Actions + активную; с этой галкой — ровно одну активную, будь она своя новая ИЛИ существующая из импортнутого ped.ifp.": "Export ONLY the armature's active Action — a single animation, not the whole pack. By default export gathers every imported (ifp_source) Action plus the active one; with this on, exactly the active one, whether it's your new Action OR an existing one from an imported ped.ifp.",
     "Нет активной анимации на арматуре": "No active animation on the armature",
@@ -1063,13 +1061,6 @@ LANG = {
     "Настройки 2DFX применены к {0}": "2DFX settings applied to {0}",
 
     # Property descriptions
-    "Выделить найденные проблемные элементы": "Select found problem elements",
-    "Количество колонок в сетке текстуры": "Number of columns in texture grid",
-    "Количество рядов в сетке текстуры": "Number of rows in texture grid",
-    "Позиция UV в ячейке": "UV position in cell",
-    "Полигоны с пересекающимися UV перемещаются вместе": "Polygons with overlapping UVs move together",
-    "Путь к папке с системными текстурами GTA": "Path to GTA system textures folder",
-    "Путь к папке где находится .blend файл": "Path to folder where .blend file is located",
     "Не экспортировать TXD при Export All": "Do not export TXD with Export All",
     "Пропустить TXD": "Skip TXD",
 
@@ -1094,11 +1085,8 @@ LANG = {
     "В нижнем правом углу": "In bottom right corner",
 
     # UI text
-    "Статус: Готов": "Status: Ready",
-    "Статус: Не найден": "Status: Not found",
     "Папка .blend:": ".blend Folder:",
     "Загрузить текстуры": "Load Textures",
-    "Очистка материалов": "Cleanup Materials",
     "Проверить материалы": "Check Materials",
     "Очистить всё": "Clear All",
     "Отменить": "Undo",
@@ -1143,14 +1131,12 @@ LANG = {
     "Ошибка загрузки:": "Loading error:",
     "Создан материал:": "Material created:",
     "Выделите меш объекты!": "Select mesh objects!",
-    "Объектов:": "Objects:",
     "всего материалов:": "total materials:",
     "превышен лимит:": "limit exceeded:",
     "Объединено:": "Merged:",
     "слотов, удалено:": "slots, removed:",
     "дубликатов": "duplicates",
     "Дубликаты материалов не найдены": "No duplicate materials found",
-    "Сортировка материалов": "Sort Materials",
     "Материалы уже отсортированы": "Materials already sorted",
     "Отсортировано материалов:": "Materials sorted:",
     "Сохраните .blend файл сначала!": "Save .blend file first!",
@@ -1300,8 +1286,6 @@ LANG = {
     "DFF — импорт модели с мешем и материалами\nCOL — импорт коллизии\nTXD — импорт текстур\nImport TXD — автоимпорт текстур при импорте DFF":
         "DFF — import model with mesh and materials\nCOL — import collision\nTXD — import textures\nImport TXD — auto-import textures when importing DFF",
 
-    "Light — уличные фонари, неон, corona\nParticle — дым, огонь, частицы\nPed Attractor — точки притяжения NPC (банкомат, скамейка)\nSun Glare — блик солнца на поверхности":
-        "Light — street lights, neon, corona\nParticle — smoke, fire, particles\nPed Attractor — NPC attraction points (ATM, bench)\nSun Glare — sun glare on surface",
 
     "Color — цвет короны и света\nCorona Size — размер короны\nDraw Distance — дальность отрисовки\nLight Range — радиус точечного света":
         "Color — corona and light color\nCorona Size — corona size\nDraw Distance — draw distance\nLight Range — point light radius",
@@ -1315,38 +1299,18 @@ LANG = {
     "Light — динамическое освещение модели\nModulate Material Color — цвет материала влияет на модель\nExport Normals — экспорт нормалей (отключить для map объектов)":
         "Light — dynamic lighting on model\nModulate Material Color — material color affects model\nExport Normals — export normals (disable for map objects)",
 
-    "Day — дневные вертексные цвета (prelight)\nNight — ночные вертексные цвета (требует Pipeline: Building)":
-        "Day — daytime vertex colors (prelight)\nNight — nighttime vertex colors (requires Pipeline: Building)",
 
     "UV Map 1 — основная UV развёртка\nUV Map 2 — вторая UV (для lightmap и т.д.)\nBin Mesh PLG — совместимость с просмотрщиками DFF":
         "UV Map 1 — primary UV map\nUV Map 2 — secondary UV (for lightmap etc.)\nBin Mesh PLG — compatibility with DFF viewers",
 
-    "Day — дневные вертексные цвета\nNight — ночные вертексные цвета\nDay/Night — создать оба атрибута\n+/- — добавить или удалить атрибут\nSave Materials — сохранить материалы (для Itera Tools)\nRestore — восстановить сохранённые материалы":
-        "Day — daytime vertex colors\nNight — nighttime vertex colors\nDay/Night — create both attributes\n+/- — add or remove attribute\nSave Materials — save materials (for Itera Tools)\nRestore — restore saved materials",
 
-    "V — смещение яркости vertex colors\nПоложительное значение — светлее\nОтрицательное — темнее":
-        "V — brightness offset for vertex colors\nPositive value — brighter\nNegative — darker",
 
-    "Сглаживание vertex colors между соседними вершинами\nIterations — количество проходов\nFactor — сила сглаживания (0-1)":
-        "Smooth vertex colors between neighboring vertex\nIterations — number of passes\nFactor — smoothing strength (0-1)",
 
-    "Контраст vertex colors\n1.0 — без изменений\n< 1.0 — меньше контраст\n> 1.0 — больше контраст":
-        "Vertex colors contrast\n1.0 — no change\n< 1.0 — less contrast\n> 1.0 — more contrast",
 
-    "Яркость vertex colors\n0.0 — без изменений\n> 0 — светлее\n< 0 — темнее":
-        "Vertex colors brightness\n0.0 — no change\n> 0 — brighter\n< 0 — darker",
 
-    "Гамма-коррекция vertex colors\n1.0 — без изменений\n< 1.0 — светлее (тени)\n> 1.0 — темнее (тени)":
-        "Vertex colors gamma correction\n1.0 — no change\n< 1.0 — lighter (shadows)\n> 1.0 — darker (shadows)",
 
-    "Диапазон дневного освещения для COL материалов\nMin/Max — значения от 0 до 15\nЯркость vertex colors конвертируется в этот диапазон":
-        "Day lighting range for COL materials\nMin/Max — values from 0 to 15\nVertex colors brightness is converted to this range",
 
-    "Диапазон ночного освещения для COL материалов\nMin/Max — значения от 0 до 15\nИспользует Night color attribute если есть":
-        "Night lighting range for COL materials\nMin/Max — values from 0 to 15\nUses Night color attribute if available",
 
-    "Тени — включить расчёт теней при запекании\nЗапечь — быстрое запекание без теней\nС тенями — запекание с raycast тенями (медленнее, но точнее)":
-        "Shadows — enable shadow calculation when baking\nBake — fast baking without shadows\nWith Shadows — baking with raycast shadows (slower but more accurate)",
 
     # Buttons
     "Запекание:": "Bake:",
@@ -1355,34 +1319,24 @@ LANG = {
     "С тенями": "With Shadows",
     "Экспорт всего (DFF+COL+LOD+TXD)": "Export All (DFF+COL+LOD+TXD)",
     "Проверка": "Check",
-    "Проверка вершин": "Check Vertex",
-    "Проверка N-gon": "Check N-gon",
-    "Проверка материалов": "Check Materials",
     "Привязать к модели": "Attach to Model",
     "Выделите меш + 2DFX, затем нажмите": "Select mesh + 2DFX, then click",
     "Обновить превью": "Refresh Preview",
     "Удалить превью": "Remove Preview",
-    "Применить": "Apply",
     "Создать 8 ламп": "Create 8 Lights",
-    "Удалить": "Remove",
     "Сохранить материалы": "Save Materials",
     "Восстановить": "Restore",
-    "Запечь COL Light": "Bake COL Light",
     "Сгладить": "Smooth",
     "Сглаживание:": "Smooth:",
     "Контраст:": "Contrast:",
-    "Контраст": "Contrast",
     "Яркость:": "Brightness:",
     "Яркость": "Brightness",
     "Гамма:": "Gamma:",
     "Гамма": "Gamma",
     "Проходы": "Iterations",
     "Сила": "Factor",
-    "Мин.": "Min",
-    "Макс.": "Max",
 
     # 2DFX panel
-    "Пресеты:": "Presets:",
     "Свойства света:": "Light Properties:",
     "Имя короны:": "Corona Name:",
     "Режим показа:": "Show Mode:",
@@ -1416,13 +1370,8 @@ LANG = {
     "Сохранено:": "Saved:",
     "мат.": "mat(s)",
     "Окружающий": "Ambient",
-    "Интенсивность": "Intensity",
 
     # Prelight COL panel
-    "Дневной свет:": "Day Light:",
-    "Ночной свет:": "Night Light:",
-    "Нет vertex colors": "No vertex colors",
-    "COL light материалов:": "COL light materials:",
     "Дневной свет": "Day Light",
     "Ночной свет": "Night Light",
     "Свет коллизии": "Collision light",
@@ -1457,7 +1406,6 @@ LANG = {
     # Material Effects panel
     "Фоновое затенение": "Ambient Shading",
     "Карта окружения": "Environment Map",
-    "Текстура": "Texture",
     "Коэффициент": "Coefficient",
     "Использовать FB Alpha": "Use FB Alpha",
     "Карта высот": "Bump Map",
@@ -1467,14 +1415,11 @@ LANG = {
     "Смещение X": "Offset X",
     "Зеркальный материал": "Specular Material",
     "Уровень зеркальности": "Specular Level",
-    "UV Анимация": "UV Animation",
-    "Имя анимации": "Animation Name",
 
     # Object Props panel
     "Флаги геометрии:": "Geometry Flags:",
     "Вертексные цвета:": "Vertex Colors:",
     "UV карты:": "UV Maps:",
-    "Тип": "Type",
     "Свет (rpGEOMETRYLIGHT)": "Light (rpGEOMETRYLIGHT)",
     "Цвет материала модулирует": "Modulate Material Color",
     "Экспорт нормалей": "Export Normals",
@@ -1516,8 +1461,6 @@ LANG = {
     # COL operators
     "Назначить тип поверхности GTA SA для COL коллизии": "Assign GTA SA surface type for COL collision",
     "Выбрать тип поверхности для COL материала": "Pick surface type for COL material",
-    "Конвертировать vertex colors в COL Day/Night Light (разбиение материалов по яркости)": "Convert vertex colors to COL Day/Night Light (split materials by brightness)",
-    "Удалить COL light материалы, созданные Bake COL Light": "Remove COL light materials created by Bake COL Light",
     "Конвертировать vertex colors в COL Day/Night Light": "Convert vertex colors to COL Day/Night Light",
 
     # Panel docstrings
@@ -1603,12 +1546,9 @@ LANG = {
     "Экспорт COL в IMG": "Export COL to IMG",
     "Экспорт TXD в IMG": "Export TXD to IMG",
     "Экспортировать DFF + TXD + COL прямо в .img архив": "Export DFF + TXD + COL directly into .img archive",
-    "Укажите путь к .img архиву": "Specify path to .img archive",
-    "Экспорт в IMG": "Export to IMG",
 
     # Game root / gta.dat
     "Корневая папка GTA SA для автопоиска IDE/IPL/IMG": "GTA SA root folder for auto-discovering IDE/IPL/IMG",
-    "Укажите корневую папку GTA SA": "Specify GTA SA root folder",
     "Не найден data/gta.dat в указанной папке": "data/gta.dat not found in the specified folder",
     "Искать все IDE/IPL через gta.dat (нужна корневая папка игры)": "Find all IDE/IPL via gta.dat (requires game root folder)",
 
@@ -1620,33 +1560,16 @@ LANG = {
     "Добавить / обновить запись в существующем IPL файле": "Add / update entry in existing IPL file",
     "Удалить запись из IDE файла по Model ID": "Remove entry from IDE file by Model ID",
     "Удалить запись из IPL файла по Model ID": "Remove entry from IPL file by Model ID",
-    "Укажите путь к IDE файлу": "Specify path to IDE file",
-    "Укажите путь к IPL файлу": "Specify path to IPL file",
     "Выделите меш объекты": "Select mesh objects",
     "Выделите меш объект": "Select a mesh object",
-    "объектов с Model ID = 0, задайте ID в свойствах": "objects with Model ID = 0, set ID in properties",
-    "обновлено": "updated",
-    "добавлено": "added",
-    "удалено": "removed",
-    "Нет объектов с Model ID > 0": "No objects with Model ID > 0",
     "Добавить": "Add",
-    "Удалить": "Remove",
     "Импорт": "Import",
     "Экспорт": "Export",
 
     # v1.5.2 — IDE/IPL/IMG, ID Manager, Suffixes, COL Light, Presets
     "IDE / IPL / IMG": "IDE / IPL / IMG",
-    "Текстуры": "Textures",
     "Суффиксы моделей": "Model Suffixes",
     "Менеджер ID": "ID Manager",
-    "Свободных:": "Free:",
-    "Занятых:": "Used:",
-    "Следующий свободный:": "Next free:",
-    "Свободные:": "Free:",
-    "Назначить ID выделенным": "Assign IDs to selected",
-    "Открыть файл ID": "Open ID file",
-    "Назначено ID:": "Assigned IDs:",
-    "Все ID очищены": "All IDs cleared",
     "освобождён": "released",
     "Нет свободных ID в model_ids.txt": "No free IDs in model_ids.txt",
     "Нет свободных ID в активном пресете": "No free IDs in the active preset",
@@ -1658,12 +1581,9 @@ LANG = {
     "Суффикс для DFF моделей (например _DFF или DFF)": "Suffix for DFF models (e.g. _DFF or DFF)",
     "Суффикс для LOD моделей (например _LOD или LOD)": "Suffix for LOD models (e.g. _LOD or LOD)",
     "Суффикс для COL моделей (например _COL или COL)": "Suffix for COL models (e.g. _COL or COL)",
-    "Порог яркости: 0 = без порога, 100 = максимальная отсечка": "Brightness threshold: 0 = max cutoff, 100 = no cutoff",
-    "Порог": "Threshold",
     "Край": "Edge",
     "Контраст": "Contrast",
     "Цифры": "Numbers",
-    "Размер": "Size",
     "Скрыть превью": "Hide preview",
     "Превью COL Light": "Preview COL Light",
     "Дневной свет:": "Day light:",
@@ -1671,7 +1591,6 @@ LANG = {
     "Мин.": "Min.",
     "Макс.": "Max.",
     "Импорт из IMG": "Import from IMG",
-    "Игра": "Game",
     "Папка с IDE": "IDE folder",
     "Найти IDE": "Find IDE",
     "IDE найдены ({0}):": "IDE found ({0}):",
@@ -1692,7 +1611,6 @@ LANG = {
     "Не удалось прочитать IPL: {0}": "Could not read IPL: {0}",
     "В IPL нет моделей": "The IPL has no models",
     "Найдено IDE: {0} · моделей покрыто {1}/{2}": "IDE found: {0} · models covered {1}/{2}",
-    "Извлечь ресурсы": "Extract Resources",
     "Собрать карту": "Build Map",
     "Bounds / Textured": "Bounds / Textured",
     "Bounds: ON": "Bounds: ON",
@@ -1700,7 +1618,6 @@ LANG = {
     "Загрузить .glb": "Load .glb",
     "уникальных моделей": "unique meshes",
     "Нет моделей для импорта": "No models to import",
-    "Нет DFF файлов в кэше. Сначала извлеките ресурсы.": "No DFF files in cache. Extract resources first.",
     "Извлечено текстур:": "Textures extracted:",
     "Импорт карты": "Import Map",
     "Без LOD": "Skip LOD",
@@ -1710,14 +1627,9 @@ LANG = {
     "Заменено:": "Replaced:",
     "Выделите fake объекты карты": "Select fake map objects",
     "Импорт плоскостей вместо моделей (быстрый превью карты)": "Import planes instead of models (fast map preview)",
-    "Район карты для импорта": "Map region to import",
     "Не найден gta3.img": "gta3.img not found",
     "Не найден IMG архив": "IMG archive not found",
     "Кеш пуст — сначала запустите «Извлечь ресурсы»": "Cache is empty — run «Extract Resources» first",
-    "Секции IPL": "IPL Sections",
-    "Пропустить LOD модели при импорте": "Skip LOD models during import",
-    "Загружать TXD текстуры вместе с DFF": "Load TXD textures with DFF",
-    "Импортировано:": "Imported:",
     "Экспорт в IMG": "Export to IMG",
     "Укажите путь к IMG архиву в INU Tools": "Set IMG archive path in INU Tools",
     "IPL файл пуст или не указан": "IPL file is empty or not specified",
@@ -1730,9 +1642,6 @@ LANG = {
     "Укажите путь к IPL файлу": "Set IPL file path",
     "Нет объектов с Model ID > 0": "No objects with Model ID > 0",
     "объектов с Model ID = 0, задайте ID в свойствах": "objects with Model ID = 0, set ID in properties",
-    "обновлено": "updated",
-    "добавлено": "added",
-    "удалено": "removed",
     "Пресеты:": "Presets:",
     "Пресет загружен:": "Preset loaded:",
     "Пресет не найден": "Preset not found",
@@ -1756,7 +1665,6 @@ LANG = {
     "Добавить LightMap": "Add LightMap",
     "Привязанные 2DFX:": "Attached 2DFX:",
     "Отвязать все": "Detach All",
-    "материалов": "materials",
     "удалено": "removed",
     "Файл не найден": "File not found",
     "COL light материалов:": "COL light materials:",
@@ -1767,7 +1675,6 @@ LANG = {
     "Параметры воды:": "Water Parameters:",
     "Скорость течения:": "Flow Speed:",
     "Волны": "Waves",
-    "Применить": "Apply",
     "Инструменты:": "Tools:",
     "Привязка к сетке (x4)": "Snap to Grid (x4)",
     "Привязка к блоку (500)": "Snap to Block (500)",
@@ -1848,7 +1755,6 @@ LANG = {
     "Скин: пересчёт геометрии": "Skin: geometry rebuild",
 
     # v1.6.0 / v1.6.1
-    "Извлечь ресурсы": "Extract Resources",
     "Собрать карту в .glb": "Build Map .glb",
     "Импорт карты .glb": "Import Map .glb",
     "Заменить Empty": "Replace Empty",
@@ -1882,7 +1788,6 @@ LANG = {
     "Сколько применить": "Count",
     "Максимум анимаций для обработки в этом запуске. 0 = все оставшиеся после start_index": "Maximum animations to process in this run. 0 = all remaining after start_index",
     "диапазон": "range",
-    "из": "of",
     "Выберите анимацию в списке": "Pick an animation from the list",
     "Preview ●": "Preview ●",
     "Прорежать ключи": "Decimate keyframes",
@@ -1956,7 +1861,6 @@ LANG = {
     "Префикс для DFF моделей": "Prefix for DFF models",
     "Префикс для LOD моделей": "Prefix for LOD models",
     "Префикс для COL моделей": "Prefix for COL models",
-    "Укажите корневую папку GTA SA": "Specify GTA SA root folder",
     "Район карты для импорта": "Map region for import",
     "Нет DFF файлов в кэше. Сначала извлеките ресурсы.": "No DFF files in cache. Extract resources first.",
     "Ошибка чтения IMG": "IMG read error",
@@ -1969,9 +1873,6 @@ LANG = {
     "Links: ON": "Links: ON",
     "Import Map": "Import Map",
     "Вся карта": "Entire Map",
-    "Блик солнца": "Sun Glare",
-    "Свет": "Light",
-    "Частица": "Particle",
     "Ped Attractor": "Ped Attractor",
     "Тип эффекта": "Effect Type",
     "Убрать Itera": "Remove Itera",
@@ -2055,11 +1956,6 @@ LANG = {
     "Размер": "Size",
     "Высота": "Height",
     "Индексы": "Indices",
-    "Генерировать радар": "Generate Radar",
-    "Меню радар (3x3)": "Menu Radar (3x3)",
-    "Полный радар": "Full Radar",
-    "Полный меню": "Full Menu",
-    "Указанные тайлы": "Specific Tiles",
     "Упаковать в TXD": "Pack to TXD",
     "тайлов сохранено": "tiles saved",
     "архивов создано": "archives created",
@@ -2096,7 +1992,6 @@ LANG = {
     "Симуляция": "Simulation",
     "Переключение сбросит правки — сохраняйте первыми": "Switching will reset edits — save first",
     "Спрайт и смешивание": "Sprite & blending",
-    "Текстура": "Texture",
     "Цвет (start → end)": "Color (start → end)",
     "Начало": "Start",
     "Средний": "Middle",
@@ -2138,14 +2033,12 @@ LANG = {
     "Объект": "Object",
 
     # v1.6.3 — Shared TXD
-    "Общий TXD": "Shared TXD",
     "Имя общего TXD файла для нескольких DFF моделей": "Shared TXD filename for multiple DFF models",
     "Дописать в существующий": "Append to existing",
     "Если выбранный TXD уже существует — добавить/обновить в нём текстуры сцены, сохранив остальные текстуры файла (от других моделей). Иначе файл перезаписывается целиком.": "If the chosen TXD already exists, add/update the scene's textures in it while keeping the file's other textures (from other models). Otherwise the file is fully overwritten.",
     "Дописать в существующий TXD": "Append to existing TXD",
     "Один DFF (машина/пед)": "Single DFF (vehicle / ped)",
     "вне иерархии корня, пропущено объектов": "outside the root hierarchy, objects skipped",
-    "корень": "root",
     "COL-меш не найден — коллизия не встроена в .dff": "No COL mesh found — collision not embedded into the .dff",
     "Экспортировать ВСЮ выделенную иерархию в ОДИН .dff (машина, пед, любая многокомпонентная модель), а не разбивать по именам на отдельные файлы. TXD/COL при этом пишутся одним общим файлом. Имя берётся из поля имени внизу.": "Export the WHOLE selected hierarchy into ONE .dff (vehicle, ped, any multi-part model) instead of splitting by name into separate files. TXD/COL are written as one shared file. The name is taken from the filename field below.",
     "Ничего не экспортировано": "Nothing was exported",
@@ -2184,16 +2077,6 @@ LANG = {
 
     # v1.6.4 — Experimental features
     # Operator docstrings
-    "Проверить все материалы и показать текстуры, файлы которых не найдены":
-        "Scan all materials and report textures whose files cannot be found",
-    "Рекурсивно искать в выбранной папке и подставлять image.filepath для найденных по имени недостающих текстур":
-        "Search a folder recursively and patch image.filepath for any missing texture found by name",
-    "Скопировать все используемые материалами текстуры сцены в выбранную папку":
-        "Copy every texture used by scene materials into the chosen folder",
-    "Хэшировать все файлы текстур и показать группы одинаковых файлов":
-        "Hash every texture file and report groups of identical files",
-    "Пропорционально масштабировать всю иерархию машины (Empty-корень + меши + дамми), сохраняя структуру. Применяет масштаб к данным меша чтобы DFF-экспорт остался чистым":
-        "Rescale the active vehicle hierarchy (Empty root + meshes + dummies) preserving structure. Applies scale to mesh data so DFF export stays clean",
     "Экспортировать выделение как готовый район GTA SA (DFF + COL + TXD + IDE + IPL в одну папку)":
         "Export the current selection as a ready-to-ship GTA SA map (DFF + COL + TXD + IDE + IPL in one folder)",
     "Импортировать все *.ifp из папки и уложить анимации на NLA-трек активного armature":
@@ -2202,26 +2085,10 @@ LANG = {
         "Recreate visible Empty markers for every station on the active train track",
     "Переключить roadblock или задать тип светофора на выделенных точках кривой пути":
         "Toggle roadblock or set traffic-light kind on selected spline points of the active path curve",
-    "Импорт текстового файла Steve's COL Editor (.cst)":
-        "Import a Steve's COL Editor text file (.cst)",
-    "Экспорт выделения в текстовый файл Steve's COL Editor (.cst)":
-        "Export selection as Steve's COL Editor text file (.cst)",
     "Записать выбранный GTA Material пресет в свойства mat.inu.*":
         "Write the selected GTA Material preset into mat.inu.* properties",
 
     # Property descriptions
-    "Создать подпапку на каждый txd_name (читается с mesh-объектов)":
-        "Create a subfolder per txd_name (read from mesh objects)",
-    "Множитель равномерного масштаба — применяется к позициям и вершинам":
-        "Uniform scale factor applied to positions and vertices",
-    "Двигать только дамми-Empty, меши не трогать":
-        "Move only the dummy empties, leave meshes untouched",
-    "Применять только анимации, имя которых начинается с этого префикса (регистронезависимо)":
-        "Only apply animations whose name starts with this prefix (case-insensitive)",
-    "Уложить клипы на один NLA-трек с зазором":
-        "Stack clips on one NLA track with a gap",
-    "Создать Actions, без NLA":
-        "Create Actions, no NLA arrangement",
     "Переключить бит 12 (барьер копов) на каждой выделенной точке":
         "Flip bit 12 (cops barrier) on every selected point",
     "Поставить traffic_light=0 на каждой выделенной точке":
@@ -2339,7 +2206,6 @@ LANG = {
     "Бинарные IPL": "Binary IPLs",
     "Район изменился — пересканируйте": "Region changed — rescan",
     "Список пуст — нажмите Scan": "List is empty — click Scan",
-    "Все": "All",
     "Никакие": "None",
     "Без 2DFX": "No 2DFX",
     "Не импортировать 2DFX-эффекты (лампы, частицы, ped attractors, sun glare) при импорте карты и DFF":
@@ -2592,8 +2458,6 @@ LANG = {
         "WIND WINDFACTOR — game wind responsiveness",
 
     # ── Status / report / label strings ─────────────────────────────────
-    "Автоматически ставить material alpha = 254 при наличии vertex alpha < 255.\nНужно для стандартных прозрачных мешей (стёкла, дым). Выключи если материал должен остаться opaque":
-        "Automatically set material alpha = 254 when any vertex alpha < 255.\nNeeded for standard transparent meshes (glass, smoke). Disable if the material must stay opaque",
     "Восстановлено:": "Restored:",
     "Выберите папку для экспорта": "Pick an output folder",
     "Выделите объекты с нодами": "Select objects that carry nodes",
@@ -2611,7 +2475,6 @@ LANG = {
     "Нечего экспортировать": "Nothing to export",
     "Node group не найден:": "Node group not found:",
     "Открыть/Закрыть UV Editor": "Open / Close UV Editor",
-    "Отменено": "Cancelled",
     "Ошибка загрузки node group:": "Failed to load node group:",
     "Писать IPL в бинарном формате (только inst+cars)":
         "Write IPL in binary format (inst + cars only)",
@@ -2619,8 +2482,6 @@ LANG = {
         "Write nodes*.dat in extended FLA4 format (per-node spawn / speed / lanes)",
     "Пометить геометрию как разрушаемую (пишет чанк 0x253F2FD в DFF)":
         "Mark geometry as breakable (writes chunk 0x253F2FD into the DFF)",
-    "Помечает меш как объёмный луч света для плагина SA_Light.asi.\nУстанавливает material color = (254,254,254,254) — этот маркер плагин ищет во время рендера.\n\nТРЕБУЕТ SA_Light.asi в корне GTA SA. Без плагина меш будет рендериться как обычный полупрозрачный объект с жёстким срезом alpha.\n\nДля использования:\n1. Собери меш-конус/куб формой луча\n2. Покрась vertex colors как хочешь (любые значения alpha)\n3. Включи этот флаг + Set Material Alpha выключи\n4. Экспорт → плагин автоматически включит плавный alpha blend на этом меше":
-        "Mark the mesh as a volumetric light beam for the SA_Light.asi plugin.\nSets material color = (254, 254, 254, 254) — the plugin looks for this marker at render time.\n\nREQUIRES SA_Light.asi in the GTA SA root. Without the plugin the mesh renders as an ordinary semi-transparent object with hard alpha cutoff.\n\nHow to use:\n1. Build a cone / box mesh shaped like the beam\n2. Paint vertex colors however you want (any alpha values)\n3. Enable this flag + disable Set Material Alpha\n4. Export — the plugin switches this mesh to smooth alpha blending automatically",
     "Превью COL Light включено": "COL Light preview enabled",
     "Превью COL Light выключено": "COL Light preview disabled",
     "Привязано вершин:": "Snapped vertices:",
@@ -2718,7 +2579,6 @@ LANG = {
     "Library (несколько коллизий)": "Library (multiple collisions)",
     "Сгруппировать выделение по базовому имени (house1_COL + house1_SHA → одна запись 'house1') и записать все группы в один .col файл подряд. Так vanilla SA хранит <district>.col и vehicles.col":
         "Group the selection by base name (house1_COL + house1_SHA → one record 'house1') and write every group into a single .col file back-to-back. This is how vanilla SA stores <district>.col and vehicles.col",
-    "COL Library": "COL Library",
     "Писать все коллизии в один .col файл (multi-entry library). Каждая запись в файле — отдельная коллизия со своим model_id, сопоставляется с DFF по ID":
         "Write every collision into a single .col file (multi-entry library). Each record has its own model_id and links to a DFF by matching ID",
     "Имя library .col": "Library .col name",
@@ -2851,7 +2711,6 @@ LANG = {
     "Нет выделенных слоёв": "No selected layers",
 
     "Менеджер текстур": "Bitmaps Manager",
-    "Сканировать": "Scan",
     "Пропущено": "Missing",
     "Найти в папке…": "Resolve From Folder…",
     "Скопировать в папку…": "Copy Used To Folder…",
@@ -2873,12 +2732,10 @@ LANG = {
     "INU Export...": "INU Export...",
     "INU Export:": "INU Export:",
     "В папку": "To Folder",
-    "В IMG": "To IMG",
 
     # ID Manager buttons (Stage 4 / 2-column layout)
     "Назначить": "Assign",
     "Создать": "Create",
-    "Sync": "Sync",
     "С ID...": "From ID...",
     "Очистить выд.": "Clear Selected",
     "Расширить FLA": "Extend FLA",
@@ -2944,7 +2801,6 @@ LANG = {
     "Dam": "Dam",
     "Проверить пары": "Check pairs",
     "Показать:": "Show:",
-    "Создан": "Created",
     "Пар": "Pairs",
     "одиночные _ok": "lonely _ok",
     "одиночные _dam": "lonely _dam",
@@ -3010,7 +2866,6 @@ LANG = {
     "Animated object готов к экспорту": "Animated object ready for export",
     "Animated rig готов": "Animated rig ready",
     "Setup rig": "Setup rig",
-    "Validate": "Validate",
     "DFF+IFP+IDE": "DFF+IFP+IDE",
     "Дописать IDE entry": "Append IDE entry",
     "Добавить anim-запись в IDE-файл, заданный в Scene → INU Tools → IDE Path": "Add an anim entry to the IDE file set in Scene → INU Tools → IDE Path",
@@ -3099,8 +2954,6 @@ LANG = {
     "Все paintjob материалы OK": "All paintjob materials OK",
     "Paintjob проблем": "Paintjob issues",
     "Paintjob'ов в сцене нет": "No paintjobs in the scene",
-    "заполнен только Paintjob 1 — нужны оба": "only Paintjob 1 is set — both are required",
-    "заполнен только Paintjob 2 — нужны оба": "only Paintjob 2 is set — both are required",
     "Нужны обе альтернативы (1 и 2)": "Both alternatives (1 and 2) are required",
 
     # Profile system
@@ -3183,7 +3036,6 @@ LANG = {
     "и нет .txd с подходящими текстурами": "and no .txd with matching textures",
     "ни по покрытию ≥50% текстур в": "nor by ≥50% texture coverage in",
     "доп. папка": "extra folder",
-    "Укажите существующую папку": "Enter an existing folder",
 
     # IDE / Map workflow
     "Model ID": "Model ID",
@@ -3323,7 +3175,6 @@ LANG = {
     "Сирые LOD / COL": "Orphan LOD / COL",
     "Непривязанный 2DFX": "Unattached 2DFX",
     "Дубликаты model_id": "Duplicate model_id",
-    "Пустые меши": "Empty meshes",
     "Большие меши": "Large meshes",
     "Материал без текстуры": "Material without texture",
     "Суффиксы / префиксы": "Suffixes / prefixes",
@@ -3905,8 +3756,6 @@ LANG = {
         'Keys removed: ',
     'Удалено: ':
         'Removed: ',
-    'Удалить':
-        'Delete',
     'Удалён: ':
         'Deleted: ',
     'Указанные тайлы':
@@ -3929,12 +3778,8 @@ LANG = {
         'deleted: ',
 
     # === Docstring / prop translations added 2026-05-18 ===
-    'Создать рiг для animated map object (мельница, кран, флюгер):\n    Armature с одной костью + Action с цикличной Z-вращением.\n\n    Все вершины активного меша автоматически привязываются к\n    единственной кости (vertex group weight=1.0). Готово к экспорту в\n    DFF + IFP без ручной настройки скелета.':
-        'Create a rig for animated map object (windmill, crane, weathervane):\n    Armature with one bone + Action with a cyclic Z rotation.\n\n    All vertices of the active mesh are auto-bound to the single bone (vertex group weight=1.0). Ready to export to DFF + IFP without manual skeleton setup.',
     'Проверить настройку animated map object перед экспортом:\n    есть ли armature, привязан ли меш, заданы ли веса, есть ли action,\n    цикличный ли он. Лог проблем в System Console.':
         'Validate animated map object setup before export: armature presence, mesh binding, weights, action presence and cyclicity. Issues are logged to the System Console.',
-    'Экспортировать animated map object одним кликом: пишет\n    <base>.dff + <base>.ifp в выбранную папку. Опционально дописывает\n    или обновляет anim-запись в указанном IDE-файле.':
-        'Export the animated map object in one click: writes <base>.dff + <base>.ifp into the chosen folder. Optionally appends or updates the anim entry in the specified IDE file.',
     "Собрать Blender Asset Library из извлечённых ресурсов.\n\n    Walks every IDE in gta.dat / default.dat, classifies every cached DFF\n    by category (Cars / Peds / Weapons / Map Objects per region / LOD /\n    Interiors), imports each into a Collection, marks as an asset, embeds\n    INU metadata (model_id, txd_name, draw_distance, ide_flags), and\n    optionally renders a thumbnail. Output is a folder with one .blend\n    per category plus blender_assets.cats.txt — point Blender's Asset\n    Library preferences at it and you're done.":
         "Build a Blender Asset Library from extracted resources.\n\n    Walks every IDE in gta.dat / default.dat, classifies every cached DFF\n    by category (Cars / Peds / Weapons / Map Objects per region / LOD /\n    Interiors), imports each into a Collection, marks as an asset, embeds\n    INU metadata (model_id, txd_name, draw_distance, ide_flags), and\n    optionally renders a thumbnail. Output is a folder with one .blend\n    per category plus blender_assets.cats.txt — point Blender's Asset\n    Library preferences at it and you're done.",
     "Перегенерировать превьюшки в существующей Asset Library.\n\n    Iterates every ``<output>/*.blend``, opens it in this Blender\n    instance, re-renders thumbnails for every asset-marked collection,\n    then saves the .blend back. The asset list / metadata / textures\n    are untouched — only the preview pixels are refreshed. Useful for\n    bumping ``preview_size`` from 128 to 256 (or vice-versa) without\n    waiting through a full DFF re-import.\n\n    Stays in-process (modal generator) — opens .blend files in the\n    current session, headless subprocess would lose that scene-state\n    integration with the asset browser. Speed-up isn't critical for\n    preview-only refresh anyway.":
@@ -3953,8 +3798,6 @@ LANG = {
         'Save scan result to .txt',
     'Открыть папку файла в Проводнике':
         "Open file's folder in Explorer",
-    'Очистить список результатов':
-        'Clear results list',
     'Сделать активным указанный фрейм (используется панелью при клике\n    на строку дерева).':
         'Make the specified frame active (used by the panel when clicking\n    on a tree row).',
     'Переименовать активный фрейм.':
@@ -4207,8 +4050,6 @@ LANG = {
         'Region grid size. 64 = vanilla SA. Larger values require the Fastman92 limit adjuster (FLA4)',
     'Записать всю карту':
         'Write entire map',
-    'Создать пустые nodes*.dat для всех регионов pathSet\'а, не только для тех где есть Curve\'ы. Vanilla SA требует наличия всех 64 файлов':
-        "Emit empty nodes*.dat for every region in the pathSet, not only those that have Curves. Vanilla SA requires all 64 files to exist",
     'пустых':
         'empty',
     'ped Curve выделено':
@@ -4265,8 +4106,6 @@ LANG = {
         'Connector',
     'SpecialNode':
         'SpecialNode',
-    'Светофор: spawn\'ится на сегменте между knot и knot+1':
-        'TrafficLight: spawned on the segment between knot and knot+1',
     'Дорожный блок копов на самом knot':
         'Police road block exactly at the knot',
     'Connector нода (для inter-region путей FLA4)':
@@ -4275,8 +4114,6 @@ LANG = {
         'Universal marker for special-purpose logic',
     'Knot index':
         'Knot index',
-    'Индекс knot\'а на родительской Curve (0-based)':
-        'Knot index on the parent Curve (0-based)',
     'Создан':
         'Created',
     'Удалено accessory:':
@@ -4359,8 +4196,6 @@ LANG = {
     # ── Empty-rig setup: auto-parent option + sanity warnings ──
     'Активный меш':
         'Active mesh',
-    'Что сделать с активным меш-объектом после Setup:\n  Pivot — припарентить к pivot (будет крутиться вместе с rig\'ом)\n  Root  — припарентить к root (останется статичным как \'основание\')\n  Нет   — не трогать':
-        "What to do with the active mesh after Setup:\n  Pivot — parent to pivot (mesh follows the rotating rig)\n  Root  — parent to root (mesh stays static as a base)\n  None  — leave the mesh alone",
     'Парентить к pivot':
         'Parent to pivot',
     'Парентить к root':
@@ -4425,8 +4260,6 @@ LANG = {
         'This mesh is not part of any rig hierarchy. Attach it:',
     'К pivot (анимирован)':
         'To pivot (animated)',
-    'К root (статика)':
-        'To root (static)',
     'Target rig:':
         'Target rig:',
 
@@ -4454,8 +4287,6 @@ LANG = {
     # ── Eyedropper picker for adding meshes to rig ──
     'Куда добавить':
         'Where to add',
-    'Куда привесить выбранный меш:\n  К pivot — на первый pivot (анимация общая со всем pivot\'ом)\n  Новый pivot — создать отдельный pivot с собственной анимацией\n  К root — статичная часть без анимации':
-        "Where to attach the picked mesh:\n  To pivot — to the first pivot (shares animation with that pivot)\n  New pivot — create a fresh pivot with its own animation\n  To root — static part with no animation",
     'Новый pivot':
         'New pivot',
     'Создать новый pivot и привесить меш к нему':
@@ -4563,7 +4394,6 @@ LANG = {
     "IMG для экспорта": "IMG to export to",
     "В IMG": "To IMG",
     "У модели нет своего IMG — выбери IMG в списке": "The model has no IMG of its own — pick one from the list",
-    "Карта": "Map",
     "Полный импорт/экспорт карты (gta.dat, бинарные/текстовые IPL, регионы)": "Full map import/export (gta.dat, binary/text IPLs, regions)",
     "Нет IMG: нажми «Найти IMG» или укажи архив": "No IMG: press «Find IMG» or set an archive",
     "Выделенная модель:": "Selected model:",
@@ -4815,8 +4645,6 @@ LANG = {
         'Where to save the report',
     'Папка для отчёта':
         'Report folder',
-    'Источник':
-        'Source',
     '.dat файл':
         '.dat file',
     'Папка с IDE/IPL':
@@ -4895,7 +4723,6 @@ LANG = {
         "Preset folder: {0} (files copied: {1})",
     "Папка пресетов сброшена: {0}": "Preset folder reset: {0}",
     "Авто-свет коллизии": "Auto COL light",
-    "Значение": "Value",
     # COL auto-light scene-property tooltips
     ("Заполнять байт освещения коллизии у фейсов, где он "
      "равен 0 (нет COL-материала / day+night не заданы). "
@@ -5062,7 +4889,6 @@ LANG = {
     "Размер при сохранении:": "Size on save:",
     "Размер пятна": "Spot size",
     "Размер светового пятна (тени) на земле под лампой и яркость заливающего света вокруг. ЧТОБЫ ОСТАВИТЬ ТОЛЬКО КОРОНУ без пятна и подсветки — поставь 0 (корона при этом сохранится, ей управляет «Размер короны»)": "Size of the light spot (shadow) on the ground under the lamp and the brightness of the surrounding fill light. TO KEEP ONLY THE CORONA without a spot and fill — set 0 (the corona is preserved, it is controlled by \"Corona size\")",
-    "Размер текстуры": "Texture size",
     "Размытое гало/отражение как пятно на земле": "Blurred halo/reflection as a spot on the ground",
     "Размытое гало/отражение — рассеянное мягкое свечение": "Blurred halo/reflection — a diffuse soft glow",
     "Ракурс": "Angle",
@@ -5728,7 +5554,6 @@ LANG = {
     'Примеры': 'Examples',
     'Выдели здание': 'Select a building',
     'Объектов:': 'Objects:',
-    'Основание добавлено': 'Base added',
     'Притащить коллекцию примеров Auto-Building — готовые здания,\n    по которым видно, как размечены грани и что лежит в наборах': 'Bring in the Auto-Building examples collection — finished buildings that show how the faces are marked up and what goes into the kits',
     'Притащить Auto-Base — заготовку основания под здание': 'Bring in Auto-Base — a starter base for a building',
     # Export audits: skin/HAnim lint (core/skin_lint.py), IFP lint (core/ifp_lint.py), writer limits
@@ -6427,4 +6252,40 @@ LANG = {
     "INU: LightMap день/ночь": "INU: Day/night LightMap",
     "INU: Найти LOD автоматически": "INU: Find LOD automatically",
     "INU: Разделить на чанки": "INU: Split into chunks",
+    # UI and operator tooltips: model folders, paint masks and packed textures.
+    "Папка моделей": "Models folder",
+    "Папка с DFF, TXD, COL и текстурами; импорт по выбранным IPL и IDE": "Folder containing DFF, TXD, COL and textures; import using selected IPL and IDE files",
+    "Откуда брать освещение коллизии (день/ночь) при экспорте": "Source of collision lighting (day/night) on export",
+    "Брать день/ночь, заданные на COL-материалах модели (поля «Дневной свет» / «Ночной свет»). Фейсы без настройки остаются с нулём. Сохраняет импортированные значения": "Use day/night values from the model's COL materials (Day light / Night light fields). Faces without a setting keep zero. Preserves imported values",
+    "Выставить единые день/ночь на ВСЮ коллизию, перезаписав материалы. Стандарт Kam (день 14 / ночь 4 = старое 78)": "Set uniform day/night values for the ENTIRE collision, overriding materials. Kam standard (day 14 / night 4 = legacy 78)",
+    "Сохранить внутри Blender и применить": "Save inside Blender and apply",
+    "Объединить слои, упаковать результат в .blend и назначить текстуру модели": "Flatten layers, pack the result into the .blend and assign the texture to the model",
+    "Имя текстуры": "Texture name",
+    "Текстура упакована в Blender и применена к модели": "Texture packed in Blender and applied to the model",
+    "INU: Импорт карты": "INU: Import map",
+    "Укажите только одну папку: игры или моделей": "Specify only one folder: game or models",
+    "Папка моделей не найдена": "Models folder not found",
+    "В папке есть повторяющиеся имена моделей; используется первый файл": "The folder contains duplicate model names; the first file is used",
+    "Здания": "Buildings",
+    "Стены": "Walls",
+    "Крыша": "Roof",
+    "Заломы": "Creases",
+    "Разметка": "Markings",
+    "Привязать модели к УЖЕ существующим инстансам Ariane — БЕЗ дублей.\n\n    Для сцены, которая уже стоит в карте Ariane (импортировал из файлов игры,\n    а не через мост): «Экспорт → Ariane» пытался бы СОЗДАТЬ дубли. Эта кнопка\n    вместо создания МАТЧИТ объекты с инстансами Ariane по модель+позиция и\n    вешает их guid/iid → после этого live-синк работает.\n\n    Ariane выгружает свой список инстансов в <bridge>\\instances.txt, строка:\n        guid <TAB> iid <TAB> model <TAB> x <TAB> y <TAB> z": "Bind models to existing Ariane instances without creating duplicates.\n\n    For scenes imported from game files, match objects to Ariane instances by model and position, then store their guid/iid for live sync.\n\n    Ariane writes the instance list to <bridge>\\instances.txt, with rows:\n        guid <TAB> iid <TAB> model <TAB> x <TAB> y <TAB> z",
+    "Рисовать в отдельном слое «Маска» (Texture Paint), сохраняя исходную карту.\n    Повторный вход использует ту же маску; живой композит обновляется по мазкам.\n    Доступно для запечённых карт и слоя «Рисование». Выход — Tab.": "Paint in a separate Mask layer (Texture Paint), preserving the source map.\n    Re-entering uses the same mask; the live composite updates with each stroke.\n    Available for baked maps and the Paint layer. Exit with Tab.",
+    "Свести стек, упаковать текстуры в Blender и применить готовый материал.": "Flatten the stack, pack textures in Blender and apply the finished material.",
+    "Разделить карту/меш на квадратные чанки по XY-сетке.\n\nКаждый чанк — отдельный объект `Имя_Chunk_X_Y` (X/Y — индексы глобальной\nсетки кратно размеру чанка, так соседние карты стыкуются). UV, vertex-color,\nматериалы сохраняются. Оригинал прячется (не удаляется).": "Split the map/mesh into square chunks on an XY grid.\n\nEach chunk is a separate object named Name_Chunk_X_Y (X/Y are global grid indices based on chunk size, so adjacent maps align). UVs, vertex colors and materials are preserved. The original is hidden, not deleted.",
+    "Найти LOD выделенных моделей в сцене по имени и подставить их в «LOD partner».\n\n    Для каждой выделенной модели ищется её LOD-двойник среди объектов сцены\n    (то же базовое имя, а имя несёт маркер lod — распознаётся тем же\n    классификатором, что и весь аддон) и записывается в lod_object. Сами\n    LOD-объекты в выделении пропускаются.": "Find the LOD of selected models in the scene by name and assign it as LOD partner.\n\n    Uses the addon's model classifier to match the base name and LOD marker, then sets lod_object. Selected LOD objects are skipped.",
+    "Импорт DFF при перетаскивании во viewport (батч, прогресс + ESC).\n\n    Принимает несколько файлов сразу (батч), каждый импортируется\n    как отдельная модель. Та же логика автоматического подцепления\n    одноимённого .txd, что и в обычном импорте.": "Import DFF files dropped into the viewport (batch, progress and ESC cancellation).\n\n    Imports each file as a separate model and automatically attaches a matching .txd, using the same rules as regular import.",
+    "Синхронизация Blender ↔ IDE.\n\n    Bi-directional, аналогично Sync для IPL:\n      • Если model_id объекта найден в IDE → подтягивает draw_distance,\n        txd_name, flags из IDE в obj.inu props.  Это автолинковка после\n        Map Import и кейс пост-внешней-правки IDE.\n      • Если model_id не найден → пропускает (записи нет, нечего тянуть).\n\n    Работает по выделению; пустое выделение = всё meshes сцены.": "Synchronize Blender with IDE.\n\n    For selected objects whose model_id exists in IDE, read draw_distance, txd_name and flags into obj.inu. Models absent from IDE are skipped. Useful after map import or external IDE edits. An empty selection processes all scene meshes.",
+    "Sync для обоих файлов: IDE + IPL.\n\n    Не добавляет свой собственный финальный report — это бы перетёрло\n    детальный отчёт inner-операторов в status-bar Blender'а\n    («Sync: linked 0, обновлено 0, пропущено 2 — все без Model ID»).\n    Сохраняем info-сообщение последнего inner-вызова видимым.": "Synchronize both IDE and IPL files.\n\n    Keeps the last inner operator's detailed status message visible instead of replacing it with a summary.",
+    "Флаги VC или переход на выделенных точках paths.ipl": "Set VC flags or crossing on selected paths.ipl points",
+    "Импорт моделей из IMG или папки: по IPL (с расстановкой) ИЛИ по IDE (все\n    определённые модели, разложенные сеткой). Геометрия и ТЕКСТУРЫ достаются\n    из IMG on-the-fly (текстуры — по содержимому, IDE не требуется).": "Import models from IMG or a folder using IPL placements, or arrange all models defined in the selected IDE files on a grid. Geometry and textures are loaded from the source during import; textures are matched by contents without requiring IDE.",
+    "Открыть файл (IDE/IPL) в текстовом редакторе. По умолчанию — во ВНЕШНЕМ\n    редакторе ОС (как двойной клик в проводнике). Галочкой в настройках аддона\n    «Открывать IPL/IDE в редакторе Blender» можно переключить на встроенный\n    текст-редактор Blender (в новом окне).": "Open an IDE/IPL file in a text editor. By default, use the OS external editor, as when double-clicking a file. Enable Open IPL/IDE in Blender editor in the addon settings to use Blender's text editor in a new window.",
+    "Полностью убрать альфу вершин из АКТИВНОГО цветового атрибута:\n    залить альфа-канал в 1.0 (непрозрачно), RGB сохранить. Так модель\n    экспортируется без вертекс-альфы (полностью непрозрачной). Работает по\n    всем выделенным мешам (у каждого — свой активный атрибут).": "Set alpha to 1.0 (opaque) in the ACTIVE color attribute, preserving RGB. Process every selected mesh using its own active attribute; the model exports with fully opaque vertex alpha.",
+    "Показать прозрачность по альфе вершин во вьюпорте, независимо от\n    превью prelight (RGB). Заводит альфа-канал активного слоя в Alpha\n    материала и включает blended-режим отрисовки.\n\n    ⚠ ПРИ ПЕРВОЙ ПОКРАСКЕ альфы на модели, у которой её ещё не было,\n    мазок не появится сразу — переключи превью (выключи и включи), чтобы\n    материал подцепил новый альфа-канал. Дальше рисование обновляется\n    вживую без переключений.": "Preview vertex alpha in the viewport independently of the prelight RGB preview. Connect the active layer's alpha to the material Alpha input and enable transparency.\n\n    When painting alpha for the first time on a model, toggle the preview off and on to connect the new alpha channel. Further strokes update live.",
+    "Загрузить LightMap для выделенных моделей из папки: файл <имя>_d —\n    дневная карта, <имя>_n — ночная (ищутся по имени объекта/меша)": "Load LightMaps for selected models from a folder: <name>_d is the day map and <name>_n is the night map (matched by object/mesh name).",
+    "Показать дневной или ночной LightMap на моделях (карты берутся\n    из загруженных «из папки»)": "Show day or night LightMaps on models, using maps loaded from a folder.",
+    "Свернуть/развернуть группу проблем модели в панели «Проверка».\n    Ключ группы хранится в JSON-списке inu_validate_expanded.": "Collapse or expand a model issue group in the Check panel. The group key is stored in the inu_validate_expanded JSON list.",
+    "Загружать коллизии из выбранного источника при импорте карты": "Load collisions from the selected source when importing a map",
 }

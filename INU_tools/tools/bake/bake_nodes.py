@@ -61,8 +61,10 @@ def build_composite_material(specs, base_name, uv_name, vcol_name=None):
         return L['map_id'] == 'ALPHA' or L.get('as_decal')
     alpha_spec = next((L for L in specs
                        if L.get('enabled') and _is_provider(L)), None)
+    mask_keys = {L.get('paint_mask_uid') for L in specs if L.get('paint_mask_uid')}
     enabled = [L for L in specs
                if L.get('enabled') and not _is_provider(L)
+               and _key(L) not in mask_keys
                and _has_img(_key(L))]
     # Список идёт СВЕРХУ ВНИЗ (как в фотошопе): верхний слой накладывается
     # последним. База = НИЖНИЙ слой списка → разворачиваем.
@@ -105,16 +107,31 @@ def build_composite_material(specs, base_name, uv_name, vcol_name=None):
             out = g.outputs['Color']
         return out
 
+    def _paint_mask(color, L, y):
+        mask = next((M for M in specs if _key(M) == L.get('paint_mask_uid')
+                     and M.get('enabled') and _has_img(_key(M))), None)
+        if mask is None:
+            return color
+        mask_color = _cg(_img_node(_key(mask), y - 160, 'Маска').outputs['Color'],
+                         mask.get('contrast', 1.0), mask.get('gamma', 1.0), y - 160)
+        wrap = compat.make_mix_rgba(nt.nodes, blend='MULTIPLY', label='Маска')
+        wrap.factor.default_value = float(mask['opacity'])
+        nt.links.new(color, wrap.a)
+        nt.links.new(mask_color, wrap.b)
+        return wrap.result
+
     y = 0
     if enabled:
         base = enabled[0]
         acc = _cg(_img_node(_key(base), y, base['map_id']).outputs['Color'],
                   base.get('contrast', 1.0), base.get('gamma', 1.0), y)
+        acc = _paint_mask(acc, base, y)
         x = -460
         for L in enabled[1:]:
             y -= 320
             top_col = _cg(_img_node(_key(L), y, L['map_id']).outputs['Color'],
                           L.get('contrast', 1.0), L.get('gamma', 1.0), y)
+            top_col = _paint_mask(top_col, L, y)
             wrap = compat.make_mix_rgba(
                 nt.nodes,
                 blend=BLEND_NODE_TYPE.get(L['blend_mode'], 'MIX'),
@@ -198,23 +215,33 @@ def build_composite_material(specs, base_name, uv_name, vcol_name=None):
                     fac_out = gt.outputs[0]
                 invert_dir = not alpha_spec.get('decal_invert')   # деф.: видно тёмное
             else:
-                # CUTOUT для альфы из прозрачности материала. Значение может
-                # быть в RGB (обычный EMIT) ИЛИ в АЛЬФА-канале карты (покрытие
-                # Hi→Low, RGB пустой): берём max(Color, Alpha), затем порог 0.5
-                # → 1/0. Совпадает с numpy-сведением в bake_composite.
+                # Обычная маска читается из R. Alpha используем только если
+                # весь R пуст (покрытие Hi→Low), как при numpy-сведении.
                 if (alpha_spec.get('map_id') == 'ALPHA'
                         and (alpha_spec.get('alpha_source') or 'MATERIAL') == 'MATERIAL'):
-                    mx = nt.nodes.new('ShaderNodeMath')
-                    mx.operation = 'MAXIMUM'
-                    mx.location = (300, -520)
-                    nt.links.new(fac_out, mx.inputs[0])
-                    nt.links.new(atex.outputs['Alpha'], mx.inputs[1])
+                    from .bake_core import read_image_to_numpy
+                    from .bake_composite import material_alpha_uses_coverage
+                    if material_alpha_uses_coverage(read_image_to_numpy(atex.image)):
+                        fac_out = atex.outputs['Alpha']
+                    else:
+                        try:
+                            separate = nt.nodes.new('ShaderNodeSeparateColor')
+                            separate.mode = 'RGB'
+                        except RuntimeError:
+                            # Blender до появления Separate Color.
+                            separate = nt.nodes.new('ShaderNodeSeparateRGB')
+                        nt.links.new(atex.outputs['Color'], separate.inputs[0])
+                        fac_out = separate.outputs[0]
                     gt = nt.nodes.new('ShaderNodeMath')
-                    gt.operation = 'GREATER_THAN'
+                    gt.operation = 'LESS_THAN'
                     gt.location = (470, -520)
                     gt.inputs[1].default_value = 0.5
-                    nt.links.new(mx.outputs[0], gt.inputs[0])
-                    fac_out = gt.outputs[0]
+                    nt.links.new(fac_out, gt.inputs[0])
+                    solid = nt.nodes.new('ShaderNodeMath')
+                    solid.operation = 'SUBTRACT'
+                    solid.inputs[0].default_value = 1.0
+                    nt.links.new(gt.outputs[0], solid.inputs[1])
+                    fac_out = solid.outputs[0]
                 invert_dir = bool(alpha_spec.get('alpha_invert'))
             if invert_dir:
                 m = nt.nodes.new('ShaderNodeMath')
@@ -223,6 +250,12 @@ def build_composite_material(specs, base_name, uv_name, vcol_name=None):
                 m.inputs[0].default_value = 1.0
                 nt.links.new(fac_out, m.inputs[1])
                 fac_out = m.outputs[0]
+            strength = nt.nodes.new('ShaderNodeMath')
+            strength.operation = 'MULTIPLY'
+            strength.use_clamp = True
+            strength.inputs[1].default_value = float(alpha_spec.get('opacity', 1.0))
+            nt.links.new(fac_out, strength.inputs[0])
+            fac_out = strength.outputs[0]
             trans = nt.nodes.new('ShaderNodeBsdfTransparent')
             trans.location = (300, -260)
             mixsh = nt.nodes.new('ShaderNodeMixShader')

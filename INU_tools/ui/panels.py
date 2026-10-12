@@ -822,6 +822,29 @@ def _draw_map_import(layout, context):
                depress=_bbox_mode_active)
 
 
+def _draw_import_resource_header(layout, settings, expanded_prop, caption,
+                                 scan_operator=None, scan_enabled=True):
+    # Одинаковые области для всех трёх заголовков: слева раскрытие,
+    # по центру подпись, справа действия. Число кнопок не смещает подпись.
+    header = layout.row(align=True).split(factor=0.10, align=True)
+    left = header.row(align=True)
+    left.alignment = 'LEFT'
+    expanded = getattr(settings, expanded_prop)
+    left.prop(settings, expanded_prop, text="", emboss=False,
+              **inu_icon(safe_icon('TRIA_DOWN' if expanded else 'TRIA_RIGHT')))
+    content = header.split(factor=0.84, align=True)
+    title = content.row(align=True)
+    title.alignment = 'CENTER'
+    title.label(text=caption)
+    actions = content.row(align=True)
+    actions.alignment = 'RIGHT'
+    if scan_operator:
+        scan = actions.row(align=True)
+        scan.enabled = scan_enabled
+        scan.operator(scan_operator, text="", **inu_icon(safe_icon('FILE_REFRESH')))
+    return actions
+
+
 class GTATOOLS_PT_ide_ipl_import(bpy.types.Panel):
     """Импорт моделей из игры: Game Root + IPL, авто-поиск IDE."""
     bl_label = "Импорт"
@@ -847,6 +870,7 @@ class GTATOOLS_PT_ide_ipl_import(bpy.types.Panel):
         # gtatools_game_root — КОРЕНЬ игры: по нему сканируют «Найти IDE/IMG» и
         # «Обновить из IDE/IPL» (не только IDE — отсюда подпись «Папка игры»).
         _src.prop(s, "gtatools_game_root", text=T("Папка игры"))
+        _src.prop(s, "gtatools_models_root", text=T("Папка моделей"))
         # Отдельные строки IPL и IMG убраны: список IPL живёт в боксе «IPL для
         # импорта», а IMG подхватывается автоматически через «Найти IMG» (бокс
         # «IMG с моделями из IPL»). Значения читаем только для логики
@@ -868,13 +892,9 @@ class GTATOOLS_PT_ide_ipl_import(bpy.types.Panel):
         # Шапка с иконками: Добавить (один или несколько) / Папка / Корзина.
         _pexp = s.gtatools_show_import_ipl_list
         _plbox = col.box().column(align=True)
-        _phdr = _plbox.row(align=True)
-        _phdr.prop(s, "gtatools_show_import_ipl_list",
-                   **inu_icon(safe_icon('TRIA_DOWN' if _pexp else 'TRIA_RIGHT')),
-                   text=T("IPL для импорта ({0}):").format(len(_ipl_list)),
-                   emboss=False)
-        _phb = _phdr.row(align=True)
-        _phb.alignment = 'RIGHT'
+        _phb = _draw_import_resource_header(
+            _plbox, s, "gtatools_show_import_ipl_list",
+            T("IPL для импорта ({0}):").format(len(_ipl_list)))
         _phb.operator("gtatools.ipl_sync_add", text="",
                       **inu_icon(safe_icon('ADD')))
         _phb.operator("gtatools.ipl_sync_add_folder", text="",
@@ -897,13 +917,9 @@ class GTATOOLS_PT_ide_ipl_import(bpy.types.Panel):
         found_img = [_p for _p in (scn.get('gtatools_found_imgs') or '').split('\n') if _p]
         _iexp = s.gtatools_show_found_imgs
         ibox = col.box().column(align=True)
-        _ihdr = ibox.row(align=True)
-        _ihdr.prop(s, "gtatools_show_found_imgs",
-                   **inu_icon(safe_icon('TRIA_DOWN' if _iexp else 'TRIA_RIGHT')),
-                   text=T("IMG с моделями из IPL ({0}):").format(len(found_img)),
-                   emboss=False)
-        _ihb = _ihdr.row(align=True)
-        _ihb.alignment = 'RIGHT'
+        _ihb = _draw_import_resource_header(
+            ibox, s, "gtatools_show_found_imgs",
+            T("IMG с моделями из IPL ({0}):").format(len(found_img)))
         _ihb.enabled = _has_ipl and bool(s.gtatools_game_root)
         _ihb.operator("gtatools.scan_img_for_ipl", text="",
                       **inu_icon(safe_icon('FILE_REFRESH')))
@@ -915,19 +931,20 @@ class GTATOOLS_PT_ide_ipl_import(bpy.types.Panel):
                              **inu_icon(safe_icon('FILE')))
         # Список найденных IDE — шапка видна всегда; значок 🔄 = «Найти IDE».
         # У каждого файла кнопка «открыть».
-        found = [_p for _p in (scn.get('gtatools_found_ides') or '').split('\n') if _p]
+        found = list(dict.fromkeys(
+            [_it.path for _it in s.gtatools_ide_sync_list if _it.path]
+            + [_p for _p in (scn.get('gtatools_found_ides') or '').split('\n') if _p]))
         _dexp = s.gtatools_show_found_ides
         fbox = col.box().column(align=True)
-        _fhdr = fbox.row(align=True)
-        _fhdr.prop(s, "gtatools_show_found_ides",
-                   **inu_icon(safe_icon('TRIA_DOWN' if _dexp else 'TRIA_RIGHT')),
-                   text=T("IDE с моделями из IPL ({0}):").format(len(found)),
-                   emboss=False)
-        _fhb = _fhdr.row(align=True)
-        _fhb.alignment = 'RIGHT'
-        _fhb.enabled = _has_ipl and bool(s.gtatools_game_root)
-        _fhb.operator("gtatools.scan_ide_for_ipl", text="",
-                      **inu_icon(safe_icon('FILE_REFRESH')))
+        _fhb = _draw_import_resource_header(
+            fbox, s, "gtatools_show_found_ides",
+            T("IDE с моделями из IPL ({0}):").format(len(found)),
+            scan_operator="gtatools.scan_ide_for_ipl",
+            scan_enabled=_has_ipl and bool(s.gtatools_game_root or s.gtatools_models_root))
+        _fhb.operator("gtatools.ide_sync_add", text="",
+                      **inu_icon(safe_icon('ADD')))
+        _fhb.operator("gtatools.ide_sync_add_folder", text="",
+                      **inu_icon(safe_icon('FILE_FOLDER')))
         if _dexp and found:
             for _fp in found:
                 fr = fbox.row(align=True)
@@ -939,7 +956,7 @@ class GTATOOLS_PT_ide_ipl_import(bpy.types.Panel):
         # источнике IMG: найденные («Найти IMG») ИЛИ вручную заданный путь.
         big = col.row(align=True)
         big.scale_y = 1.4
-        big.enabled = _has_ipl and (bool(found_img) or bool(_img_pv))
+        big.enabled = _has_ipl and (bool(s.gtatools_models_root) or bool(found_img) or bool(_img_pv))
         big.operator("gtatools.import_from_img", text=T("Импорт"),
                      **inu_icon(safe_icon('IMPORT')))
         # «Обновить из IDE/IPL» переехали значками в шапки «IDE для экспорта» /
@@ -6151,6 +6168,26 @@ def _gate_vertex_paint_panel(cls):
 
 # ── Texture Bake (карты → текстура; tools/bake/) ───────────────────
 
+def _draw_bake_layer_bake(row, layer, *, text="Bake", width=None):
+    # PAINT layers (including masks) are edited with a brush, never baked.
+    if layer.map_id == 'PAINT':
+        return
+    if width is not None:
+        row = row.row(align=True)
+        row.ui_units_x = width
+    row.operator("gtatools.bake_run", text=text).only_uid = (
+        getattr(layer, 'uid', '') or layer.map_id)
+
+
+def _draw_bake_layer_eye(row, layer, layers):
+    key = getattr(layer, 'uid', '') or layer.map_id
+    is_mask = any(getattr(parent, 'paint_mask_uid', '') == key for parent in layers)
+    if is_mask:
+        row.label(text="", icon=safe_icon('CON_LOCLIMIT'))
+    row.prop(layer, "enabled", text="",
+             **inu_icon(safe_icon('HIDE_OFF' if layer.enabled else 'HIDE_ON')))
+
+
 class GTATOOLS_UL_bake_layers(bpy.types.UIList):
     """Стек слоёв запекания. Порядок = порядок смешивания (низ = база)."""
     bl_idname = "GTATOOLS_UL_bake_layers"
@@ -6159,7 +6196,7 @@ class GTATOOLS_UL_bake_layers(bpy.types.UIList):
                   active_property, index):
         from ..tools.bake import get_map
         md = get_map(item.map_id)
-        name = md.label_key if md else item.map_id
+        name = item.name or (md.label_key if md else item.map_id)
 
         # ОДНА строка: глазик (слева, переключатель) + имя + режим + размер.
         # UIList делает кликабельной только одну строку элемента, поэтому
@@ -6171,8 +6208,7 @@ class GTATOOLS_UL_bake_layers(bpy.types.UIList):
         res = f"{img.size[0]}×{img.size[1]}" if img else "—"
 
         row = layout.row(align=True)
-        row.prop(item, "enabled", text="",
-                 **inu_icon(safe_icon('HIDE_OFF' if item.enabled else 'HIDE_ON')))
+        _draw_bake_layer_eye(row, item, data.gtatools_bake_layers)
         # ОДИН «резиновый» блок (имя слева + режим·размер справа) — заполняет
         # всё место, прижимая bake/save к правому краю.
         mid = row.row(align=True)
@@ -6182,10 +6218,7 @@ class GTATOOLS_UL_bake_layers(bpy.types.UIList):
         rmeta.alignment = 'RIGHT'
         rmeta.label(text=f"{item.blend_mode.title()}  ·  {res}", translate=False)
         # bake / Save — ПРЯМЫЕ дети строки с фикс. ui_units_x.
-        bcell = row.row(align=True)
-        bcell.ui_units_x = 3.0
-        bk = bcell.operator("gtatools.bake_run", text="bake")
-        bk.only_uid = getattr(item, 'uid', '') or item.map_id
+        _draw_bake_layer_bake(row, item, text="bake", width=3.0)
         scell = row.row(align=True)
         scell.ui_units_x = 1.1
         scell.enabled = img is not None
@@ -6352,22 +6385,20 @@ class GTATOOLS_PT_bake_panel(bpy.types.Panel):
         # между собой всегда выровнены. Калибровка — factor'ы 0.40 / 0.55 ниже.
         for i, L in enumerate(layers):
             md = get_map(L.map_id)
-            nm = md.label_key if md else L.map_id
+            nm = L.name or (md.label_key if md else L.map_id)
             img = (bpy.data.images.get(f"{base}_{getattr(L, 'uid', '') or L.map_id}")
                    if base else None)
             r = lcol.row(align=True)
             # Треугольник разворота — показать настройки слоя инлайн под строкой.
             r.prop(L, "expanded", text="", emboss=False,
                    icon=safe_icon('TRIA_DOWN' if L.expanded else 'TRIA_RIGHT'))
-            r.prop(L, "enabled", text="",
-                   **inu_icon(safe_icon('HIDE_OFF' if L.enabled else 'HIDE_ON')))
+            _draw_bake_layer_eye(r, L, layers)
             # [имя 60%] | [Bake + save].
             sp_name = r.split(factor=0.60, align=True)
             sp_name.operator("gtatools.bake_select_layer", text=nm,
                              translate=False, depress=(i == idx)).index = i
             acell = sp_name.row(align=True)
-            acell.operator("gtatools.bake_run",
-                           text="Bake").only_uid = getattr(L, 'uid', '') or L.map_id
+            _draw_bake_layer_bake(acell, L)
             svcell = acell.row(align=True)
             svcell.enabled = img is not None    # сохранить можно только запечённое
             _sv = svcell.operator("gtatools.bake_save_map", text="",
@@ -6440,6 +6471,8 @@ class GTATOOLS_PT_bake_panel(bpy.types.Panel):
         # «Объединить и сохранить» (весь стек; disabled пока не запечено).
         side.operator("gtatools.bake_flatten", text="",
                       **inu_icon(safe_icon('FILE_TICK')))
+        side.operator("gtatools.bake_save_apply", text="",
+                      **inu_icon(safe_icon('CHECKMARK')))
         if obj and obj.type == 'MESH' and obj.get("inu_bake_base"):
             on = bool(obj.get("inu_bake_preview_on", 0))
             over_on = on and bool(obj.get("inu_bake_overbase_on", 0))

@@ -264,6 +264,7 @@ class LayerSpec:
     извлекает его из INUBakeLayer (PropertyGroup) перед вызовом."""
     map_id: str
     uid: str = ''                  # per-layer id → своя картинка (layer_image_key)
+    paint_mask_uid: str = ''       # отдельный рисуемый Multiply-слой
     enabled: bool = True
     blend_mode: str = 'NORMAL'
     opacity: float = 1.0
@@ -340,6 +341,11 @@ def _is_alpha_provider(L):
     return L.map_id == ALPHA_MAP_ID or getattr(L, 'as_decal', False)
 
 
+def material_alpha_uses_coverage(pixels):
+    """Hi→Low coverage is in Alpha only when the entire red channel is empty."""
+    return pixels.shape[2] >= 4 and float(pixels[..., 0].max()) < 1e-4
+
+
 def _layer_alpha_array(L, layer_pixels, fallback, w, h):
     """Посчитать альфа-канал (h,w) float для слоя-провайдера L.
 
@@ -362,7 +368,7 @@ def _layer_alpha_array(L, layer_pixels, fallback, w, h):
         # Значение альфы обычно эмитится в RGB. Но в Hi→Low «покрытие» (где
         # геометрия) пишется в АЛЬФА-канал карты, а RGB остаётся пустым —
         # тогда берём альфа-канал (иначе читался бы чёрный R → всё прозрачно).
-        if px.shape[2] >= 4 and float(a.max()) < 1e-4:
+        if material_alpha_uses_coverage(px):
             a = px[..., 3].astype(np.float32)
         # CUTOUT: маска покрытия, а не полупрозрачность. Порог 0.5 → есть
         # геометрия → 1 (непрозрачно), дыра → 0. Стандарт GTA cutout.
@@ -408,7 +414,9 @@ def composite_layers(layer_pixels, layers, w, h, *, srgb=True):
     «скомбинировать любой поднабор».
     """
     # UI-порядок (сверху вниз): index 0 = верх.
-    present = [L for L in layers if L.enabled and layer_image_key(L) in layer_pixels]
+    mask_keys = {L.paint_mask_uid for L in layers if L.paint_mask_uid}
+    present = [L for L in layers if L.enabled and layer_image_key(L) in layer_pixels
+               and layer_image_key(L) not in mask_keys]
     # Провайдер альфы — верхний включённый слой ALPHA или as_decal (не требуя
     # <base>_ALPHA: источником может быть другая карта, напр. Shadow).
     alpha_layer = next((L for L in layers
@@ -425,6 +433,16 @@ def composite_layers(layer_pixels, layers, w, h, *, srgb=True):
                + 0.0722 * rgb[..., 2])
         return np.repeat(lum[..., None], 3, axis=-1)
 
+    def _paint_mask(rgb, L):
+        mask = next((M for M in layers if layer_image_key(M) == L.paint_mask_uid
+                     and M.enabled), None) if L.paint_mask_uid else None
+        if mask is None or layer_image_key(mask) not in layer_pixels:
+            return rgb
+        color = srgb_to_linear(_resample_to(
+            layer_pixels[layer_image_key(mask)], w, h)[..., :3].astype(np.float32))
+        color = apply_contrast_gamma(color, mask.contrast, mask.gamma)
+        return rgb * ((1.0 - mask.opacity) + color * mask.opacity)
+
     if enabled:
         # Композитим в ЛИНЕЙНОМ пространстве (как нодовый превью): картинки —
         # sRGB-байт, переводим srgb→linear на входе, linear→srgb на выходе.
@@ -434,6 +452,7 @@ def composite_layers(layer_pixels, layers, w, h, *, srgb=True):
         if getattr(enabled[0], 'desaturate', False):
             acc = _desat(acc)
         acc = apply_contrast_gamma(acc, enabled[0].contrast, enabled[0].gamma)
+        acc = _paint_mask(acc, enabled[0])
         base_alpha = base[..., 3].astype(np.float32)
 
         for L in enabled[1:]:
@@ -442,6 +461,7 @@ def composite_layers(layer_pixels, layers, w, h, *, srgb=True):
             if getattr(L, 'desaturate', False):
                 top = _desat(top)
             top = apply_contrast_gamma(top, L.contrast, L.gamma)
+            top = _paint_mask(top, L)
             blended = _BLEND.get(L.blend_mode, _BLEND['NORMAL'])(acc, top)
             # FUTURE: mask = mask_lookup[L.influence_target]; сейчас 1.0
             fac = float(L.opacity) * float(L.influence_amount) * 1.0

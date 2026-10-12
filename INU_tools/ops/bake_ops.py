@@ -429,12 +429,12 @@ def _build_single_image_mat(img, uv_name, vcol_name=None):
     return pm
 
 
-def _build_standard_material(img, uv_name, vcol_name=None):
+def _build_standard_material(img, uv_name, vcol_name=None, material_name="INU_BakeStandard"):
     """Финальный СТАНДАРТНЫЙ материал: Principled BSDF + запечённая текстура,
     опционально умноженная на вертекс-цвет прилайта (`vcol_name`). Base Color
     ← texture(× prelight); Alpha ← альфа текстуры (если RGBA) с alpha-clip."""
-    mat = (bpy.data.materials.get("INU_BakeStandard")
-           or bpy.data.materials.new("INU_BakeStandard"))
+    mat = (bpy.data.materials.get(material_name)
+           or bpy.data.materials.new(material_name))
     mat.use_nodes = True
     mat.use_fake_user = False
     nt = mat.node_tree
@@ -469,18 +469,48 @@ def _build_standard_material(img, uv_name, vcol_name=None):
     return mat
 
 
-def _apply_standard_material(obj, img, uv_name):
+def _apply_standard_material(obj, img, uv_name, material_name="INU_BakeStandard"):
     """Применить финальный стандартный материал на obj (с сохранением
     исходных материалов для preview-toggle)."""
     _snapshot_materials(obj)
-    mat = _build_standard_material(img, uv_name, _prelight_attr_name(obj))
+    mat = _build_standard_material(img, uv_name, _prelight_attr_name(obj), material_name)
     _assign_material(obj, mat, uv_name)
     obj["inu_bake_mode_live"] = 0
     return mat
 
 
+def _apply_saved_material(obj, img, uv_name):
+    """Назначить результат постоянно: выйти из превью, без его снимка/флагов."""
+    if obj.get("inu_bake_preview_on", 0):
+        _restore_materials(obj)
+    previous = bpy.data.materials.get(obj.get("inu_bake_applied_material", ""))
+    # Чужие или разделяемые материалы не перезаписываем.
+    if previous is not None and previous.users <= 1:
+        previous.name = img.name
+        material_name = previous.name
+    else:
+        material_name = bpy.data.materials.new(img.name).name
+    mat = _build_standard_material(img, uv_name, _prelight_attr_name(obj), material_name)
+    obj.data.materials.clear()
+    obj.data.materials.append(mat)
+    if uv_name:
+        for uv in obj.data.uv_layers:
+            uv.active_render = (uv.name == uv_name)
+    obj["inu_bake_applied_material"] = mat.name
+    obj["inu_bake_mode_live"] = 0
+    obj["inu_bake_preview_on"] = 0
+    obj["inu_bake_overbase_on"] = 0
+    obj["inu_bake_preview_kind"] = ""
+    for key in ("inu_bake_prev_mats", "inu_bake_prev_render_uv", "inu_bake_prev_mat_idx"):
+        if key in obj:
+            del obj[key]
+    _clear_mat_idx_attr(obj.data)
+    return mat
+
+
 def _layer_specs(s):
     return [{'map_id': L.map_id, 'uid': getattr(L, 'uid', ''),
+             'paint_mask_uid': L.paint_mask_uid,
              'blend_mode': L.blend_mode,
              'opacity': L.opacity, 'enabled': L.enabled,
              'contrast': L.contrast, 'gamma': L.gamma,
@@ -597,6 +627,7 @@ def _composite_stack_image(s, base, out_name):
     specs = [B.LayerSpec(
         map_id=L.map_id, uid=getattr(L, 'uid', ''), enabled=L.enabled, blend_mode=L.blend_mode,
         opacity=L.opacity, contrast=L.contrast, gamma=L.gamma,
+        paint_mask_uid=L.paint_mask_uid,
         influence_target=L.influence_target,
         influence_amount=L.influence_amount,
         alpha_source=getattr(L, 'alpha_source', ''),
@@ -803,12 +834,12 @@ def _ensure_paint_image(name, w, h):
 
 
 class GTATOOLS_OT_bake_paint_layer(bpy.types.Operator):
-    """Рисовать по картинке слоя кистью (Texture Paint, Material-mode) — WYSIWYG:
-    живой композит обновляется по мазкам. Работает по любой запечённой карте
-    ИЛИ по слою «Рисование». Выход — Tab (назад в Object Mode)."""
+    """Рисовать в отдельном слое «Маска» (Texture Paint), сохраняя исходную карту.
+    Повторный вход использует ту же маску; живой композит обновляется по мазкам.
+    Доступно для запечённых карт и слоя «Рисование». Выход — Tab."""
     bl_idname = "gtatools.bake_paint_layer"
     bl_label = "Рисовать"
-    bl_options = {'REGISTER'}
+    bl_options = {'REGISTER', 'UNDO'}
 
     uid: StringProperty(default="")
     map_id: StringProperty(default="")
@@ -847,11 +878,39 @@ class GTATOOLS_OT_bake_paint_layer(bpy.types.Operator):
                 self.report({'ERROR'},
                             T("Слой ещё не запечён — сначала «Запечь»"))
                 return {'CANCELLED'}
+        # Рисуем в отдельном белом Multiply-слое, сохраняя исходную карту.
+        # Повторный вход использует ту же маску; рисование на самой маске
+        # не создаёт вложенных масок.
+        if not any(_L.paint_mask_uid == key for _L in blo.gtatools_bake_layers):
+            L.enabled = True
+            import uuid
+            layers = blo.gtatools_bake_layers
+            parent_index = next(i for i, _L in enumerate(layers) if _lkey(_L) == key)
+            mask = next((_L for _L in layers if _lkey(_L) == L.paint_mask_uid), None)
+            if mask is None:
+                mask = layers.add()
+                mask.uid = uuid.uuid4().hex[:16]
+                mask.name = "Маска"
+                mask.map_id = 'PAINT'
+                mask.blend_mode = 'MULTIPLY'
+                L.paint_mask_uid = mask.uid
+            mask_index = next(i for i, _L in enumerate(layers) if _lkey(_L) == mask.uid)
+            # move() может инвалидировать RNA-ссылки элементов: далее ищем по uid.
+            mask_uid = mask.uid
+            if mask_index != parent_index + 1:
+                layers.move(mask_index, parent_index + (mask_index > parent_index))
+            img = _ensure_paint_image(f"{base}_{mask_uid}", *img.size)
+            L = next(_L for _L in layers if _lkey(_L) == mask_uid)
+        obj["inu_bake_base"] = base
+        obj["inu_bake_uv"] = uv
+        blo.gtatools_bake_layers_index = next(
+            i for i, _L in enumerate(blo.gtatools_bake_layers) if _lkey(_L) == _lkey(L))
         # слой должен быть включён — иначе его нет в живом композите
         if not L.enabled:
             L.enabled = True
         # показать живой композит (mode_live), чтобы мазки были видны сразу
         obj["inu_bake_mode_live"] = 1
+        obj["inu_bake_preview_kind"] = "composite"
         _apply_result_material(obj)
         # активировать image-ноду этой картинки → она станет paint-слотом
         mat = bpy.data.materials.get(bake_nodes.COMPOSITE_MAT)
@@ -888,7 +947,7 @@ class GTATOOLS_OT_bake_paint_layer(bpy.types.Operator):
                     pass
                 break
         self.report({'INFO'},
-                    T("Рисуй по слою «{0}». Выход — Tab").format(L.map_id))
+                    T("Рисуй по слою «{0}». Выход — Tab").format(L.name or L.map_id))
         return {'FINISHED'}
 
 
@@ -1678,6 +1737,69 @@ class GTATOOLS_OT_bake_preview(bpy.types.Operator):
                         T("Нет запечённого результата — сначала запеките"))
             return {'CANCELLED'}
         self.report({'INFO'}, T("Превью включено"))
+        return {'FINISHED'}
+
+
+class GTATOOLS_OT_bake_save_apply(bpy.types.Operator):
+    """Свести стек, упаковать текстуры в Blender и применить готовый материал."""
+    bl_idname = "gtatools.bake_save_apply"
+    bl_label = "Сохранить внутри Blender и применить"
+    bl_description = "Объединить слои, упаковать результат в .blend и назначить текстуру модели"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    texture_name: StringProperty(name="Имя текстуры", default="")
+
+    def invoke(self, context, event):
+        obj = context.active_object
+        self.texture_name = (obj.get("inu_bake_applied_image", "")
+                             or obj.get("inu_bake_base", ""))
+        return context.window_manager.invoke_props_dialog(self, width=360)
+
+    def draw(self, context):
+        self.layout.prop(self, "texture_name")
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (obj is not None and obj.type == 'MESH'
+                and bool(obj.get("inu_bake_base")))
+
+    def execute(self, context):
+        obj = context.active_object
+        base = obj["inu_bake_base"]
+        try:
+            requested_name = self.texture_name.strip() or base
+            out_name = requested_name
+            source_names = {f"{base}_{_lkey(layer)}" for layer in obj.inu.gtatools_bake_layers}
+            suffix = 1
+            # Не перезаписывать карту слоя или чужую картинку при совпадении имени.
+            while (out_name in source_names or
+                   (bpy.data.images.get(out_name) is not None
+                    and out_name != obj.get("inu_bake_applied_image", ""))):
+                out_name = f"{requested_name}.{suffix:03d}"
+                suffix += 1
+            final = _composite_stack_image(obj.inu, base, out_name)
+            if final is None:
+                self.report({'ERROR'}, T("Нет запечённых карт для сведения"))
+                return {'CANCELLED'}
+            # Сохранить и свежие мазки в исходниках, чтобы стек пережил
+            # сохранение/повторное открытие .blend.
+            for layer in obj.inu.gtatools_bake_layers:
+                img = bpy.data.images.get(f"{base}_{_lkey(layer)}")
+                if img is not None:
+                    img.pack()
+            final.pack()
+            final.use_fake_user = True
+            if obj.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            _apply_saved_material(obj, final, obj.get("inu_bake_uv", ""))
+            obj["inu_bake_image"] = final.name
+            obj["inu_bake_applied_image"] = final.name
+            _show_image(context, final)
+        except Exception as e:
+            self.report({'ERROR'}, T("Не удалось сохранить: ") + str(e))
+            return {'CANCELLED'}
+        self.report({'INFO'}, T("Текстура упакована в Blender и применена к модели"))
         return {'FINISHED'}
 
 

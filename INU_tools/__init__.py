@@ -28,7 +28,7 @@
 bl_info = {
     "name": "INU_tools(gta_sa)",
     "author": "INU",
-    "version": (2, 5, 1),
+    "version": (2, 5, 2),
     # Минимум 2.83 LTS — поддержка через tools/compat.py:
     # • bake / preview / DFF I/O работают через legacy mesh.vertex_colors
     # • prelight preview shader использует ShaderNodeMixRGB на ≤3.3
@@ -561,6 +561,7 @@ from .ops.bake_ops import (
     GTATOOLS_OT_bake_layer_move,
     GTATOOLS_OT_bake_preview,
     GTATOOLS_OT_bake_flatten,
+    GTATOOLS_OT_bake_save_apply,
     GTATOOLS_OT_bake_save_map,
     GTATOOLS_OT_bake_lightmap_apply,
     GTATOOLS_OT_bake_lightmap_postprocess,
@@ -4011,6 +4012,7 @@ classes = (
     GTATOOLS_OT_bake_layer_move,
     GTATOOLS_OT_bake_preview,
     GTATOOLS_OT_bake_flatten,
+    GTATOOLS_OT_bake_save_apply,
     GTATOOLS_OT_bake_save_map,
     GTATOOLS_OT_bake_lightmap_apply,
     GTATOOLS_OT_bake_lightmap_postprocess,

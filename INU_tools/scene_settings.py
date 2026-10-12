@@ -37,6 +37,17 @@ def _save_paths_proxy(self, context):
     _save_paths(self, context)
 
 
+def _game_import_root_changed(self, context):
+    if self.gtatools_game_root.strip() and self.gtatools_models_root:
+        self.gtatools_models_root = ""
+    _save_paths_proxy(self, context)
+
+
+def _models_import_root_changed(self, context):
+    if self.gtatools_models_root.strip() and self.gtatools_game_root:
+        self.gtatools_game_root = ""
+
+
 def _map_region_changed_proxy(self, context):
     """Смена района карты → сбрасываем отсканированные списки IPL.
 
@@ -770,6 +781,7 @@ class INUBakeLayer(bpy.types.PropertyGroup):
     # Стабильный уникальный id слоя — ключ памяти запечённых полигонов:
     # obj["inu_bake_faces_<uid>"] = "1,5,17,…". Ставится при добавлении слоя.
     uid: StringProperty(name="", default="")
+    paint_mask_uid: StringProperty(name="", default="")
     blend_mode: EnumProperty(
         name=T("Режим"), description=T("Как смешивать с нижними слоями"),
         items=_BAKE_BLEND_ITEMS, default='MULTIPLY', update=_bake_live_update)
@@ -1408,7 +1420,7 @@ class INUSceneSettings(bpy.types.PropertyGroup):
         default=False)
     gtatools_map_load_col: BoolProperty(
         name="Load COL",
-        description=T("Загружать коллизии из кеша при импорте карты"),
+        description=T("Загружать коллизии из выбранного источника при импорте карты"),
         default=False)
     gtatools_map_group_by_ipl: BoolProperty(
         name="Group by IPL",
@@ -1444,7 +1456,11 @@ class INUSceneSettings(bpy.types.PropertyGroup):
         name="Game Root",
         description=T("Корневая папка GTA SA"),
         default="", subtype='DIR_PATH',
-        update=_save_paths_proxy)
+        update=_game_import_root_changed)
+    gtatools_models_root: StringProperty(
+        name="Папка моделей",
+        description="Папка с DFF, TXD, COL и текстурами; импорт по выбранным IPL и IDE",
+        default="", subtype='DIR_PATH', update=_models_import_root_changed)
     ariane_bridge_path: StringProperty(
         name="Ariane game",
         description=T("Папка игры с ariane для моста (обмен через <папка>\\ariane\\bridge). "

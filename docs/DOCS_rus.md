@@ -27,6 +27,8 @@
   - [Экспорт всего (Batch)](#экспорт-всего-batch)
 - [IDE / IPL / IMG](#ide--ipl--img)
   - [Импорт карты](#импорт-карты)
+  - [Импорт выбранных моделей](#импорт-выбранных-моделей)
+  - [Импорт из папки моделей](#импорт-из-папки-моделей)
   - [IDE (Определения)](#ide-определения)
   - [IPL (Размещение)](#ipl-размещение)
   - [Секции IPL](#секции-ipl)
@@ -96,18 +98,19 @@
   - [Форматы файлов](#форматы-файлов)
   - [Свойства объекта (INUObjectProps)](#свойства-объекта-inuobjectprops)
   - [Свойства материала (INUMaterialProps)](#свойства-материала-inumaterialprops)
-  - [Свойства сцены](#свойства-сцены)
+  - [Свойства сцены](#свойства-сцены-inuscenesettings)
 
 ---
 
 ## Установка
 
-1. Скачайте папку `INU_tools/` (или zip-архив)
-2. Поместите `INU_tools/` в папку аддонов Blender:
-   - **Windows:** `%APPDATA%/Blender Foundation/Blender/<версия>/scripts/addons/`
-   - **Linux:** `~/.config/blender/<версия>/scripts/addons/`
-   - **macOS:** `/Users/<имя>/Library/Application Support/Blender/<версия>/scripts/addons/`
-3. Blender → Edit → Preferences → Add-ons → включите **"INU_tools(gta_sa)"**
+**Blender 4.2+ — установка расширения:** откройте *Edit → Preferences → Get Extensions*, найдите **INU Tools** либо выберите *Install from Disk…* и релизный `.zip` расширения. Используйте релизный архив, а не ZIP с исходниками GitHub.
+
+**Ручная установка (Blender 2.83+):** скопируйте папку `INU_tools/` в каталог аддонов, затем включите **INU_tools(gta_sa)** через *Edit → Preferences → Add-ons*:
+
+- **Windows:** `%APPDATA%/Blender Foundation/Blender/<версия>/scripts/addons/`
+- **Linux:** `~/.config/blender/<версия>/scripts/addons/`
+- **macOS:** `/Users/<имя>/Library/Application Support/Blender/<версия>/scripts/addons/`
 
 **Требования:**
 - Blender 2.83+ (4.2+ для установки через extensions.blender.org)
@@ -129,8 +132,8 @@
 ### Импорт карты GTA SA
 
 1. Укажите **Game Root** — папку GTA SA (например `D:\GTA San Andreas\`)
-2. Нажмите **Извлечь ресурсы** — извлечёт DFF/COL/текстуры из IMG в `.inu_cache/` (один раз, ~8 с на район)
-3. Нажмите **Импорт карты** — импорт только из кеша, ~30 с на район размера LA
+2. На вкладке **«Карта»** выберите регион, сохраните `.blend` и нажмите **Извлечь ресурсы** для подготовки кеша DFF/COL/текстур
+3. Нажмите **Импорт карты**. Для папки моделей или выбранных IDE/IPL используйте отдельный [сценарий импорта](#импорт-выбранных-моделей)
 
 ### Горячие клавиши
 
@@ -693,6 +696,8 @@ collision.col: 'collision': 78432 треугольников — COL форма�
 
 **Обхода нет**: лимит зашит в сам формат и в движок RenderWare. Выходы — разбить меш на несколько `model_id` или применить Decimate (для коллизий норма — до 5–10k трисов).
 
+**Освещение коллизии при экспорте:** **COL Light Mode → Из материала** сохраняет значения «Дневной свет» / «Ночной свет» каждого COL-материала; грани без настройки остаются с нулём. **Авто: день + ночь** заменяет значения на всей коллизии выбранными дневным/ночным уровнями (по умолчанию стандарт Kam: день 14, ночь 4, упакованный байт 78). Для сохранения импортированного или вручную настроенного света выберите **Из материала**.
+
 ### TXD (Текстуры)
 
 | Кнопка | Оператор | Описание |
@@ -848,7 +853,7 @@ collision.col: 'collision': 78432 треугольников — COL форма�
 **Вкладка «Импорт»** — тянет модели из игры в сцену:
 - **Папка с IDE** — корень игры или любая папка с `.ide` (чем уже, тем быстрее поиск).
 - **IPL** — мультивыбор: кнопка 📁 поддерживает Ctrl/Shift, выбранные файлы копятся в сворачиваемый список **IPL для импорта**. Импорт сливает все выбранные IPL (со сдвигом `lod_index`).
-- **IMG** — путь к основному архиву + тумблеры **LOD / TXD / COL** (ВКЛ = грузить эти данные; раньше это были инвертированные тумблеры «Skip»).
+- **IMG с моделями из IPL** — архивы, найденные через **Найти IMG**; импорт использует их и настроенный основной IMG. Тумблеры **LOD / 2DFX / TXD / COL** работают как ВКЛ = грузить данные.
 - **Найти IDE** — сканирует папку игры и находит `.ide`, где объявлены модели выбранных IPL (список **IDE с моделями из IPL**).
 - **Найти IMG** — сканирует папку игры рекурсивно и находит все `.img`, реально содержащие DFF моделей из IPL (список **IMG с моделями из IPL**). Импорт затем тянет модели из основного IMG **плюс** всех найденных кастомных архивов (например `maps/RESOURCES`). Нужно, когда модели кастомной карты разбросаны по нескольким `.img`.
 - **Импорт** — большая кнопка. Импорт из IMG **модальный**: внизу счётчик **«Импорт из IMG: X/Y»**, Blender не виснет, **ESC** отменяет. При импорте заполняются: имя TXD, LOD-напарник (`inu.lod_object` по `lod_index` из IPL), дистанции (LOD → LOD Dist, основная модель → Draw Dist) и связь с IDE (статус «В IDE (файл)», как у IPL).
@@ -906,6 +911,8 @@ base3  →  base3.dff  base3.col  base3.txd  LODbase3.dff
 
 **Панель:** View3D → Sidebar (N) → GTA Tools → IDE / IPL / IMG → вкладка **Карта** *(раньше — Properties → Scene → INU Tools → Import Map)*
 
+Этот сценарий относится к вкладке **«Карта»** и кнопке **«Импорт карты»**. Для выбранных IDE/IPL или папки моделей используйте отдельную вкладку **«Импорт»**, описанную ниже.
+
 **Шаг 1: Настройка**
 - Укажите **Game Root** — папку установки GTA SA
 - Выберите **Регион** (автоопределение из gta.dat: LA, SF, VEGAS, COUNTRY и т.д.)
@@ -919,7 +926,7 @@ base3  →  base3.dff  base3.col  base3.txd  LODbase3.dff
 
 **Шаг 3: Импорт карты**
 - Нажмите **Импорт карты** — читает DFF, PNG-текстуры и (опционально) COL **только из кеша** `.inu_cache/` (никакого обращения к IMG во время импорта)
-- Если кеш пуст, оператор сообщает *«Кеш пуст — сначала запустите «Извлечь ресурсы»»* и отменяется
+- Если кеш пуст, выводится предупреждение и по координатам IPL расставляются только Empty. Для геометрии сначала извлеките ресурсы.
 - DFF парсятся параллельно (4-поточный pool, numpy отпускает GIL) пока главный поток создаёт Blender-объекты — главный поток не простаивает
 - COL парсятся в том же пуле. SA хранит коллизии районов в lib-файлах (`LAs.col`, `LAn.col`…) — в каждом сотни ColModel записей, поэтому карта COL ключуется по внутреннему `model_name`, не по имени файла. DFF с именем `building01` автоматически получает свой `building01` ColModel, если он есть где-либо в кешированных .col
 - **Без** «Группировать по IPL» (тумблер выключен) объекты сортируются по 4 плоским коллекциям:
@@ -963,6 +970,26 @@ base3  →  base3.dff  base3.col  base3.txd  LODbase3.dff
 - `reuse (copy)` — `src.copy()` для повторных инстансов
 - `TXD cache load` — назначение PNG в material nodes
 - `transform apply` — DFF location/rotation + inu properties
+
+
+### Импорт выбранных моделей
+
+Кнопка **«Импорт»** на вкладке **«Импорт»** читает модели напрямую из IMG или **Папки моделей**. Предварительное извлечение в `.inu_cache/` не требуется.
+
+- Выберите IDE и текстовые или двоичные IPL. По IPL сохраняется расстановка; для ID моделей двоичного IPL нужны определения IDE. Если выбраны только IDE, каждая модель импортируется один раз и располагается сеткой. IPL без записей моделей выдаёт ошибку.
+- Для источников IMG укажите **Папку игры** и используйте **Найти IMG**, чтобы найти архивы с выбранными моделями.
+- Настройте **LOD / 2DFX / TXD / COL**: ВКЛ означает загрузку данных. TXD и COL по умолчанию выключены. Повторные инстансы используют уже импортированные данные модели.
+- Модели попадают в **Map_DFF**, **Map_LOD** и, при включённом COL, **Map_COL**. COL сопоставляется по внутреннему имени модели. Привязки к IDE/IPL и LOD-ссылки сохраняются; этот импорт не создаёт деревья коллекций по отдельным IPL.
+
+### Импорт из папки моделей
+
+Для распакованной кастомной карты используйте **Папка моделей** в боксе источника импорта. Она заменяет **Папку игры**: заполнение одного поля очищает другое. Выберите один источник.
+
+1. Укажите папку с DFF, TXD, COL и отдельными текстурами. DFF/TXD/COL индексируются рекурсивно, включая подпапки.
+2. Выберите IDE и текстовые или двоичные IPL. По IPL модели импортируются с расстановкой; если выбраны только IDE, модели располагаются сеткой. Когда IPL нужны определения моделей и IDE явно не выбраны, поиск IDE выполняется внутри папки моделей.
+3. Включите нужные **TXD / COL / LOD / 2DFX** и нажмите **Импорт** на вкладке **«Импорт»**. Для этого источника IMG и предварительное извлечение ресурсов не требуются.
+
+Имена файлов моделей сопоставляются без учёта регистра. Если в подпапках встречается одинаковое имя модели, используется первый файл при отсортированном обходе и выводится предупреждение. Для однозначного импорта используйте уникальные имена файлов.
 
 ### IDE (Определения)
 
@@ -1135,7 +1162,7 @@ IPL файлы определяют позиции, повороты и связ
 
 **Где применяется.** При переименовании во время импорта карты, `Replace IPL Placeholders`, распределении по коллекциям и сопоставлении пар COL/DFF — правильное базовое имя отправляет модель в `Map_LOD` вместо `Map_DFF_*` и даёт утилитам парных объектов находить HD-близнеца.
 
-> Реализация: `is_lod_name()` и `strip_lod_marker()` в [core/ipl.py](INU_tools/core/ipl.py); переиспользуется в `classify_model()` в [core/model_classify.py](INU_tools/core/model_classify.py).
+> Реализация: `is_lod_name()` и `strip_lod_marker()` в [core/ipl.py](../INU_tools/core/ipl.py); переиспользуется в `classify_model()` в [core/model_classify.py](../INU_tools/core/model_classify.py).
 
 ### Менеджер ID
 
@@ -1244,7 +1271,7 @@ IPL файлы определяют позиции, повороты и связ
 | **IDE Flags** | Числовое значение флагов. |
 | **COL Library** | Имя `.col`-библиотеки. |
 
-Источник: [`ops/col_surface_ops.py`](INU_tools/ops/col_surface_ops.py) → `gtatools.batch_set_distance`.
+Источник: [`ops/col_surface_ops.py`](../INU_tools/ops/col_surface_ops.py) → `gtatools.batch_set_distance`.
 
 ### Открыть IDE / IPL в редакторе (2.4.0)
 
@@ -2382,7 +2409,7 @@ INU Tools включает послойную систему запекания 
 |---|---|
 | Глазик | Включить/выключить слой в композите и при сведении. |
 | Имя слоя | Клик — **выбрать** слой (его запечённая карта показывается в Image-редакторе, а параметры — в боксе **Выбранный слой**). |
-| **Bake** | Печёт **только карту этого слоя** в свою картинку. |
+| **Bake** | Печёт **только карту этого слоя** в свою картинку. У слоёв **«Рисование»** и **«Маска»** кнопки нет: они редактируются кистью. |
 | Иконка сохранения (✓) | Сохраняет одну эту карту в файл (доступна после запекания карты). |
 | **X / ▲ / ▼** | Удалить / поднять / опустить выбранный слой. Порядок = порядок смешивания. |
 
@@ -2420,14 +2447,11 @@ INU Tools включает послойную систему запекания 
 
 ### Рисовать — ручная правка карты кистью
 
-Кнопка **Рисовать** на строке слоя переводит Blender в **Texture Paint** и подставляет картинку
-именно этого слоя как слот рисования, оставляя на экране живой композит — видно, как мазок
-ложится в итоговую текстуру (WYSIWYG). Выход — **Tab**.
+Кнопка **Рисовать** включает Texture Paint и создаёт отдельный белый слой **«Маска»** над выбранной запечённой картой или слоем **«Рисование»**. Режим Multiply: белый не меняет композит, тёмные мазки затемняют его. Исходная карта сохраняется.
 
-- Доступна на любом **уже запечённом** слое и на слое **«Рисование»**.
-- Слой «Рисование» создаётся белым (при режиме Multiply белый ничего не меняет): рисуешь
-  тёмным — получаешь грязь и затемнения поверх запечённого.
-- Кисть проецируется по **UV запекания**, активный UV-слой переключается автоматически.
+- Повторный вход для того же исходного слоя использует его маску. Рисование на самой маске не создаёт вложенную маску.
+- Мазки обновляют живой композит на модели. UV запекания становится активным автоматически; открытый Image-редактор показывает картинку маски.
+- Выход — **Tab**. Маска остаётся обычным слоем: можно менять прозрачность/смешивание, отключать или удалять её.
 
 ### LightMap — GI от реального света сцены
 
@@ -2476,12 +2500,13 @@ Normal, Darken, Multiply, Color Burn, Lighten, Screen, Color Dodge, Add, Overlay
 
 ### Превью и сохранение
 
-После запекания внизу панели появляются два действия:
+После запекания в панели доступны действия с результатом:
 
 | Кнопка | Описание |
 |---|---|
 | **Показать текстуру** / **Скрыть текстуру** | Включает flat-эмиссия-превью запечённого результата прямо на модели (видно при любом освещении). Для стека слоёв показывает живой нодовый композит — правка прозрачности/режима/контраста/гаммы обновляет его мгновенно. Повторный клик возвращает исходные материалы и рендер-UV. |
 | **Сохранить как** | Сводит включённые слои в одну текстуру (numpy-композит, sRGB) и сохраняет в файл, с опцией уменьшения **Размер**: `Оригинал` / `½` / `¼` / `⅛` (аккуратное box-усреднение — чище, чем печь сразу мелкое). |
+| **Сохранить внутри Blender и применить** | Сводит включённые слои в текстуру, упаковывает результат и картинки слоёв в Blender и назначает готовый материал модели с UV запекания. В диалоге задаётся **Имя текстуры**; при конфликте имени добавляется числовой суффикс. После применения сохраните `.blend`, чтобы упакованные картинки записались на диск. |
 | **Показать поверх базы (UV2)** | Превью-тумблер: строит нодовый материал, где **базовая текстура (через свою UV1)** умножается на **запечённый композит стека (через UV запекания, UV2)** — т.е. `TexUV1 × TexUV2`, эмуляция двухканального UV-вида в игре. Нужно, когда печёшь AO/LightMap в отдельную UV2 и хочешь видеть их поверх диффуза. Per-материал (у каждого слота своя база). Снять — **Скрыть текстуру**. |
 
 > ℹ **Линейное пространство и сэмплы.** Композит теперь считается в линейном пространстве, поэтому **«Сохранить как»** и живое превью совпадают с тем, что видно в игре. Во время запекания отключается adaptive sampling — ползунок **Samples** реально влияет на результат (не обрубается ранней остановкой).
@@ -2972,7 +2997,7 @@ preLit = day * (1 - dnParam) + night * dnParam
 
 > **ВАЖНО:** UV2 обязателен — без второго UV слоя лайтмап наложится по координатам UV1 и будет выглядеть неправильно.
 
-Сам MTA скрипт для лайтмапов доступен в разделе [Issues](../../issues) репозитория.
+Сам MTA скрипт для лайтмапов доступен в разделе [Issues](https://github.com/INU-ez/INU_Tools-GTA-sa-/issues) репозитория.
 
 ### Pipeline
 
@@ -3044,7 +3069,7 @@ preLit = day * (1 - dnParam) + night * dnParam
 
 ## Расширенные возможности
 
-> Изначально добавлены в 1.6.4 как экспериментальные — за несколько релизов стабилизировались. Edge-case баги иногда всплывают; сообщайте о них в [Issues](../../issues).
+> Изначально добавлены в 1.6.4 как экспериментальные — за несколько релизов стабилизировались. Edge-case баги иногда всплывают; сообщайте о них в [Issues](https://github.com/INU-ez/INU_Tools-GTA-sa-/issues).
 
 ### Map Export
 
@@ -3067,7 +3092,7 @@ preLit = day * (1 - dnParam) + night * dnParam
 - Пишет один `{base_name}.ide` (секция objs) и один `{base_name}.ipl` (секция inst), покрывающие всю выборку
 - Оператор работает как **модальный генератор** с window-manager таймером: статус-бар показывает текущую группу / TXD-бакет / IPL-стадию (`vegasN: TXD vegas02 (12 моделей)`), viewport остаётся отзывчивым, **ESC** отменяет экспорт.
 
-Источник: [`tools/map_export.py`](INU_tools/tools/map_export.py).
+Источник: [`tools/map_export.py`](../INU_tools/tools/map_export.py).
 
 #### Режимы разбиения (auto-split на районы)
 
@@ -3091,7 +3116,7 @@ preLit = day * (1 - dnParam) + night * dnParam
 
 DFF, лежащие только в scene root коллекции (или вообще без коллекции), попадают в бакет `unsorted/`. Если только один бакет содержит DFF, оператор откатывается к *Без разбиения* — поэтому этот режим тоже безопасно держать включённым на маленькой curated-сцене.
 
-Источник: [`tools/map_export.py`](INU_tools/tools/map_export.py) → `compute_grid_cells`, `compute_collection_cells`, `format_cell_name`, `_build_top_collection_lookup`, `export_map(..., split_mode='GRID' | 'COLLECTION', cell_size=...)`.
+Источник: [`tools/map_export.py`](../INU_tools/tools/map_export.py) → `compute_grid_cells`, `compute_collection_cells`, `format_cell_name`, `_build_top_collection_lookup`, `export_map(..., split_mode='GRID' | 'COLLECTION', cell_size=...)`.
 
 ### Binary IPL Write
 
@@ -3101,7 +3126,7 @@ DFF, лежащие только в scene root коллекции (или воо
 
 **Формат:** 76-байтный заголовок (магия `bnry` + 6 uint32 счётчиков + 12 uint32 смещений), потом массивы `inst` (40 байт на запись: 7 float + 3 int) и `cars` (48 байт: 4 float + 8 int). Другие секции (`cull`, `grge`, `zone`, …) **не** пишутся — бинарные IPL от Rockstar содержат только `inst` и `cars`.
 
-Источник: [`core/ipl.py`](INU_tools/core/ipl.py) → `_write_binary_ipl`, `write_binary_ipl`, `write_ipl(..., binary=True)`.
+Источник: [`core/ipl.py`](../INU_tools/core/ipl.py) → `_write_binary_ipl`, `write_binary_ipl`, `write_ipl(..., binary=True)`.
 
 ### UV-анимация `(2.1.0)`
 
@@ -3189,7 +3214,7 @@ UV-анимация GTA SA (чанки `0x2B` — словарь UV-анимац
 материал), и у чанка нет полей силы/смещения/буферов — их нет и в формате движка, поэтому
 соответствующие поля убраны из панели. Всё, что читает экспортёр, — сам чекбокс.
 
-Источник: [`core/dff.py`](INU_tools/core/dff.py) → `BreakableData`, `CHUNK_BREAKABLE`; [`ops/dff_export.py`](INU_tools/ops/dff_export.py) → breakable-блок внутри `_process_mesh`.
+Источник: [`core/dff.py`](../INU_tools/core/dff.py) → `BreakableData`, `CHUNK_BREAKABLE`; [`ops/dff_export.py`](../INU_tools/ops/dff_export.py) → breakable-блок внутри `_process_mesh`.
 
 ### Фрагменты (раскол меша)
 
@@ -3203,7 +3228,7 @@ UV-анимация GTA SA (чанки `0x2B` — словарь UV-анимац
 
 Осколки — полные копии объекта с удалёнными «чужими» гранями, поэтому UV, vertex-color и материалы сохраняются как есть. Опции: **Имя осколков**, **Seed**, **Удалить оригинал** (по умолчанию ВКЛ). Новые резы не добавляются — для настоящего геометрического фрактуринга используйте встроенный Blender **Cell Fracture**.
 
-Источник: [`ops/fragment_ops.py`](INU_tools/ops/fragment_ops.py) → `GTATOOLS_OT_fragment_mesh`.
+Источник: [`ops/fragment_ops.py`](../INU_tools/ops/fragment_ops.py) → `GTATOOLS_OT_fragment_mesh`.
 
 ### Разделить на чанки
 
@@ -3224,7 +3249,7 @@ UV-анимация GTA SA (чанки `0x2B` — словарь UV-анимац
 Куски — полные копии объекта с удалёнными «чужими» гранями, поэтому UV (оба набора),
 vertex-color, нормали и материалы сохраняются как есть. Имена — `<Base>_Chunk_X_Y`.
 
-Источник: [`ops/chunk_ops.py`](INU_tools/ops/chunk_ops.py) → `GTATOOLS_OT_chunk_map`.
+Источник: [`ops/chunk_ops.py`](../INU_tools/ops/chunk_ops.py) → `GTATOOLS_OT_chunk_map`.
 Функция адаптирована из [ChunkTools](https://github.com/milevskiy27/ChunkTools)
 (milevskiy27, Apache-2.0).
 
@@ -3242,7 +3267,7 @@ vertex-color, нормали и материалы сохраняются как
 
 **Юзкейс:** прокрутить все 294 анимации из `ped.ifp` подряд, не импортируя каждую руками.
 
-Источник: [`ops/ifp_import.py`](INU_tools/ops/ifp_import.py) → `enumerate_animations`, `batch_apply_sequential`, `GTATOOLS_OT_ifp_batch_import`.
+Источник: [`ops/ifp_import.py`](../INU_tools/ops/ifp_import.py) → `enumerate_animations`, `batch_apply_sequential`, `GTATOOLS_OT_ifp_batch_import`.
 
 ### Камеры (катсцена .dat)
 
@@ -3253,7 +3278,7 @@ vertex-color, нормали и материалы сохраняются как
 - **Импорт** строит связку **Camera + Empty («…​.Target»)** со связью Track To и вставляет ключи позиции/цели/FOV (FOV пишется в `data.angle`, вертикальный sensor_fit). Есть опция **Z-offset −1.0** (обход Z-бага движка, как в оригинальном скрипте).
 - **Экспорт** требует камеру с целью (Track To / Empty с суффиксом `.Target`), **fps = 30** и ≥2 ключей позиции у камеры и у цели. Пишет 4 блока (FOV / Roll-заглушка / позиция / цель), добивает хвост нулями до кратности 2048.
 
-Источник: [`ops/camera_io.py`](INU_tools/ops/camera_io.py) → `import_camera_dat`, `export_camera_dat`.
+Источник: [`ops/camera_io.py`](../INU_tools/ops/camera_io.py) → `import_camera_dat`, `export_camera_dat`.
 
 ### Handsign / ghands.ifp
 
@@ -3265,7 +3290,7 @@ vertex-color, нормали и материалы сохраняются как
 - **Отцепить** — снимает все привязки Handsign (ничего не удаляет).
 - **Экспорт жеста → ghands.ifp** — берёт активную Action каждого из трёх скелетов и вливает блоки в `ghands.ifp` одним merge (совпавшие по имени блоки заменяются, вся ваниль остаётся байт-в-байт). Имя Action = имя блока в IFP (`gsign6` / `lhgsign6` / …). Формат по умолчанию **ANP3** (родной SA), вне SA — ANPK; бэкфилл каноничных `bone_id` по имени кости.
 
-Источник: [`ops/handsign_ops.py`](INU_tools/ops/handsign_ops.py) → `GTATOOLS_OT_handsign_attach`, `GTATOOLS_OT_handsign_export`.
+Источник: [`ops/handsign_ops.py`](../INU_tools/ops/handsign_ops.py) → `GTATOOLS_OT_handsign_attach`, `GTATOOLS_OT_handsign_export`.
 
 ### Панель GTA Material
 
@@ -3281,7 +3306,7 @@ vertex-color, нормали и материалы сохраняются как
 
 Плюс dropdown **Vehicle Color Slot** (Primary / Secondary / Third / Fourth / Headlights / Taillights) — пишет carcols-метку в базовый RGB материала.
 
-Источник: [`tools/gta_material_panel.py`](INU_tools/tools/gta_material_panel.py).
+Источник: [`tools/gta_material_panel.py`](../INU_tools/tools/gta_material_panel.py).
 
 ### Alpha-материалы (массовая прозрачность)
 
@@ -3295,7 +3320,7 @@ vertex-color, нормали и материалы сохраняются как
 - **Режим для всех** + **Применить ко всем** — задать один режим сразу всем материалам списка. Любой прозрачный режим также выключает «Перекрытие прозрачности» — это единый стандарт прозрачности проекта. Пишутся оба свойства (`blend_method` и `surface_render_method` 4.2+), так что применяется и на EEVEE Legacy, и на EEVEE Next.
 - **Выделить объекты** — выделить меши, использующие материалы из списка.
 
-Источник: [`ops/alpha_tools.py`](INU_tools/ops/alpha_tools.py) → `draw_alpha_tools`, `GTATOOLS_OT_alpha_scan`, `GTATOOLS_OT_alpha_apply_all`.
+Источник: [`ops/alpha_tools.py`](../INU_tools/ops/alpha_tools.py) → `draw_alpha_tools`, `GTATOOLS_OT_alpha_scan`, `GTATOOLS_OT_alpha_apply_all`.
 
 ### Менеджер текстур (Bitmaps Manager)
 
@@ -3323,7 +3348,7 @@ vertex-color, нормали и материалы сохраняются как
 - **Очистка материалов** — удаляет orphan slots, мерджит дубли, нормализует имена.
 - **Сортировка материалов** — алфавитная сортировка material slots в активном объекте (для предсказуемого порядка в DFF).
 
-Источник: [`tools/bitmaps_manager.py`](INU_tools/tools/bitmaps_manager.py).
+Источник: [`tools/bitmaps_manager.py`](../INU_tools/tools/bitmaps_manager.py).
 
 ### CST IO
 
@@ -3348,7 +3373,7 @@ END
 
 Каждый `SPHERE` / `BOX` / `FACE` заканчивается 4 токенами поверхности: `material flags brightness light`. Всё после `#` — комментарий.
 
-Источник: [`core/cst.py`](INU_tools/core/cst.py), [`ops/cst_import.py`](INU_tools/ops/cst_import.py), [`ops/cst_export.py`](INU_tools/ops/cst_export.py).
+Источник: [`core/cst.py`](../INU_tools/core/cst.py), [`ops/cst_import.py`](../INU_tools/ops/cst_import.py), [`ops/cst_export.py`](../INU_tools/ops/cst_export.py).
 
 ### Vehicle Scale Helper
 
@@ -3362,7 +3387,7 @@ END
 
 **Что делает:** обходит иерархию DFS, умножает `obj.location` каждого объекта на factor, сбрасывает `matrix_parent_inverse` в identity, применяет `Matrix.Scale(factor)` к данным меша (копирует shared-меши) и Armature, сбрасывает `scale` в `(1,1,1)` на каждом объекте. Empty display size тоже масштабируется.
 
-Источник: [`tools/vehicle_scale.py`](INU_tools/tools/vehicle_scale.py).
+Источник: [`tools/vehicle_scale.py`](../INU_tools/tools/vehicle_scale.py).
 
 ### Vehicle Damage Variants
 
@@ -3392,7 +3417,7 @@ END
 - Используй **Показать OK** перед экспортом, если нужен чистый превью-скриншот DFF — `_dam` меши обычно косметически уродуют кадр.
 - `wheel_*` и `*_dummy` Empty в ванильном SA не имеют damage-варианта — только крашенные кузовные части (chassis, двери, капот, бамперы, лобовое стекло, mudguards, багажник) идут с парами `_ok` / `_dam`.
 
-Источник: [`tools/vehicle_scale.py`](INU_tools/tools/vehicle_scale.py) → `_strip_damage_suffix`, `find_damage_pairs`, `GTATOOLS_OT_vehicle_add_damage_variant`, `GTATOOLS_OT_vehicle_show_damage`, `GTATOOLS_OT_vehicle_pair_report`.
+Источник: [`tools/vehicle_scale.py`](../INU_tools/tools/vehicle_scale.py) → `_strip_damage_suffix`, `find_damage_pairs`, `GTATOOLS_OT_vehicle_add_damage_variant`, `GTATOOLS_OT_vehicle_show_damage`, `GTATOOLS_OT_vehicle_pair_report`.
 
 ### Train Station Markers
 
@@ -3402,7 +3427,7 @@ END
 
 **Что делает:** стирает старые маркеры, прикреплённые к треку, читает `station_indices` (устанавливаемые существующим `gtatools.mark_station`), размещает Empty-сферу в каждой станции с `empty_display_size = 3.0`, парентит к треку с identity-parent-inverse, чтобы локальная позиция совпадала с точкой кривой 1:1.
 
-Источник: [`ops/ifp_import.py`](INU_tools/ops/ifp_import.py) → `_refresh_station_markers`, `GTATOOLS_OT_refresh_station_markers`.
+Источник: [`ops/ifp_import.py`](../INU_tools/ops/ifp_import.py) → `_refresh_station_markers`, `GTATOOLS_OT_refresh_station_markers`.
 
 ### Roadblocks & Traffic Lights
 
@@ -3414,7 +3439,7 @@ END
 
 Работает на отфильтрованных точках сплайна, но пишет в оригинальные IDProp-слоты (которые включают empty-padding ноды из формата 12-на-группу в IPL).
 
-Источник: [`core/paths.py`](INU_tools/core/paths.py) → константы флагов + `decode_node_flags` / `encode_node_flags`; [`ops/ifp_import.py`](INU_tools/ops/ifp_import.py) → `GTATOOLS_OT_path_node_flag`.
+Источник: [`core/paths.py`](../INU_tools/core/paths.py) → константы флагов + `decode_node_flags` / `encode_node_flags`; [`ops/ifp_import.py`](../INU_tools/ops/ifp_import.py) → `GTATOOLS_OT_path_node_flag`.
 
 ### FLA4 Path Format
 
@@ -3424,7 +3449,7 @@ END
 
 **Где:** File → Export → *Export Path Nodes* → чекбокс **FLA4 Format**. Импорт определяет автоматически.
 
-Источник: [`core/paths.py`](INU_tools/core/paths.py) → `FLA4_MAGIC`, `FLA4_PATH_NODE_SIZE`, FLA4-ветки в `read_nodes` / `write_nodes`; [`ops/path_export.py`](INU_tools/ops/path_export.py) → `export_nodes(..., fla4=True)`.
+Источник: [`core/paths.py`](../INU_tools/core/paths.py) → `FLA4_MAGIC`, `FLA4_PATH_NODE_SIZE`, FLA4-ветки в `read_nodes` / `write_nodes`; [`ops/path_export.py`](../INU_tools/ops/path_export.py) → `export_nodes(..., fla4=True)`.
 
 ---
 

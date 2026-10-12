@@ -17,6 +17,8 @@
   - [Export All (Batch)](#export-all-batch)
 - [IDE / IPL / IMG](#ide--ipl--img)
   - [Import Map Workflow](#import-map-workflow)
+  - [Import selected models](#import-selected-models)
+  - [Import from a models folder](#import-from-a-models-folder)
   - [IDE (Definitions)](#ide-definitions)
   - [IPL (Placement)](#ipl-placement)
   - [IPL Sections](#ipl-sections)
@@ -86,18 +88,19 @@
   - [File Formats](#file-formats)
   - [Object Properties (INUObjectProps)](#object-properties-inuobjectprops)
   - [Material Properties (INUMaterialProps)](#material-properties-inumaterialprops)
-  - [Scene Properties](#scene-properties)
+  - [Scene Properties](#scene-properties-inuscenesettings)
 
 ---
 
 ## Installation
 
-1. Download the `INU_tools/` folder (or zip archive)
-2. Place `INU_tools/` into Blender addons folder:
-   - **Windows:** `%APPDATA%/Blender Foundation/Blender/<version>/scripts/addons/`
-   - **Linux:** `~/.config/blender/<version>/scripts/addons/`
-   - **macOS:** `/Users/<name>/Library/Application Support/Blender/<version>/scripts/addons/`
-3. Blender → Edit → Preferences → Add-ons → enable **"INU_tools(gta_sa)"**
+**Blender 4.2+ — extension installation:** open *Edit → Preferences → Get Extensions*, search for **INU Tools**, or use *Install from Disk…* with the release extension `.zip`. Use the release archive, rather than GitHub's source-code ZIP.
+
+**Manual installation (Blender 2.83+):** copy the `INU_tools/` folder into the addons directory, then enable **INU_tools(gta_sa)** in *Edit → Preferences → Add-ons*:
+
+- **Windows:** `%APPDATA%/Blender Foundation/Blender/<version>/scripts/addons/`
+- **Linux:** `~/.config/blender/<version>/scripts/addons/`
+- **macOS:** `/Users/<name>/Library/Application Support/Blender/<version>/scripts/addons/`
 
 **Requirements:**
 - Blender 2.83+ (4.2+ for installs through extensions.blender.org)
@@ -119,8 +122,8 @@
 ### Import the entire GTA SA map
 
 1. Set **Game Root** to GTA SA folder (e.g. `D:\GTA San Andreas\`)
-2. Click **Extract Resources** — extracts DFF/COL/textures from IMG into `.inu_cache/` (one-time, ~8 s for one region)
-3. Click **Import Map** — cache-only import, ~30 s for a full LA-sized district
+2. In the **Map** tab, choose the region, save the `.blend` and click **Extract Resources** to prepare the DFF/COL/textures cache
+3. Click **Import Map**. For a models folder or selected IDE/IPL files, use the separate [Import workflow](#import-selected-models)
 
 ### Hotkeys
 
@@ -291,6 +294,8 @@ Split the mesh or simplify (Decimate).
 
 **There is no workaround**: the limit is hard-coded into the COL format and the RenderWare engine. Either split the mesh into multiple `model_id`s or simplify (vanilla SA collisions are typically below 5–10k tris).
 
+**Collision lighting on export:** **COL Light Mode → From material** preserves each COL material's Day/Night Light values; faces without a setting keep zero. **Auto: day + night** overrides the whole collision using the configured day/night values (default Kam values: day 14, night 4, packed byte 78). Use **From material** to preserve imported or hand-edited lighting.
+
 ### TXD (Textures)
 
 | Button | Operator | Description |
@@ -445,9 +450,9 @@ Conditional options appear when their format is on: a **COL Library** package to
 The top of the IDE / IPL / IMG panel has three toggle buttons, **Import** | **Export** | **Map**, like the Ariane tab. These used to be separate collapsible sub-panels. The active tab's button is depressed; everything below belongs to it. The **Map** tab holds the full map import/export workflow (Game Root, region, resource extraction, Import Map / Export Map, BBox) — it moved here from *Properties → Scene → INU Tools*.
 
 **Import tab** — pulls models from the game into the scene:
-- **IDE folder** — the game root, or any folder holding `.ide` files (the narrower, the faster the scan).
+- **Game Root / Models folder** — choose the game installation for IMG sources, or an unpacked models folder. Filling one clears the other; DFF/TXD/COL in a models folder are indexed recursively.
 - **IPL** — multi-select: the 📁 button accepts Ctrl/Shift, and picked files accumulate in the collapsible **IPL to import** list. Import merges all selected IPLs (with a `lod_index` offset).
-- **IMG** — path to the primary archive + **LOD / TXD / COL** toggles. These are **ON = load** (the old "Skip" prefixes are gone — LOD on pulls LOD models, TXD on pulls textures, COL on pulls collisions).
+- **IMG with IPL models** — archives found by **Find IMG**; the import uses these and any configured primary IMG. **LOD / 2DFX / TXD / COL** toggles control loaded data. These are **ON = load** (the old "Skip" prefixes are gone — LOD on pulls LOD models, TXD on pulls textures, COL on pulls collisions).
 - **Find IDE** — scans the game folder for the `.ide` files that declare the selected IPLs' models (**IDE with IPL models** list).
 - **Find IMG** — scans the game folder recursively for every `.img` that actually contains the IPL's model DFFs (**IMG with IPL models** list). Import then pulls models from the primary IMG **plus** all found custom archives (e.g. `maps/RESOURCES`). Needed when a custom map's models are split across several `.img`.
 - **Import** — the big button. IMG import is **modal**: an **"Import from IMG: X/Y"** counter shows at the bottom, Blender doesn't freeze, and **ESC** cancels. On import it fills: TXD name, LOD partner (`inu.lod_object` from the IPL `lod_index`), distances (LOD → LOD Dist, main model → Draw Dist), and the IDE link (status "In IDE (file)", just like IPL).
@@ -497,10 +502,12 @@ Rows go to the **picked file** (the chosen file always wins — no silent split)
 
 ### Import Map Workflow
 
+This workflow uses the **Map** tab and its **Import Map** button. For selected IDE/IPL files or a models folder, use the separate **Import** tab described below.
+
 **Step 1: Setup**
 - Set **Game Root** to GTA SA installation folder
 - Select **Region** (auto-detected from gta.dat: LA, SF, VEGAS, COUNTRY, etc.)
-- Make sure **Skip 2DFX** is on for map import (default) — otherwise every street light, corona, and ped-attractor in the district becomes a Blender Light/Empty object (thousands of them) and the viewport grinds to a halt. Leave it off only when importing a single model where you want the effects.
+- Keep **2DFX off** for district imports (the default); the current toggles use **ON = load**. Otherwise thousands of effect objects can slow the viewport. Enable it when you need the effects.
 - **Load COL** toggle (default off) — pulls collisions from the cache alongside DFF geometry. Needed for the round-trip workflow (import part of the map → edit → export to IMG in another build). Turn it off if you only care about geometry and want a lighter scene.
 
 **Step 2: Extract Resources**
@@ -510,7 +517,7 @@ Rows go to the **picked file** (the chosen file always wins — no silent split)
 
 **Step 3: Import Map**
 - Click **Import Map** — cache-only, reads DFFs, PNG textures and (optionally) COLs from `.inu_cache/` — no IMG access during import
-- If cache is empty, the operator reports *"Cache is empty — run «Extract Resources» first"* and bails out
+- If the cache is empty, a warning is shown and only Empty placeholders are placed from IPL coordinates. Extract resources first to import actual geometry.
 - DFFs are parsed in parallel (4-worker thread pool, numpy releases GIL) while the main thread creates Blender objects — no wait between stages
 - COLs are parsed in the same pool. SA ships district-wide lib-COL files (LAs.col, LAn.col …) each containing hundreds of ColModel entries, so the map is keyed by model name (not filename); a DFF named `building01` automatically gets its `building01` ColModel if one exists anywhere in the cached COL libs
 - Objects auto-sorted into collections — with **Group by IPL** off, into four flat buckets:
@@ -554,6 +561,25 @@ Stage names worth knowing in the report:
 - `reuse (copy)` — `src.copy()` for repeat instances
 - `TXD cache load` — PNG assignment to material nodes
 - `transform apply` — DFF location/rotation + inu props
+
+### Import selected models
+
+The **Import** tab's **Import** button reads models directly from IMG archives or **Models folder**. It does not require resource extraction into `.inu_cache/`.
+
+- Select the IDE files and text or binary IPL files. IPL imports preserve placements; binary model IDs need matching IDE definitions. With selected IDE files only, each defined model is imported once and arranged on a grid. An IPL without model instances reports an error.
+- For IMG sources, set **Game Root** and use **Find IMG** to locate the archives containing the selected models.
+- Set **LOD / 2DFX / TXD / COL**: enabled means load that data. TXD and COL are off by default. Repeated instances reuse imported model data.
+- Models are placed in **Map_DFF**, **Map_LOD** and, when enabled, **Map_COL**. COL entries are matched by their internal model names. Source IDE/IPL links and LOD references are retained; this importer does not create per-IPL collection trees.
+
+### Import from a models folder
+
+Use **Models folder** in the import source box for an unpacked custom map. It replaces **Game Root**; filling either field clears the other. Choose one source.
+
+1. Point **Models folder** at the directory containing DFF, TXD, COL and loose textures. DFF/TXD/COL files are indexed recursively, including subfolders.
+2. Select the IDE files and text or binary IPL files. IPL imports preserve placements; with selected IDE files only, the models are arranged on a grid. If IPL needs model definitions and no IDE was explicitly selected, IDE files are searched under the models folder.
+3. Enable the **TXD / COL / LOD / 2DFX** data you need and click **Import** on the **Import** tab. IMG archives and resource extraction are not required for this source.
+
+Model filenames are matched without case sensitivity. If several subfolders contain the same model filename, the first file in the sorted traversal is used and a warning is reported. Use unique filenames to avoid ambiguity.
 
 ### IDE (Definitions)
 
@@ -739,7 +765,7 @@ When importing maps, INU Tools decides which models are LODs in two layers:
 
 **When it matters.** Used for map-import renaming, `Replace IPL Placeholders`, collection sorting, and COL/DFF pairing — getting the base name right sends a model to `Map_LOD` instead of `Map_DFF_*` and lets paired-object utilities find the HD twin.
 
-> Implementation: `is_lod_name()` and `strip_lod_marker()` in [core/ipl.py](INU_tools/core/ipl.py); reused by `classify_model()` in [core/model_classify.py](INU_tools/core/model_classify.py).
+> Implementation: `is_lod_name()` and `strip_lod_marker()` in [core/ipl.py](../INU_tools/core/ipl.py); reused by `classify_model()` in [core/model_classify.py](../INU_tools/core/model_classify.py).
 
 ### Model ID Manager
 
@@ -847,7 +873,7 @@ checkbox** on the left: only the ticked fields are overwritten, everything else 
 | **IDE Flags** | Numeric flag value. |
 | **COL Library** | `.col` library name. |
 
-Source: [`ops/col_surface_ops.py`](INU_tools/ops/col_surface_ops.py) → `gtatools.batch_set_distance`.
+Source: [`ops/col_surface_ops.py`](../INU_tools/ops/col_surface_ops.py) → `gtatools.batch_set_distance`.
 
 ### Opening IDE / IPL in an editor (2.4.0)
 
@@ -2022,7 +2048,7 @@ The stack reads like Photoshop: the **bottom** layer is the base, layers above b
 |---|---|
 | Eye toggle | Enable/disable the layer in the composite and in flatten. |
 | Layer name | Click to **select** the layer (its baked map shows in the Image Editor and its parameters appear in **Selected layer**). |
-| **Bake** | Bakes **only this layer's** map into its own image. |
+| **Bake** | Bakes **only this layer's** map into its own image. Not shown for **Paint** or **Mask** layers, which are edited with a brush. |
 | Save icon (✓) | Saves this single map to a file (enabled once the map is baked). |
 | **X / ▲ / ▼** | Remove / move up / move down the selected layer. Order = blend order. |
 
@@ -2060,14 +2086,11 @@ duration of the bake, the same trick Bevel uses. Scene lights, lamps and the HDR
 
 ### Paint — editing a map by hand
 
-The **Paint** button on a layer row switches Blender to **Texture Paint** and makes that layer's
-image the paint slot while the live composite stays on screen, so you see each stroke land in the
-final texture (WYSIWYG). Press **Tab** to leave.
+**Paint** enters Texture Paint and creates a separate white **Mask** layer above the selected baked map or **Paint** layer. It uses Multiply blending: white leaves the composite unchanged; dark strokes darken it. The source map is preserved.
 
-- Available on any **already baked** layer and on the **Paint** layer.
-- The Paint layer starts white (with the Multiply blend, white changes nothing): paint dark and you
-  add dirt and shading on top of what was baked.
-- The brush projects through the **bake UV**; the active UV layer is switched for you.
+- Re-entering paint for the same source reuses its mask. Painting a mask does not create another nested mask.
+- Strokes update the live composite on the model. The bake UV becomes active automatically; an open Image Editor displays the mask image.
+- Exit with **Tab**. The mask remains a regular layer: adjust its opacity/blend or disable/delete it as needed.
 
 ### LightMap — GI from the real scene light
 
@@ -2121,12 +2144,13 @@ Normal, Darken, Multiply, Color Burn, Lighten, Screen, Color Dodge, Add, Overlay
 
 ### Previewing and saving
 
-After baking, two actions appear at the bottom of the panel:
+After baking, result actions are available in the panel:
 
 | Button | Description |
 |---|---|
 | **Show texture** / **Hide texture** | Toggles a flat-emission preview of the baked result directly on the model (visible under any lighting). For a layer stack it shows the live node composite — editing opacity/blend/contrast/gamma updates it instantly. Click again to restore your original materials and render UV. |
 | **Save as** | Flattens the enabled layers into one texture (numpy composite, sRGB) and saves it to a file, with a **Size** downscale option: `Original` / `½` / `¼` / `⅛` (proper box-averaging — cleaner than baking small directly). |
+| **Save inside Blender and apply** | Flattens enabled layers into a texture, packs the result and layer images into Blender, and assigns the finished material to the model using the bake UV. Choose **Texture name** in the dialog. A conflicting image name gets a numeric suffix. Save the `.blend` afterwards to persist the packed images on disk. |
 | **Show over base (UV2)** | Final two-UV look: builds a node material where the model's **base texture (via its own UV1)** is multiplied by the **baked stack composite (via the bake UV / UV2)** — i.e. `TexUV1 × TexUV2`. Use when you bake AO/LightMap into a separate UV2 and want to see them over the existing diffuse. Per-material (each slot keeps its own base). Click **Hide texture** to restore. |
 
 > 💡 **Example — bake AO + Diffuse and flatten to a TXD texture:**
@@ -2423,7 +2447,7 @@ set of objects you can export as separate DFFs, each with its own COL and its ow
 Chunks are full copies of the object with the "foreign" faces deleted, so UVs (both sets), vertex
 colours, normals and materials survive as-is. Names follow `<Base>_Chunk_X_Y`.
 
-Source: [`ops/chunk_ops.py`](INU_tools/ops/chunk_ops.py) → `GTATOOLS_OT_chunk_map`. Adapted from
+Source: [`ops/chunk_ops.py`](../INU_tools/ops/chunk_ops.py) → `GTATOOLS_OT_chunk_map`. Adapted from
 [ChunkTools](https://github.com/milevskiy27/ChunkTools) (milevskiy27, Apache-2.0).
 
 ---
@@ -2821,7 +2845,7 @@ Generate Lua code for MTA SA lightmap scripts. The MTA script replaces shaders a
 
 > **IMPORTANT:** UV2 is required — without a second UV layer, the lightmap will use UV1 coordinates and look incorrect.
 
-The MTA lightmap script itself is available in the [Issues](../../issues) section of the repository.
+The MTA lightmap script itself is available in the [Issues](https://github.com/INU-ez/INU_Tools-GTA-sa-/issues) section of the repository.
 
 ### Pipeline
 
@@ -2893,7 +2917,7 @@ After that, the Asset Browser shows every vanilla prop as a draggable thumbnail.
 
 ## Advanced
 
-> Originally introduced in 1.6.4 as experimental — the features below have stabilised through several release cycles. Edge-case bugs still surface occasionally; report any in [Issues](../../issues).
+> Originally introduced in 1.6.4 as experimental — the features below have stabilised through several release cycles. Edge-case bugs still surface occasionally; report any in [Issues](https://github.com/INU-ez/INU_Tools-GTA-sa-/issues).
 
 ### Map Export
 
@@ -2916,7 +2940,7 @@ Unified one-click export of a scene district: DFF + COL + TXD + IDE + IPL into a
 - Writes one `{base_name}.ide` (objs section) and one `{base_name}.ipl` (inst section) covering the entire selection
 - The operator runs as a **modal generator** with a window-manager timer: status bar shows current group / TXD bucket / IPL stage (`vegasN: TXD vegas02 (12 models)`), the viewport stays responsive, **ESC** cancels the export.
 
-Source: [`tools/map_export.py`](INU_tools/tools/map_export.py).
+Source: [`tools/map_export.py`](../INU_tools/tools/map_export.py).
 
 #### Split modes (auto-split into districts)
 
@@ -2940,7 +2964,7 @@ Bins DFFs by the name of their topmost user collection (the one directly under t
 
 DFFs that live only in the scene root collection (or in no collection at all) land under a `unsorted/` bucket. If only one bucket has any DFFs the operator falls back to *No split* — so this mode is also safe to leave on for hand-curated small scenes.
 
-Source: [`tools/map_export.py`](INU_tools/tools/map_export.py) → `compute_grid_cells`, `compute_collection_cells`, `format_cell_name`, `_build_top_collection_lookup`, `export_map(..., split_mode='GRID' | 'COLLECTION', cell_size=...)`.
+Source: [`tools/map_export.py`](../INU_tools/tools/map_export.py) → `compute_grid_cells`, `compute_collection_cells`, `format_cell_name`, `_build_top_collection_lookup`, `export_map(..., split_mode='GRID' | 'COLLECTION', cell_size=...)`.
 
 ### Binary IPL Write
 
@@ -2950,7 +2974,7 @@ Adds `bnry`-format output to the IPL exporter (read was already supported).
 
 **Format:** 76-byte header (`bnry` magic + 6 uint32 counts + 12 uint32 offsets), then packed `inst` entries (40 bytes each: 7 floats + 3 ints) and `cars` entries (48 bytes: 4 floats + 8 ints). Other sections (`cull`, `grge`, `zone`, …) are **not** written — Rockstar's binary IPLs only contain `inst` and `cars`, matching vanilla SA behaviour.
 
-Source: [`core/ipl.py`](INU_tools/core/ipl.py) → `_write_binary_ipl`, `write_binary_ipl`, `write_ipl(..., binary=True)`.
+Source: [`core/ipl.py`](../INU_tools/core/ipl.py) → `_write_binary_ipl`, `write_binary_ipl`, `write_ipl(..., binary=True)`.
 
 ### UV Animation `(2.1.0)`
 
@@ -3038,7 +3062,7 @@ so the model never loaded at all. The copy is now built from the geometry itself
 material), and the chunk has no force / offset / buffer fields — the engine format has none either,
 so those fields were removed from the panel. The checkbox is all the exporter reads.
 
-Source: [`core/dff.py`](INU_tools/core/dff.py) → `BreakableData`, `CHUNK_BREAKABLE`; [`ops/dff_export.py`](INU_tools/ops/dff_export.py) → breakable block inside `_process_mesh`.
+Source: [`core/dff.py`](../INU_tools/core/dff.py) → `BreakableData`, `CHUNK_BREAKABLE`; [`ops/dff_export.py`](../INU_tools/ops/dff_export.py) → breakable block inside `_process_mesh`.
 
 ### IFP Batch Import
 
@@ -3054,7 +3078,7 @@ Import a folder of `.ifp` files and stack every animation onto one NLA track of 
 
 **Use case:** scrub through 294 animations from `ped.ifp` consecutively without manually importing each one.
 
-Source: [`ops/ifp_import.py`](INU_tools/ops/ifp_import.py) → `enumerate_animations`, `batch_apply_sequential`, `GTATOOLS_OT_ifp_batch_import`.
+Source: [`ops/ifp_import.py`](../INU_tools/ops/ifp_import.py) → `enumerate_animations`, `batch_apply_sequential`, `GTATOOLS_OT_ifp_batch_import`.
 
 ### GTA Material Panel
 
@@ -3072,7 +3096,7 @@ Each button one-shot-applies its effect configuration to `mat.inu.*` (round-trip
 
 Plus the **Vehicle Color Slot** dropdown (Primary / Secondary / Third / Fourth / Headlights / Taillights) — writes the carcols magic tag into the material's base RGB.
 
-Source: [`tools/gta_material_panel.py`](INU_tools/tools/gta_material_panel.py).
+Source: [`tools/gta_material_panel.py`](../INU_tools/tools/gta_material_panel.py).
 
 ### Bitmaps Manager
 
@@ -3086,7 +3110,7 @@ Texture-management utilities: scan for missing files, resolve paths from a searc
 - **Copy Used To Folder…** — copies every texture used by at least one material into the target folder. Optional **Subfolder per TXD** creates `target/{txd_name}/texture.png` by walking mesh objects and reading `obj.inu.txd_name`. If a material is used across multiple TXDs, the texture lands in each one.
 - **Find Duplicates** — MD5-hashes every reachable texture file and reports groups of identical files to the System Console.
 
-Source: [`tools/bitmaps_manager.py`](INU_tools/tools/bitmaps_manager.py).
+Source: [`tools/bitmaps_manager.py`](../INU_tools/tools/bitmaps_manager.py).
 
 ### CST IO
 
@@ -3111,7 +3135,7 @@ END
 
 Each `SPHERE` / `BOX` / `FACE` ends with 4 surface tokens: `material flags brightness light`. Anything after `#` is a comment.
 
-Source: [`core/cst.py`](INU_tools/core/cst.py), [`ops/cst_import.py`](INU_tools/ops/cst_import.py), [`ops/cst_export.py`](INU_tools/ops/cst_export.py).
+Source: [`core/cst.py`](../INU_tools/core/cst.py), [`ops/cst_import.py`](../INU_tools/ops/cst_import.py), [`ops/cst_export.py`](../INU_tools/ops/cst_export.py).
 
 ### Vehicle Scale Helper
 
@@ -3125,7 +3149,7 @@ Uniformly rescale a whole vehicle hierarchy (Empty root + mesh + dummy children)
 
 **What it does:** walks the hierarchy DFS, multiplies every `obj.location` by the factor, clears `matrix_parent_inverse` to identity, applies `Matrix.Scale(factor)` to mesh data (copies shared meshes first) and Armature data, resets `scale` to `(1,1,1)` on every object. Empty display sizes scale too.
 
-Source: [`tools/vehicle_scale.py`](INU_tools/tools/vehicle_scale.py).
+Source: [`tools/vehicle_scale.py`](../INU_tools/tools/vehicle_scale.py).
 
 ### Vehicle Damage Variants
 
@@ -3155,7 +3179,7 @@ Manage paired `_ok` / `_dam` body atomics for vehicle DFFs. The GTA SA engine sw
 - Use **Show OK** before exporting if you need a clean DFF preview screenshot — the `_dam` meshes are mostly cosmetic eyesores at full visibility.
 - `wheel_*` and `*_dummy` empties have no damage variant in vanilla SA — only painted body parts (chassis, doors, bonnet, bumpers, windshield, mudguards, boot) ship with `_ok` / `_dam` pairs.
 
-Source: [`tools/vehicle_scale.py`](INU_tools/tools/vehicle_scale.py) → `_strip_damage_suffix`, `find_damage_pairs`, `GTATOOLS_OT_vehicle_add_damage_variant`, `GTATOOLS_OT_vehicle_show_damage`, `GTATOOLS_OT_vehicle_pair_report`.
+Source: [`tools/vehicle_scale.py`](../INU_tools/tools/vehicle_scale.py) → `_strip_damage_suffix`, `find_damage_pairs`, `GTATOOLS_OT_vehicle_add_damage_variant`, `GTATOOLS_OT_vehicle_show_damage`, `GTATOOLS_OT_vehicle_pair_report`.
 
 ### Train Station Markers
 
@@ -3165,7 +3189,7 @@ Visible Empty spheres on train-track curves at every station point, so stations 
 
 **What it does:** wipes old markers parented to the track, reads `station_indices` (set by the existing `gtatools.mark_station`), places a sphere Empty at every station point with `empty_display_size = 3.0`, parents it to the track with identity parent-inverse so the local position maps 1:1 to the curve point.
 
-Source: [`ops/ifp_import.py`](INU_tools/ops/ifp_import.py) → `_refresh_station_markers`, `GTATOOLS_OT_refresh_station_markers`.
+Source: [`ops/ifp_import.py`](../INU_tools/ops/ifp_import.py) → `_refresh_station_markers`, `GTATOOLS_OT_refresh_station_markers`.
 
 ### Roadblocks & Traffic Lights
 
@@ -3177,7 +3201,7 @@ Per-node flag editor for paths.ipl curves: roadblock bit + traffic-light kind.
 
 Works on filtered spline points, but writes into the original IDProp slots (which include empty-padding nodes from the 12-per-group IPL format).
 
-Source: [`core/paths.py`](INU_tools/core/paths.py) → flag constants + `decode_node_flags` / `encode_node_flags`; [`ops/ifp_import.py`](INU_tools/ops/ifp_import.py) → `GTATOOLS_OT_path_node_flag`.
+Source: [`core/paths.py`](../INU_tools/core/paths.py) → flag constants + `decode_node_flags` / `encode_node_flags`; [`ops/ifp_import.py`](../INU_tools/ops/ifp_import.py) → `GTATOOLS_OT_path_node_flag`.
 
 ### FLA4 Path Format
 
@@ -3187,7 +3211,7 @@ Extended `nodes*.dat` format used by Fastman Limit Adjuster 4. Adds 12 bytes per
 
 **Location:** File → Export → *Export Path Nodes* → checkbox **FLA4 Format**. Import auto-detects.
 
-Source: [`core/paths.py`](INU_tools/core/paths.py) → `FLA4_MAGIC`, `FLA4_PATH_NODE_SIZE`, FLA4 branches in `read_nodes` / `write_nodes`; [`ops/path_export.py`](INU_tools/ops/path_export.py) → `export_nodes(..., fla4=True)`.
+Source: [`core/paths.py`](../INU_tools/core/paths.py) → `FLA4_MAGIC`, `FLA4_PATH_NODE_SIZE`, FLA4 branches in `read_nodes` / `write_nodes`; [`ops/path_export.py`](../INU_tools/ops/path_export.py) → `export_nodes(..., fla4=True)`.
 
 ---
 

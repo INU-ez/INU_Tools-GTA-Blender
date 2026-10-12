@@ -33,18 +33,18 @@ HAS_COLOR_ATTRIBUTES = BL >= (3, 2, 0)
 # ── Material node-tree compat ────────────────────────────────────────
 # Material.use_nodes is deprecated on Blender 5.x — reading it emits a
 # DeprecationWarning (spammy from panel draw). Use these helpers instead:
-# on ≥4.0 we never touch use_nodes (node_tree presence is the real
-# check); on older Blender use_nodes still gates node usage.
+# on ≥5.0 node_tree presence is the real check; on Blender 4.x and
+# older, use_nodes still gates node usage even if a node tree exists.
 
 def material_uses_nodes(mat):
     """True if `mat` has an active shader node tree. Avoids the
-    use_nodes DeprecationWarning on Blender ≥4.0."""
+    use_nodes DeprecationWarning on Blender ≥5.0."""
     if mat is None:
         return False
     nt = getattr(mat, 'node_tree', None)
     if nt is None:
         return False
-    if BL < (4, 0, 0):
+    if BL < (5, 0, 0):
         return bool(getattr(mat, 'use_nodes', True))
     return True
 
