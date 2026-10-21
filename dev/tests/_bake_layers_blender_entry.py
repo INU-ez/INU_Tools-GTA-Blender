@@ -73,6 +73,20 @@ paint('diffuse_check')
 assert len(layers) == 2 and layers[1].uid != mask_uid
 assert layers[0].paint_mask_uid == layers[1].uid
 assert bpy.ops.gtatools.bake_save_apply() == {'FINISHED'}
+for factor in (2, 4, 8):
+    assert bpy.ops.gtatools.bake_save_apply(save_scale=str(factor)) == {'FINISHED'}
+    saved = bpy.data.images[obj['inu_bake_image']]
+    assert tuple(saved.size) == (8 // factor, 8 // factor)
+    assert saved.packed_file
+    assert tuple(source.size) == (8, 8) and tuple(mask.size) == (8, 8)
+    assert np.array_equal(B.read_image_to_numpy(source), source_pixels)
+    assert np.allclose(B.read_image_to_numpy(saved)[...,:3], 1., atol=.01)
+# Reapplying must start from the full stack, not shrink the previous result again.
+assert bpy.ops.gtatools.bake_save_apply(save_scale='2') == {'FINISHED'}
+assert tuple(bpy.data.images[obj['inu_bake_image']].size) == (4, 4)
+copy = bake_ops._downscaled_bake_copy(source, 4)
+assert tuple(copy.size) == (2, 2) and tuple(source.size) == (8, 8)
+bpy.data.images.remove(copy)
 output = ROOT / 'dev/tests/.blender_bake_runtime'
 output.mkdir(exist_ok=True)
 blend = output / 'packed_layers.blend'
@@ -81,6 +95,7 @@ if '--ui' not in sys.argv:
     bpy.ops.wm.open_mainfile(filepath=str(blend))
     obj = bpy.data.objects['BakeLayerCheck']
     assert bpy.data.images[obj['inu_bake_image']].packed_file
+    assert tuple(bpy.data.images[obj['inu_bake_image']].size) == (4, 4)
     assert len(obj.inu.gtatools_bake_layers) == 2
     print('BAKE_LAYER_CHECKS_OK: mask creation/reuse/recreation, paint target, source preservation, packed apply, UV, save/reopen')
 else:

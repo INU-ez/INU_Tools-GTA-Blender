@@ -13,6 +13,22 @@ from dataclasses import dataclass
 
 import numpy as np
 
+SURFACE_MAP_IDS = frozenset({'BEVEL', 'DIRT', 'EDGEWEAR', 'CURVATURE',
+                             'HEIGHT', 'THICKNESS', 'GRUNGE', 'HIGHLIGHT'})
+
+
+def uses_bevel_mask(map_id, effect_basis='SELF', masks=()):
+    return map_id == 'BEVEL' or (map_id in SURFACE_MAP_IDS and (
+        effect_basis == 'BEVEL' or any(
+            (m.get('basis') if isinstance(m, dict) else getattr(m, 'basis', '')) == 'BEVEL'
+            for m in masks if (m.get('enabled', True) if isinstance(m, dict)
+                               else getattr(m, 'enabled', True)))))
+
+
+def bevel_basis_key(layer_key):
+    """Private geometry mask; independent of other Bevel layers in the stack."""
+    return f"{layer_key}__bevel_basis"
+
 
 # ── HSV-хелперы (векторные, для Hue/Saturation/Color/Value) ──────────
 # numpy не имеет встроенного RGB↔HSV; повторяем точные формулы Blender
@@ -270,6 +286,9 @@ class LayerSpec:
     opacity: float = 1.0
     contrast: float = 1.0          # FUTURE (1.0 = identity)
     gamma: float = 1.0             # FUTURE (1.0 = identity)
+    use_color: bool = False
+    color_dark: tuple = (0.0, 0.0, 0.0)
+    color_light: tuple = (1.0, 1.0, 1.0)
     influence_target: str = ''     # FUTURE (masking by another map)
     influence_amount: float = 1.0
     alpha_source: str = ''         # ALPHA-слой: '' / 'MATERIAL' | map_id-источник
@@ -278,6 +297,16 @@ class LayerSpec:
     decal_threshold: float = 0.5   # порог яркости (выше — прозрачно)
     decal_softness: float = 0.25   # мягкость перехода у порога
     decal_invert: bool = False     # декаль: показывать светлое вместо тёмного
+
+
+def colorize_layer(rgb, layer):
+    """Linear two-colour ramp, matching RGBToBW + Mix in live preview."""
+    if not getattr(layer, 'use_color', False) or layer.map_id not in SURFACE_MAP_IDS:
+        return rgb
+    amount = np.clip(rgb @ np.array([0.2126, 0.7152, 0.0722]), 0.0, 1.0)[..., None]
+    dark = np.asarray(layer.color_dark, dtype=np.float32)
+    light = np.asarray(layer.color_light, dtype=np.float32)
+    return dark * (1.0 - amount) + light * amount
 
 
 def linear_to_srgb(c):
@@ -344,6 +373,17 @@ def _is_alpha_provider(L):
 def material_alpha_uses_coverage(pixels):
     """Hi→Low coverage is in Alpha only when the entire red channel is empty."""
     return pixels.shape[2] >= 4 and float(pixels[..., 0].max()) < 1e-4
+
+
+def material_alpha_rgba(pixels):
+    """A material-alpha bake is a scalar mask, not opaque projection coverage.
+
+    Keep Alpha identical to the mask so a fully transparent Hi cannot trigger
+    legacy coverage fallback and become opaque when flattening the stack.
+    """
+    result = pixels.copy()
+    result[..., 3] = np.clip(result[..., 0], 0., 1.)
+    return result
 
 
 def _layer_alpha_array(L, layer_pixels, fallback, w, h):
@@ -452,6 +492,7 @@ def composite_layers(layer_pixels, layers, w, h, *, srgb=True):
         if getattr(enabled[0], 'desaturate', False):
             acc = _desat(acc)
         acc = apply_contrast_gamma(acc, enabled[0].contrast, enabled[0].gamma)
+        acc = colorize_layer(acc, enabled[0])
         acc = _paint_mask(acc, enabled[0])
         base_alpha = base[..., 3].astype(np.float32)
 
@@ -461,6 +502,7 @@ def composite_layers(layer_pixels, layers, w, h, *, srgb=True):
             if getattr(L, 'desaturate', False):
                 top = _desat(top)
             top = apply_contrast_gamma(top, L.contrast, L.gamma)
+            top = colorize_layer(top, L)
             top = _paint_mask(top, L)
             blended = _BLEND.get(L.blend_mode, _BLEND['NORMAL'])(acc, top)
             # FUTURE: mask = mask_lookup[L.influence_target]; сейчас 1.0

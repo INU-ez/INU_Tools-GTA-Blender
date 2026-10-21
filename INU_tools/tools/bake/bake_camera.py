@@ -239,7 +239,7 @@ def render_one_map_camera(context, map_def, obj, image, *, params=None,
     # Bevel и пр. node-group-карты подменяют материал на datablock obj.
     map_teardown = (lambda: None)
     if map_def.node_group_builder is not None:
-        map_teardown = map_def.node_group_builder(obj, params)
+        map_teardown = bake_maps.prepare_map(map_def, obj, context, params)
 
     frame = frame_obj if frame_obj is not None else obj
     center, dim = _eval_aabb(frame)         # КАДР — по плоскости (frame)

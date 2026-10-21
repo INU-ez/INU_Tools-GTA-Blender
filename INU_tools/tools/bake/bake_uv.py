@@ -25,15 +25,41 @@ LIGHTMAP_UV_NAME = 'LightMap'
 _UV_LAYER_CAP = 8
 
 
-def ensure_lightmap_uv(obj, name=LIGHTMAP_UV_NAME, margin=0.02,
+def uv_needs_unique_target(me, name, minimum_fill=0.0):
+    """Repeated face footprints or tiled coordinates cannot hold unique masks."""
+    uv = me.uv_layers.get(name)
+    if uv is None:
+        return False
+    coordinates = np.empty(len(me.loops) * 2, dtype=np.float32)
+    uv.data.foreach_get('uv', coordinates)
+    coordinates = coordinates.reshape(-1, 2)
+    if np.any(coordinates < -1e-6) or np.any(coordinates > 1.0 + 1e-6):
+        return True
+    seen = set()
+    filled_area = 0.0
+    for face in me.polygons:
+        points = coordinates[list(face.loop_indices)]
+        footprint = tuple(sorted(tuple(p) for p in np.round(points, 6)))
+        if footprint in seen:
+            return True
+        seen.add(footprint)
+        if minimum_fill > 0 and len(points) >= 3:
+            following = np.roll(points, -1, axis=0)
+            filled_area += abs(float(np.sum(points[:, 0] * following[:, 1]
+                                             - points[:, 1] * following[:, 0]))) * 0.5
+    return minimum_fill > 0 and filled_area < minimum_fill
+
+
+def ensure_lightmap_uv(obj, name=LIGHTMAP_UV_NAME, margin=0.002,
                        angle_limit=66.0):
     """Получить-или-создать UV-канал `name` объекта с НЕПЕРЕСЕКАЮЩЕЙСЯ
     развёрткой. Если канал уже существует — переиспользуем как есть (не
     пере-разворачиваем: повторный lightmap_pack сдвинул бы острова и
     рассинхронизировал ранее запечённый lightmap с развёрткой).
 
-    Новый канал разворачиваем `bpy.ops.uv.lightmap_pack` (раскладывает все
-    грани без наложений), при провале — `smart_project`. КРИТИЧНО: перед
+    Новый канал разворачиваем Smart UV Project с сохранением пропорций,
+    при провале — lightmap_pack. Margin — доля UV, без умножения на 1000.
+    КРИТИЧНО: перед
     входом в EDIT изолируем выделение до одного `obj` — mode_set в 2.8+
     входит в мульти-объектный едит, и unwrap-операторы перепаковали бы
     активные UV ВСЕХ выделенных мешей (тихая порча чужих развёрток).
@@ -55,6 +81,15 @@ def ensure_lightmap_uv(obj, name=LIGHTMAP_UV_NAME, margin=0.02,
     prev_mode = getattr(obj, 'mode', 'OBJECT')
     prev_sel = [(o, o.select_get()) for o in view.objects]
     prev_active_name = uvs.active.name if uvs.active else None
+    prev_render_name = next((u.name for u in uvs if u.active_render), None)
+    if prev_mode == 'EDIT':
+        obj.update_from_editmode()
+    mesh_flags = []
+    for elements in (me.vertices, me.edges, me.polygons):
+        selected, hidden = [False] * len(elements), [False] * len(elements)
+        elements.foreach_get('select', selected)
+        elements.foreach_get('hide', hidden)
+        mesh_flags.append((elements, selected, hidden))
     ok = False
     try:
         uv = uvs.new(name=name)
@@ -72,26 +107,40 @@ def ensure_lightmap_uv(obj, name=LIGHTMAP_UV_NAME, margin=0.02,
         view.objects.active = obj
         if obj.mode != 'EDIT':
             bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.reveal(select=True)
         bpy.ops.mesh.select_all(action='SELECT')
 
         # Первый сработавший unwrap побеждает.
         for op, kwargs in (
+                (bpy.ops.uv.smart_project,
+                 dict(angle_limit=math.radians(angle_limit), margin_method='FRACTION',
+                      island_margin=margin, correct_aspect=True)),
                 (bpy.ops.uv.lightmap_pack,
                  dict(PREF_CONTEXT='ALL_FACES',
-                      PREF_MARGIN_DIV=max(margin, 1e-4) * 1000.0)),
-                (bpy.ops.uv.smart_project,
-                 dict(angle_limit=math.radians(angle_limit),
-                      island_margin=margin)),
+                      PREF_MARGIN_DIV=min(1.0, max(margin, 0.001)))),
         ):
             try:
-                op(**kwargs)
-                ok = True
-                break
+                result = op(**kwargs)
+                if result and 'FINISHED' in result:
+                    ok = True
+                    break
             except Exception:
                 continue
     except Exception:
         ok = False
     finally:
+        try:
+            if obj.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            for elements, selected, hidden in mesh_flags:
+                elements.foreach_set('select', selected)
+                elements.foreach_set('hide', hidden)
+            me.update()
+            if prev_render_name:
+                for layer in uvs:
+                    layer.active_render = layer.name == prev_render_name
+        except Exception:
+            pass
         try:
             if obj.mode != prev_mode:
                 bpy.ops.object.mode_set(mode=prev_mode)

@@ -310,8 +310,9 @@ def _bake_res_y_update(self, context):
 def _bake_live_update(self, context):
     # Правка слоя (opacity/blend/enabled/карта) → пересобрать живой нодовый
     # композит на активном объекте (если он показан) → мгновенное превью.
-    obj = getattr(context, 'active_object', None)
-    if obj is None:
+    owner = getattr(self, 'id_data', None)
+    obj = owner if getattr(owner, 'type', '') == 'MESH' else getattr(context, 'active_object', None)
+    if obj is None or obj.get('_inu_bake_editing_stack'):
         return
     try:
         from .ops.bake_ops import rebuild_live_composite
@@ -339,16 +340,7 @@ def _desaturate_image_inplace(img):
 
 
 def _bake_desaturate_update(self, context):
-    # При включении «Обесцветить» для Normal — сразу свести уже запечённую
-    # карту в серое (визуально «перепечь обесцвеченной»), без полного
-    # повторного запекания. Выключение вернёт цвет только после повторного
-    # «Запечь» (обесцвечивание пикселей необратимо).
-    if self.desaturate and self.map_id == 'NORMAL':
-        obj = getattr(context, 'active_object', None)
-        base = obj.get("inu_bake_base", "") if obj else ""
-        img = bpy.data.images.get(f"{base}_{self.map_id}") if base else None
-        if img is not None:
-            _desaturate_image_inplace(img)
+    # Preserve vector data; the display graph handles desaturation reversibly.
     _bake_live_update(self, context)
 
 
@@ -372,16 +364,8 @@ def _bake_layer_index_update(self, context):
                 area.spaces.active.image = img
     except Exception:
         pass
-    # Память полигонов: у слоя с сохранёнными гранями (Bevel «только
-    # выделенные») — выделить их на объекте. Переключился на слой → его
-    # полигоны выделены и готовы к перезапеканию.
-    try:
-        uid = getattr(layers[i], 'uid', '')
-        if uid and obj.get(f"inu_bake_faces_{uid}"):
-            from .ops.bake_ops import _restore_layer_faces
-            _restore_layer_faces(obj, uid)
-    except Exception:
-        pass
+    # Bevel selections are restored explicitly by the layer's area button,
+    # using BMesh in Edit Mode, including exact edge selection.
 
 
 def _ik_empty_types_proxy(self, context):
@@ -766,6 +750,19 @@ class GTATOOLS_TextureBrowserItem(bpy.types.PropertyGroup):
     usage_count: IntProperty(default=0)    # IDE models referencing this TXD
 
 
+_BAKE_MASK_BASES = [('AO', 'AO', ''), ('BEVEL', 'Bevel', ''),
+    ('HEIGHT', T("Высота"), ''), ('CURVATURE', T("Кривизна"), ''),
+    ('PATTERN', T("Рисунок поверхности"), ''), ('DIRECTION', T("Направление"), '')]
+
+
+class INUBakeMask(bpy.types.PropertyGroup):
+    enabled: BoolProperty(name="", default=True, update=_bake_live_update)
+    basis: EnumProperty(name=T("Основа эффекта"), items=_BAKE_MASK_BASES, default='PATTERN', update=_bake_live_update)
+    operation: EnumProperty(name=T("Операция маски"), items=[('MULTIPLY', T("Умножить"), ''), ('ADD', T("Добавить"), ''), ('SUBTRACT', T("Вычесть"), '')], default='MULTIPLY', update=_bake_live_update)
+    strength: FloatProperty(name=T("Сила маски"), default=1., min=0., max=1., update=_bake_live_update)
+    invert: BoolProperty(name=T("Инвертировать основу"), default=False, update=_bake_live_update)
+
+
 class INUBakeLayer(bpy.types.PropertyGroup):
     """Один слой в стеке запекания текстур (tools/bake/). Поля
     contrast/gamma/influence_* объявлены сейчас с identity-дефолтами —
@@ -788,16 +785,10 @@ class INUBakeLayer(bpy.types.PropertyGroup):
     opacity: FloatProperty(
         name=T("Прозрачность"), default=1.0, min=0.0, max=1.0, subtype='FACTOR',
         update=_bake_live_update)
-    # Обесцветить слой перед композитом (в оттенки серого по яркости).
-    # Нужно для Normal Map: при объединении её синий tangent-space оттенок
-    # проступает на итоговой текстуре; обесцвечивание оставляет только
-    # деталь рельефа (как при сведении нормал-мапы в Фотошопе). Кнопка в
-    # UI показывается только для слоёв с картой Normal.
+    # Reversible raw-map display; RGB vectors remain available for lighting.
     desaturate: BoolProperty(
         name=T("Обесцветить"), default=False,
-        description=T("Обесцветить слой (в серое по яркости) — убирает синий "
-                    "оттенок Normal Map. Для Normal сразу сводит уже "
-                    "запечённую карту в серое"),
+        description=T("Показать карту в сером, сохранив исходные RGB-нормали"),
         update=_bake_desaturate_update)
     # Контраст/гамма слоя — real-time: применяются и в numpy-сведении, и в
     # живом нодовом превью (update пересобирает материал → видно сразу).
@@ -805,6 +796,63 @@ class INUBakeLayer(bpy.types.PropertyGroup):
                             update=_bake_live_update)
     gamma: FloatProperty(name=T("Гамма"), default=1.0, min=0.05, max=4.0,
                          update=_bake_live_update)
+    use_color: BoolProperty(name=T("Цвет эффекта"), default=False, update=_bake_live_update)
+    normal_lighting: BoolProperty(name=T("Светотень из нормалей"), default=True, update=_bake_live_update)
+    normal_light_mode: EnumProperty(name=T("Режим освещения"), default='DIRECTIONAL',
+        items=[('DIRECTIONAL', T("Направленный свет"), ''),
+               ('ALL_SIDES', T("Со всех сторон"), ''),
+               ('EDGES', T("Только скругления"), '')], update=_bake_live_update)
+    normal_light_azimuth: FloatProperty(name=T("Направление света"), default=-45.0,
+        min=-180.0, max=180.0, update=_bake_live_update)
+    normal_light_elevation: FloatProperty(name=T("Высота света"), default=50.0,
+        min=-90.0, max=90.0, update=_bake_live_update)
+    normal_ambient: FloatProperty(name=T("Фоновое освещение"), default=.65,
+        min=0.0, max=2.0, update=_bake_live_update)
+    normal_diffuse: FloatProperty(name=T("Сила света"), default=.45,
+        min=0.0, max=3.0, update=_bake_live_update)
+    normal_specular: FloatProperty(name=T("Сила бликов"), default=.15,
+        min=0.0, max=3.0, update=_bake_live_update)
+    normal_shininess: FloatProperty(name=T("Резкость бликов"), default=32.0,
+        min=1.0, max=256.0, update=_bake_live_update)
+    normal_bevel: BoolProperty(name=T("Скругление без Hi"), default=False)
+    normal_bevel_selection: EnumProperty(name=T("Область скругления"), default='EDGE',
+        items=[('EDGE', T("Выделенные рёбра"), ''), ('FACE', T("Выделенные грани"), '')])
+    normal_bevel_width: FloatProperty(name=T("Ширина скругления"), default=.02,
+        min=.00001, soft_max=1.0, precision=4, subtype='DISTANCE')
+    normal_bevel_segments: IntProperty(name=T("Сегменты скругления"), default=8, min=1, max=64)
+    normal_bevel_profile: FloatProperty(name=T("Профиль скругления"), default=.5, min=.01, max=.99)
+    effect_basis: EnumProperty(name=T("Основа эффекта"), default='SELF', update=_bake_live_update,
+        items=[('SELF', T("Собственная маска"), ''), ('AO', 'AO', ''),
+               ('BEVEL', 'Bevel', ''), ('HEIGHT', T("Высота"), ''),
+               ('CURVATURE', T("Кривизна"), ''), ('PATTERN', T("Только рисунок"), ''),
+               ('DIRECTION', T("Направление"), '')])
+    masks: CollectionProperty(type=INUBakeMask)
+    direction_mode: EnumProperty(name=T("Тип направления"), default='TOP', update=_bake_live_update,
+        items=[('TOP', T("Пыль сверху"), ''), ('BOTTOM', T("Грязь снизу"), ''),
+               ('SLOPE', T("По наклону"), ''), ('STREAK', T("Потёки"), '')])
+    direction: FloatVectorProperty(name=T("Направление"), size=3, subtype='DIRECTION', default=(0., 0., 1.), update=_bake_live_update)
+    direction_threshold: FloatProperty(name=T("Порог направления"), default=.5, min=0., max=1., update=_bake_live_update)
+    direction_softness: FloatProperty(name=T("Мягкость направления"), default=.5, min=.001, max=1., update=_bake_live_update)
+    streak_length: FloatProperty(name=T("Длина потёков"), default=12., min=1., max=100., update=_bake_live_update)
+    ramp_low: FloatProperty(name=T("Начало перехода"), default=0., min=0., max=1., update=_bake_live_update)
+    ramp_high: FloatProperty(name=T("Конец перехода"), default=1., min=0., max=1., update=_bake_live_update)
+    ramp_smooth: BoolProperty(name=T("Плавный переход"), default=False, update=_bake_live_update)
+    basis_invert: BoolProperty(name=T("Инвертировать основу"), default=False, update=_bake_live_update)
+    color_dark: FloatVectorProperty(name=T("Тёмные участки"), size=3, subtype='COLOR',
+                                   default=(0.0, 0.0, 0.0), min=0.0, max=1.0,
+                                   update=_bake_live_update)
+    color_light: FloatVectorProperty(name=T("Светлые участки"), size=3, subtype='COLOR',
+                                    default=(1.0, 1.0, 1.0), min=0.0, max=1.0,
+                                    update=_bake_live_update)
+    surface_pattern: EnumProperty(
+        name=T("Рисунок поверхности"), default='NONE', update=_bake_live_update,
+        items=[('NONE', T("Без рисунка"), ''), ('NOISE', T("Шум"), ''),
+               ('VORONOI', T("Пятна"), ''), ('WAVE', T("Полосы"), '')])
+    pattern_scale: FloatProperty(name=T("Масштаб рисунка"), default=8.0, min=0.001, soft_max=100.0, update=_bake_live_update)
+    pattern_strength: FloatProperty(name=T("Сила рисунка"), default=1.0, min=0.0, max=1.0, update=_bake_live_update)
+    pattern_detail: FloatProperty(name=T("Детализация рисунка"), default=2.0, min=0.0, max=15.0, update=_bake_live_update)
+    pattern_contrast: FloatProperty(name=T("Контраст рисунка"), default=1.0, min=0.0, soft_max=10.0, update=_bake_live_update)
+    pattern_seed: IntProperty(name=T("Вариант рисунка"), default=0, min=0, update=_bake_live_update)
     # ── ALPHA-слой: откуда брать альфа-канал ──
     # 'MATERIAL' — прозрачность материала (как печётся сама карта ALPHA);
     # любой другой map_id — яркость этой карты (напр. Shadow) как альфа.
@@ -2214,6 +2262,13 @@ class INUSceneSettings(bpy.types.PropertyGroup):
     # Отдельная подсистема от vertex-prelight выше: печёт AO/Diffuse/
     # Shadow/Bevel через Cycles и опц. складывает в одну diffuse-текстуру.
     # Композит строится ВСЕГДА (живой нодовый стек) — тумблера нет.
+    gtatools_bake_workflow_expanded: BoolProperty(name=T("Инструменты запекания"), default=False)
+    gtatools_bake_game_expanded: BoolProperty(name=T("Проверка игровой текстуры"), default=False)
+    gtatools_bake_game_size: EnumProperty(name=T("Размер проверки"), default='512',
+        items=[('0', T("Оригинал"), ''), ('256', '256', ''), ('512', '512', ''), ('1024', '1024', '')])
+    gtatools_bake_game_mip: IntProperty(name=T("Mip-уровень"), default=0, min=0, max=8)
+    gtatools_bake_game_alpha: BoolProperty(name=T("Показать альфу"), default=False)
+    gtatools_bake_batch_only_stale: BoolProperty(name=T("Только устаревшие слои"), default=True)
     gtatools_bake_resolution: EnumProperty(
         name=T("Размер"), description=T("Квадратный пресет размера (синхронит X/Y)"),
         items=_BAKE_POT_ITEMS, default='1024', update=_bake_res_update)
@@ -2293,6 +2348,17 @@ class INUSceneSettings(bpy.types.PropertyGroup):
         default=0.05, min=0.0, soft_max=1.0, precision=3)
     gtatools_bake_bevel_samples: IntProperty(
         name="Bevel samples", default=8, min=2, max=64)
+    gtatools_bake_cavity_distance: FloatProperty(
+        name=T("Радиус грязи / износа"), default=0.05, min=0.0001,
+        soft_max=1.0, precision=4)
+    gtatools_bake_cavity_gain: FloatProperty(
+        name=T("Сила грязи / износа"), default=4.0, min=0.0, soft_max=10.0)
+    gtatools_bake_highlight_azimuth: FloatProperty(
+        name=T("Направление блика"), default=-45.0, min=-180.0, max=180.0)
+    gtatools_bake_highlight_elevation: FloatProperty(
+        name=T("Высота блика"), default=45.0, min=-90.0, max=90.0)
+    gtatools_bake_highlight_sharpness: FloatProperty(
+        name=T("Резкость блика"), default=16.0, min=1.0, soft_max=128.0)
     gtatools_bake_selected_faces: BoolProperty(
         name=T("Только выделенные полигоны"),
         description=T("Запекать Bevel (UV→UV) только по ВЫДЕЛЕННЫМ граням — "
@@ -2303,10 +2369,9 @@ class INUSceneSettings(bpy.types.PropertyGroup):
         default=False)
     gtatools_bake_selected_edges: BoolProperty(
         name=T("Только выделенные рёбра"),
-        description=T("Bevel только вдоль ВЫДЕЛЕННЫХ рёбер: маска по вершинам "
-                      "выделенных рёбер домножается на маску кромок. Действует "
-                      "ТОЛЬКО на Bevel. Переход у ребра мягкий (интерполяция по "
-                      "граням). Выдели рёбра в Edit Mode перед запеканием"),
+        description=T("Bevel только вдоль выбранных рёбер. Ширина полосы "
+                      "задаётся радиусом в единицах сцены. Выдели рёбра "
+                      "в Edit Mode перед запеканием"),
         default=False)
     gtatools_bake_transparent_bg: BoolProperty(
         name=T("Прозрачный фон"),

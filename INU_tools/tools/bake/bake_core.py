@@ -222,6 +222,27 @@ def setup_target_image(name, width, height, *, alpha=True,
     transient=False (use_fake_user=True, живёт в .blend).
     """
     img = bpy.data.images.get(name)
+    if img is not None and float_buffer and not img.is_float:
+        # Packed PNG images cannot be promoted with use_generated_float.
+        # Remap users before taking the canonical name; no .001 duplicates.
+        old = img
+        img = bpy.data.images.new(name + '__float', *old.size,
+                                  alpha=True, float_buffer=True)
+        try:
+            img.colorspace_settings.name = old.colorspace_settings.name
+            img.alpha_mode = old.alpha_mode
+            previous = read_image_to_numpy(old)
+            if previous.shape[2] == 4:
+                img.pixels.foreach_set(np.ascontiguousarray(previous).ravel())
+            for key in old.keys():
+                img[key] = old[key]
+            old.user_remap(img)
+        except Exception:
+            bpy.data.images.remove(img)
+            raise
+        old.use_fake_user = False
+        bpy.data.images.remove(old)
+        img.name = name
     if img is not None:
         if img.size[0] != width or img.size[1] != height:
             img.scale(width, height)
@@ -432,7 +453,7 @@ def unpin_image_nodes(token):
 def run_cycles_bake(bake_type, *, margin=8, use_clear=True,
                     pass_direct=None, pass_indirect=None, pass_color=None,
                     samples=None, selected_to_active=False,
-                    cage_extrusion=0.0, max_ray_distance=0.0):
+                    cage_extrusion=0.0, max_ray_distance=0.0, normal_space='OBJECT', sources=()):
     """Один вызов bpy.ops.object.bake с заданными per-map настройками.
 
     pass_* флаги ставятся на scene.render.bake (откуда bake() их читает);
@@ -460,11 +481,39 @@ def run_cycles_bake(bake_type, *, margin=8, use_clear=True,
 
     kwargs = dict(type=bake_type, margin=margin, use_clear=use_clear,
                   use_selected_to_active=selected_to_active)
+    normal_state = None
+    if bake_type == 'NORMAL':
+        # Shared UVs require relative normals; unique UVs can store absolute
+        # directions without interpolated Low tangent compensation.
+        normal_state = (bake.normal_space, bake.use_cage)
+        bake.normal_space = normal_space
+        if selected_to_active and not getattr(bake, 'cage_object', None):
+            bake.use_cage = True  # Averaged projection rays also cover hard corners.
     if selected_to_active:
         kwargs['cage_extrusion'] = cage_extrusion
         if max_ray_distance and max_ray_distance > 0.0:
             kwargs['max_ray_distance'] = max_ray_distance
-    bpy.ops.object.bake(**kwargs)
+    source_state = []
+    try:
+        if selected_to_active:
+            for source in sources:
+                source_state.append((source, source.hide_get(), source.hide_viewport,
+                                     source.hide_render, source.select_get()))
+                source.hide_viewport = False
+                source.hide_set(False)
+                source.hide_render = False
+                source.select_set(True)
+            if source_state:
+                bpy.context.view_layer.update()
+        bpy.ops.object.bake(**kwargs)
+    finally:
+        for source, hidden, viewport, render, selected in source_state:
+            source.select_set(selected)
+            source.hide_render = render
+            source.hide_viewport = viewport
+            source.hide_set(hidden)
+        if normal_state is not None:
+            bake.normal_space, bake.use_cage = normal_state
 
 
 # ── numpy pixel I/O ──────────────────────────────────────────────────

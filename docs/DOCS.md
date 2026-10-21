@@ -2040,23 +2040,23 @@ The stack reads like Photoshop: the **bottom** layer is the base, layers above b
 
 > The layer stack is **per-model** — each object keeps its own bake layers (stored on `obj.inu`), not a single scene-global stack. Select a different model and its own stack appears.
 
-**Add a layer:** in the **Add layer** box, pick a map in the dropdown → **Add**. The layer appears at the top of the list with that map's default blend mode and opacity. (Normal Map is added with **Desaturate** already on.)
+**Add a layer:** in the **Add layer** box, pick a map in the dropdown → **Add**. The layer appears at the top of the list with that map's default blend mode and opacity. Normal Map starts with **Lighting from normals** enabled.
 
 **Per-layer row controls:**
 
 | Control | Description |
 |---|---|
 | Eye toggle | Enable/disable the layer in the composite and in flatten. |
-| Layer name | Click to **select** the layer (its baked map shows in the Image Editor and its parameters appear in **Selected layer**). |
+| Layer name | Click to **select** the layer (its baked map shows in the Image Editor and its settings are shown when you expand the layer row). |
 | **Bake** | Bakes **only this layer's** map into its own image. Not shown for **Paint** or **Mask** layers, which are edited with a brush. |
 | Save icon (✓) | Saves this single map to a file (enabled once the map is baked). |
 | **X / ▲ / ▼** | Remove / move up / move down the selected layer. Order = blend order. |
 
-**Selected layer parameters** (**Selected layer** box):
+**Layer parameters** (expand the layer row with its arrow):
 - **Mode** (Blend mode) — how this layer blends onto the layers below (18 modes, below).
 - **Opacity** — 0…1, mixes this layer's blend result over the layers below.
 - **Contrast** / **Gamma** — per-layer tone adjustment, live in the preview and the final flatten.
-- **Desaturate** — *Normal Map layers only*; greyscales the layer to remove the blue tangent-space tint (like flattening a normal map in Photoshop).
+- **Lighting from normals** — Normal Map shades the colour below and adds white highlights, visible immediately after baking. Disable it to show raw RGB vectors or reversible **Desaturate**.
 
 ### Available maps
 
@@ -2066,23 +2066,69 @@ The stack reads like Photoshop: the **bottom** layer is the base, layers above b
 | **Diffuse** | Normal | Flat albedo (base color, no lighting). |
 | **Diffuse Lit** | Normal | Albedo lit by the **scene's own lights** ("Scene light" toggle ON by default), or by an internal 5-sun dome rig when the toggle is off. |
 | **Shadow** | Multiply | Cast/contact shadow (no albedo) from the **scene's own lights** by default, or from a single internal key sun when "Scene light" is off. |
-| **Bevel** | Overlay | Edge-wear mask from a Bevel-normal trick (lighter on edges). |
-| **Normal Map** | Normal | Tangent-space normals. Added with Desaturate on. |
+| **Bevel** | Add | Edge-wear mask from a Bevel-normal trick (lighter on edges). |
+| **Normal Map** | Multiply | Static GTA lighting normals: object-space for unique UVs, tangent-space for repeated face UVs. Intermediate maps use 32-bit float and Non-Color. Native UV / Hi→Low baking uses the requested size directly, without the global AA multiplier. |
 | **Emission** | Normal | The material's own emissive output. |
 | **Emission Light (GI)** | Add | Indirect bounce light *from* emissive faces onto neighbours. Noisy → uses Samples. |
 | **LightMap** | Multiply | Full GI from the **real scene light** (lamps, sun, world + bounce). Unlike Shadow / Diffuse Lit it does **not** use an internal rig and does **not** isolate the scene — it bakes your actual lights. Very noisy → high Samples + optional OIDN denoise. See below. |
 | **Dirt (Cavity)** | Multiply | Dirt in the cavities: the mask darkens wherever the surface is concave. |
 | **Edge Wear** | Add | Worn edges: convex corners get lighter (chipped paint, scuffs). |
-| **Curvature** | Overlay | Grey curvature map: 0.5 is flat, cavities darker, ridges lighter. |
-| **Height** | Multiply | Height gradient over the object's world Z: bright at the bottom (dirt and damp near the ground). |
-| **Thickness** | Multiply | Thickness (inside-AO): thick parts dark, thin parts light. Noisy → uses Samples. |
+| **Curvature** | Normal | Grey curvature map: 0.5 is flat, cavities darker, ridges lighter. |
+| **Height** | Normal | Height gradient over the object's world Z: bright at the bottom (dirt and damp near the ground). |
+| **Thickness** | Normal | Thickness (inside-AO): thick parts dark, thin parts light. Noisy → uses Samples. |
 | **Grunge** | Multiply | Procedural grunge: 3D noise in object space, seamless across the surface. |
+| **Highlights** | Add | Artificial highlights fixed in the texture. Set azimuth, elevation and sharpness in Advanced; layer opacity controls strength (default 35%). |
 | **Paint** | Multiply | An empty white layer for hand-painting — never baked, see the **Paint** button below. |
-| **Alpha** | Normal | Material transparency. It does **not** join the RGB stack — it drives the result's alpha channel. This is a **cutout**, not translucency: `>= 0.5` is a solid pixel, below that is a hole (GTA's convention, and the same threshold the bake itself applies). The layer's `opacity` multiplies the finished mask, so you can weaken the whole cutout with it. |
+| **Alpha** | Normal | Material transparency. Hi → Low reads Hi materials (texture Alpha with its UV, or constant Principled Alpha); UV → UV reads the object's own materials. It does **not** join the RGB stack — it drives the result's alpha channel: black is transparent, white is opaque. Uncovered projection areas and fully transparent Hi materials remain transparent. The layer's `opacity` multiplies the finished mask. |
 
-The six Dirt / Edge Wear / Curvature / Height / Thickness / Grunge masks are derived from the
-**geometry**, with no lighting: the object's materials are swapped for an EMIT material for the
+Dirt / Edge Wear / Curvature / Height / Thickness use geometry-based masks, while Grunge generates procedural noise. These maps do not use lighting: the object's materials are swapped for an EMIT material for the
 duration of the bake, the same trick Bevel uses. Scene lights, lamps and the HDRI do not affect them.
+
+Dirt / Edge Wear / Curvature use local outside/inside AO instead of vertex Pointiness, so split game meshes can contribute. Set their radius (scene units) and strength in Advanced; Samples and denoising affect these maps. Curvature is a signed cavity mask, not mathematical curvature. Selected-edge Bevel uses per-face distances to the chosen edges, with a soft strip set by Bevel radius; an empty selection produces no highlight. Selected-face Bevel does not restrict other maps in the same run. For different effects on faces sharing texture pixels, a separate UV map is needed; with shared UVs the baked effect repeats on those faces. Highlights are static after baking and do not follow the camera.
+
+Expand a surface-effect layer (Bevel, Dirt, Edge Wear, Curvature, Height, Thickness, Grunge or Highlights) to enable **Effect colour** and choose colours for dark/light areas. Colours update the live composite and flattened/exported texture without rebaking; the baked grayscale mask is preserved. Keep Dirt's light colour white for neutral clean areas, and additive effects' dark colour black for neutral background. **Surface pattern** offers Noise, Spots (Voronoi) and Stripes, with scale, strength, detail, contrast and variation. Patterns use 3D object coordinates and modulate the geometry mask, so UV seams do not reset the noise. Pattern settings update live without rebaking the geometry mask. Flattening and export rasterize the current live shader. Grunge generates the pattern itself; No pattern retains its original noise. Bevel's **Select edges / Select faces** buttons restore the last successfully baked area's selection for that particular layer and enter Edit Mode. New selections are stored in mesh attributes; legacy saved face selections are also supported.
+
+Effect basis is selectable per layer: own mask, AO, Bevel, height, curvature or procedural pattern only, with inversion. AO, height and curvature use a baked basis map in the stack. Baking a layer with a Bevel basis stores its own Bevel mask and selected edges/faces, independently of other layers. Its Select Edges / Select Faces buttons restore that area; both the selection and packed mask survive reopening the .blend. Previously baked layers can still use a shared Bevel map until rebaked. Basis, colour and pattern update live, including over-base preview. Masks with patterns baked by the previous implementation need one clean rebake; their original noise cannot be removed afterward.
+
+UV-to-UV baking always uses the active UV map chosen by the user. It never creates or repacks UVs automatically. Shared UV pixels also share baked effects; a separate atlas is needed only when different faces must store different results. Each baked layer records its sampling UV. To return from an earlier generated INU_BakeUV, select your original UV map and rebake the affected layer.
+
+For Bevel on selected edges or faces, overlapping UV masks are combined by their maximum value. An unselected copy cannot erase a selected edge with black pixels. All parts sharing those UV pixels receive the same combined effect.
+
+### Hi → Low: transparent pixels in front of geometry
+
+**Diffuse** and **Alpha** projection evaluate the Hi pixel's alpha at each ray hit. A fully transparent pixel lets the ray continue to the next surface, such as a bar behind an ornament card. Opaque pixels remain in front; partially transparent surfaces composite front to back. Final Alpha includes opaque geometry behind transparent cards. After updating, rebake both **Diffuse** and **Alpha**.
+
+No mesh cutting, UV edits or temporary Hi objects are used. Supported GTA albedo inputs include image UVs, Point/Vector Mapping, Repeat/Extend/Clip/Mirror, constant colours, textures, ordinary colour attributes and Mix nodes. This samples colour/alpha rather than rendering arbitrary procedural/PBR graphs; unsupported nodes raise an explicit error. Opaque sources retain the native Cycles path. Lighting maps and Normal are not processed by this path.
+
+### Normal Map — lighting and rounding
+
+Place Normal Map above Diffuse. Choose **Directional light**, **All sides** or **Rounding only** in the layer. Rounding only preserves flat surface colours and emphasizes normal deviations along bevels. Light strength, highlights, sharpness and direction update the preview without baking. Flattening/export writes this shading into the final GTA colour texture.
+
+With unique UVs, Hi → Low uses Hi surface directions and averaged cage rays, avoiding support loops required only to compensate for smooth Low normals on flat faces. Repeated face UVs use relative normals decoded before lighting, so one face's absolute direction is not applied to every rotated copy. Old object-space maps with these overlaps show a rebake hint. UVs stay unchanged. Hi still defines the bevel shape: flat-shaded Hi segments produce bands, so smooth the bevel while preserving planar face normals. Desaturation does not destroy the RGB vectors.
+
+Without Hi, choose **UV → UV**, enable **Rounding without Hi** in Normal Map and select **Selected edges** or **Selected faces** as its area. Select that geometry in Edit Mode, set width, segments and profile, then bake the layer. A temporary Bevel and Weighted Normal source is created and removed; the original geometry and UV stay unchanged. Selection is stored per layer and restored with **Select edges / faces**. Rounding geometry changes require rebaking; lighting changes do not. Excessive widths are limited by nearby geometry. The projection offset is also limited by edges around the selection, preventing oversized widths from baking stripes from neighbouring parts.
+
+### Diagnostics and layer status
+
+Open **Bake tools** at the bottom of Texture Bake to access diagnostics, presets, stack copying and batch baking. **Game texture inspection** is the next section. Both sections are collapsed by default.
+
+**Check bake** analyses the active UV map without changing it. Result buttons select degenerate faces, partial overlaps, UVs outside 0–1 and matching UV copies. Exact stacks are informational; conflicting selections in shared pixels are reported separately. For Normal Map, decoded vector lengths are sampled at a few points on each face to find suspicious pixels; this does not validate every projection ray. A comparison budget makes incomplete overlap checks explicit. Run diagnostics again after editing the mesh.
+
+New bakes record geometry, UVs, transforms, selected areas and bake settings. A changed layer gets a **Rebake needed** icon and label; legacy images have unknown status. Hi → Low also tracks Hi geometry and transforms. Colours, patterns, masks and baked-normal lighting remain live. External texture files, lights and Geometry Nodes inputs are not tracked automatically; explicitly rebake affected maps after changing them.
+
+### Additional masks and directional dirt
+
+**Add mask** adds AO, Bevel, height, curvature, pattern or direction as another input. Masks multiply, add or subtract sequentially, with individual strength and inversion. AO/height/curvature use baked maps in the stack; Bevel gets a private image and area for the layer. Bake missing source maps first. Pattern masks share the layer's noise settings.
+
+The **Direction** source needs no separate map: **Dust from above**, **Dirt from below**, **By slope** or **Streaks**. Set a vector in local model axes, threshold, softness and streak length. This is an artistic mask without physical rain or shelter simulation. Effect colours also have transition start/end and smoothing controls. These edits update the live shader and are included in flattened RGB output.
+
+### Presets, batch baking and game texture inspection
+
+**Save / Load preset** stores stack settings as JSON. **Layers to selected** transfers them from the active model to other selected meshes. Import appends layers by default; replacement is explicit. New layer UIDs are generated and painted-mask links are remapped. Baked images, painted pixel contents and geometry areas are not transferred: create these for the target model.
+
+**Bake selected models** processes stacks sequentially and skips unchanged layers by default. UV → UV and Hi → Low pairs are supported; camera baking is excluded. Each job restores its layer's remembered area. Esc stops between maps and restores selection/active object; already completed maps remain baked. Cancellation within a single native Cycles pass is not guaranteed.
+
+**Game texture inspection** creates a separate flattened RGB/alpha preview: original size or a 256/512/1024 limit, then downsampling by the selected mip level. Show alpha or return to original materials. Small source maps are not enlarged; DXT/TXD compression is not simulated. Refresh explicitly after changing the stack. Preview materials are independent per model, including linked mesh objects.
 
 ### Paint — editing a map by hand
 
@@ -2150,11 +2196,11 @@ After baking, result actions are available in the panel:
 |---|---|
 | **Show texture** / **Hide texture** | Toggles a flat-emission preview of the baked result directly on the model (visible under any lighting). For a layer stack it shows the live node composite — editing opacity/blend/contrast/gamma updates it instantly. Click again to restore your original materials and render UV. |
 | **Save as** | Flattens the enabled layers into one texture (numpy composite, sRGB) and saves it to a file, with a **Size** downscale option: `Original` / `½` / `¼` / `⅛` (proper box-averaging — cleaner than baking small directly). |
-| **Save inside Blender and apply** | Flattens enabled layers into a texture, packs the result and layer images into Blender, and assigns the finished material to the model using the bake UV. Choose **Texture name** in the dialog. A conflicting image name gets a numeric suffix. Save the `.blend` afterwards to persist the packed images on disk. |
+| **Save inside Blender and apply** | Flattens enabled layers into a texture, packs the result and layer images into Blender, and assigns the finished material to the model using the bake UV. The finished texture is not multiplied by colour attributes again; **Include PreLight** takes effect when baking source maps. Choose **Texture name** and the output size (original, ½, ¼ or ⅛) in the dialog; the resulting resolution is shown below. Only the final texture is reduced; layer images keep their original resolution. A conflicting image name gets a numeric suffix. Save the `.blend` afterwards to persist the packed images on disk. |
 | **Show over base (UV2)** | Final two-UV look: builds a node material where the model's **base texture (via its own UV1)** is multiplied by the **baked stack composite (via the bake UV / UV2)** — i.e. `TexUV1 × TexUV2`. Use when you bake AO/LightMap into a separate UV2 and want to see them over the existing diffuse. Per-material (each slot keeps its own base). Click **Hide texture** to restore. |
 
 > 💡 **Example — bake AO + Diffuse and flatten to a TXD texture:**
-> 1. Select the building mesh; make sure the working texture UV is the render UV (📷). Open **Texture Bake**, set **Size** 1024, **AA** `2×`, **Mode** → **UV → UV**.
+> 1. Select the building mesh; select the working texture UV as the active UV map. Open **Texture Bake**, set **Size** 1024, **AA** `2×`, **Mode** → **UV → UV**.
 > 2. **Add layer** → **Diffuse** → **Add** (base layer).
 > 3. **AO** → **Add** (lands on top with Multiply).
 > 4. (Optional) select the AO layer and lower **Opacity** to soften the occlusion.

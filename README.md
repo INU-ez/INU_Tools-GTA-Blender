@@ -8,7 +8,7 @@
 
 <p>
   <img src="https://img.shields.io/badge/Blender-2.83%E2%80%935.1-orange?logo=blender" alt="Blender">
-  <img src="https://img.shields.io/badge/Version-2.5.2-green" alt="Version">
+  <img src="https://img.shields.io/badge/Version-2.5.3-green" alt="Version">
   <img src="https://img.shields.io/badge/License-GPL--3.0-blue" alt="License">
 </p>
 
@@ -31,7 +31,7 @@
 - **Export checked against the engine** — every writer is audited against what `gta_sa.exe` actually reads; anything the game would crash on is named before the file is written.
 - **Reliable IDE / IPL sync** — rows are found by their content, not by line numbers: copies keep their own placement and LOD, other people's rows are never overwritten, files are written atomically with a backup.
 - **Time-cycle editor** (`timecyc.dat`) — preview any weather + hour as real Blender lighting, edit slots, fog and PostFX; reads SA, Vice City and III files.
-- **Texture & prelight baking** — AO / Diffuse / Shadow / Alpha, procedural dirt / edge wear / curvature / thickness / grunge masks, hand-painting on any layer, prelight from all light types + HDRI, LightMap.
+- **Texture & prelight baking** — AO / Diffuse / Shadow / Alpha, procedural dirt / edge wear / curvature / thickness / grunge masks, live effect colours and patterns, rounded-edge normal shading, alpha-aware Hi→Low projection, hand-painting on any layer, prelight from all light types + HDRI, LightMap.
 - **Skinned DFF + IFP** — peds with 294+ vanilla animations, IK rig, frame-hierarchy editor.
 - **`effects.fxp` editor** — 82 particle systems with live viewport simulation.
 - **ID Manager** — multi-preset, scene sync, FLA range extension, conflict detection.

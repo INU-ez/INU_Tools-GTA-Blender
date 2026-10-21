@@ -9,13 +9,27 @@
 import bpy
 
 from .. import compat
-from .bake_composite import BLEND_NODE_TYPE
+from .bake_composite import BLEND_NODE_TYPE, SURFACE_MAP_IDS, bevel_basis_key
 
 
 COMPOSITE_MAT = 'INU_BakeComposite'
 
 
-def build_composite_material(specs, base_name, uv_name, vcol_name=None):
+def uses_live_surface_patterns(specs):
+    return any(L.get('enabled') and L['map_id'] == 'NORMAL'
+               and (L.get('normal_lighting', True) or L.get('desaturate')) for L in specs) or any(
+               L.get('enabled') and L['map_id'] in SURFACE_MAP_IDS
+               and L['map_id'] != 'ALPHA'
+               and (L['map_id'] == 'GRUNGE' or L.get('surface_pattern', 'NONE') != 'NONE'
+                    or L.get('effect_basis', 'SELF') != 'SELF' or L.get('basis_invert')
+                    or L.get('masks') or L.get('ramp_low', 0.) != 0.
+                    or L.get('ramp_high', 1.) != 1. or L.get('ramp_smooth'))
+               for L in specs)
+
+
+def build_composite_material(specs, base_name, uv_name, vcol_name=None, *,
+                             material_name=COMPOSITE_MAT, opaque_for_bake=False,
+                             base_image=None, base_uv='', alpha_only_for_bake=False):
     """Собрать/пересобрать материал INU_BakeComposite по списку слоёв.
 
     specs: list[dict(map_id, blend_mode, opacity, enabled)] СНИЗУ ВВЕРХ
@@ -25,8 +39,8 @@ def build_composite_material(specs, base_name, uv_name, vcol_name=None):
     запекания. Возвращает материал. Если материал уже на объекте —
     пересборка его нод обновляет живое превью мгновенно.
     """
-    mat = (bpy.data.materials.get(COMPOSITE_MAT)
-           or bpy.data.materials.new(COMPOSITE_MAT))
+    mat = (bpy.data.materials.get(material_name)
+           or bpy.data.materials.new(material_name))
     mat.use_nodes = True
     mat.use_fake_user = False
     nt = mat.node_tree
@@ -78,9 +92,10 @@ def build_composite_material(specs, base_name, uv_name, vcol_name=None):
         n.image = bpy.data.images.get(f"{base_name}_{name}")
         n.location = (-900, y)
         n.label = label or name
-        if uv_name:
+        sample_uv = n.image.get('inu_bake_uv', uv_name) if n.image else uv_name
+        if sample_uv:
             uvm = nt.nodes.new('ShaderNodeUVMap')
-            uvm.uv_map = uv_name
+            uvm.uv_map = sample_uv
             uvm.location = (-1100, y)
             nt.links.new(uvm.outputs['UV'], n.inputs['Vector'])
         return n
@@ -120,27 +135,130 @@ def build_composite_material(specs, base_name, uv_name, vcol_name=None):
         nt.links.new(mask_color, wrap.b)
         return wrap.result
 
+    def _colorize(color, layer):
+        if not layer.get('use_color') or layer['map_id'] not in SURFACE_MAP_IDS:
+            return color
+        bw = nt.nodes.new('ShaderNodeRGBToBW')
+        nt.links.new(color, bw.inputs['Color'])
+        ramp = compat.make_mix_rgba(nt.nodes, blend='MIX', label='Цвет эффекта')
+        ramp.a.default_value = tuple(layer.get('color_dark', (0, 0, 0))) + (1.0,)
+        ramp.b.default_value = tuple(layer.get('color_light', (1, 1, 1))) + (1.0,)
+        from .bake_surface import levels
+        fac = levels(nt, bw.outputs['Val'], layer.get('ramp_low', 0.),
+                     layer.get('ramp_high', 1.), layer.get('ramp_smooth', False))
+        nt.links.new(fac, ramp.factor)
+        return ramp.result
+
+    normal_outputs = {}
+
+    def _surface(color, layer):
+        if layer['map_id'] == 'NORMAL':
+            if layer.get('normal_lighting', True):
+                from .bake_normal import normal_lighting_nodes
+                image = bpy.data.images.get(f'{base_name}_{_key(layer)}')
+                normal_settings = dict(layer,
+                    normal_space=image.get('inu_normal_space', 'OBJECT'),
+                    normal_uv=image.get('inu_bake_uv', uv_name))
+                normal_outputs[_key(layer)] = normal_lighting_nodes(nt, color, normal_settings)
+                return normal_outputs[_key(layer)][0]
+            if layer.get('desaturate'):
+                bw = nt.nodes.new('ShaderNodeRGBToBW')
+                nt.links.new(color, bw.inputs['Color'])
+                return bw.outputs['Val']
+        if layer['map_id'] not in SURFACE_MAP_IDS:
+            return color
+        from .bake_maps import _pattern_weight, _modulate_surface_output, _math_node
+        from .bake_surface import directional_mask, combine_masks, math_node
+        basis = layer.get('effect_basis', 'SELF')
+        neutral = 1.0 if layer['map_id'] in ('DIRT', 'GRUNGE') else (0.5 if layer['map_id'] == 'CURVATURE' else 0.0)
+        def source(basis):
+            if basis == 'PATTERN':
+                return _pattern_weight(nt, layer)
+            if basis == 'DIRECTION':
+                return directional_mask(nt, layer)
+            basis_key = _key_for_mapid(basis)
+            if basis == 'BEVEL':
+                own_key = (_key(layer) if layer['map_id'] == 'BEVEL' else bevel_basis_key(_key(layer)))
+                if _has_img(own_key):
+                    basis_key = own_key
+            if not _has_img(basis_key):
+                return math_node(nt, 'ADD', 0., 0.)
+            value = _img_node(basis_key, -200).outputs['Color']
+            if basis == 'AO':
+                value = math_node(nt, 'SUBTRACT', 1., value, True)
+            elif basis == 'CURVATURE':
+                value = math_node(nt, 'MULTIPLY', math_node(nt, 'ABSOLUTE',
+                    math_node(nt, 'SUBTRACT', value, .5)), 2., True)
+            return value
+        if layer['map_id'] == 'GRUNGE' and basis == 'SELF':
+            color = _pattern_weight(nt, layer)
+        elif basis != 'SELF':
+            # Legacy PATTERN basis leaves strength modulation to the next stage.
+            weight = (math_node(nt, 'ADD', 1., 0.) if basis == 'PATTERN' else source(basis))
+            if neutral == 1.:
+                color = math_node(nt, 'SUBTRACT', 1., weight, True)
+            elif neutral == .5:
+                color = math_node(nt, 'ADD', math_node(nt, 'MULTIPLY', weight, .5), .5)
+            else:
+                color = weight
+        color = combine_masks(nt, color, layer, source)
+        if layer.get('basis_invert'):
+            inverse = _math_node(nt, 'SUBTRACT', a=1.0, clamp=True)
+            nt.links.new(color, inverse.inputs[1])
+            color = inverse.outputs['Value']
+        if (layer.get('surface_pattern', 'NONE') == 'NONE'
+                or (layer['map_id'] == 'GRUNGE' and basis == 'SELF')):
+            return color
+        return _modulate_surface_output(nt, color, neutral, layer)
+
+    def _normal_highlight(layer, y):
+        return normal_outputs[_key(layer)][1]
+
+    def _add_highlight(color, layer, y):
+        highlight = _paint_mask(_normal_highlight(layer, y), layer, y)
+        wrap = compat.make_mix_rgba(nt.nodes, blend='ADD', label='Normal highlights')
+        wrap.factor.default_value = float(layer['opacity'])
+        nt.links.new(color, wrap.a)
+        nt.links.new(highlight, wrap.b)
+        return wrap.result
+
     y = 0
     if enabled:
         base = enabled[0]
-        acc = _cg(_img_node(_key(base), y, base['map_id']).outputs['Color'],
-                  base.get('contrast', 1.0), base.get('gamma', 1.0), y)
+        acc = _surface(_img_node(_key(base), y, base['map_id']).outputs['Color'], base)
+        acc = _cg(acc, base.get('contrast', 1.0), base.get('gamma', 1.0), y)
+        acc = _colorize(acc, base)
         acc = _paint_mask(acc, base, y)
+        if base['map_id'] == 'NORMAL' and base.get('normal_lighting', True):
+            acc = _add_highlight(acc, base, y)
         x = -460
         for L in enabled[1:]:
             y -= 320
-            top_col = _cg(_img_node(_key(L), y, L['map_id']).outputs['Color'],
-                          L.get('contrast', 1.0), L.get('gamma', 1.0), y)
-            top_col = _paint_mask(top_col, L, y)
+            top_col = _surface(_img_node(_key(L), y, L['map_id']).outputs['Color'], L)
+            top_col = _cg(top_col, L.get('contrast', 1.0), L.get('gamma', 1.0), y)
+            top_col = _colorize(top_col, L)
+            normal_lit = L['map_id'] == 'NORMAL' and L.get('normal_lighting', True)
+            if normal_lit:
+                # Masking a multiplier must tend to white outside the mask.
+                from .bake_maps import _math_node
+                delta = _math_node(nt, 'SUBTRACT', a=1.0)
+                nt.links.new(top_col, delta.inputs[1])
+                inverse = _math_node(nt, 'SUBTRACT', a=1.0)
+                nt.links.new(_paint_mask(delta.outputs['Value'], L, y), inverse.inputs[1])
+                top_col = inverse.outputs['Value']
+            else:
+                top_col = _paint_mask(top_col, L, y)
             wrap = compat.make_mix_rgba(
                 nt.nodes,
-                blend=BLEND_NODE_TYPE.get(L['blend_mode'], 'MIX'),
+                blend=('MULTIPLY' if normal_lit else BLEND_NODE_TYPE.get(L['blend_mode'], 'MIX')),
                 label=L['map_id'])
             wrap.node.location = (x, y // 2)
             wrap.factor.default_value = float(L['opacity'])
             nt.links.new(acc, wrap.a)
             nt.links.new(top_col, wrap.b)
             acc = wrap.result
+            if normal_lit:
+                acc = _add_highlight(acc, L, y)
             x += 220
         # Прилайт: умножаем итоговый композит на вертекс-цвет (texture ×
         # prelight), чтобы прилайт оставался виден после запекания. Только
@@ -166,13 +284,33 @@ def build_composite_material(specs, base_name, uv_name, vcol_name=None):
                 nt.links.new(acc, wrap.a)
                 nt.links.new(vc.outputs['Color'], wrap.b)
                 acc = wrap.result
+        if base_image is not None:
+            tex = nt.nodes.new('ShaderNodeTexImage')
+            tex.name = 'INU_OverlayBase'
+            tex.image = base_image
+            if base_uv:
+                uv = nt.nodes.new('ShaderNodeUVMap')
+                uv.name = 'INU_OverlayBaseUV'
+                uv.uv_map = base_uv
+                nt.links.new(uv.outputs['UV'], tex.inputs['Vector'])
+            overlay = compat.make_mix_rgba(nt.nodes, blend='MULTIPLY', label='bake_over')
+            overlay.factor.default_value = 1.0
+            nt.links.new(tex.outputs['Color'], overlay.a)
+            nt.links.new(acc, overlay.b)
+            acc = overlay.result
         nt.links.new(acc, emit.inputs['Color'])
     else:
         # Только ALPHA-слой — RGB чёрный, значима лишь прозрачность.
         emit.inputs['Color'].default_value = (0.0, 0.0, 0.0, 1.0)
 
     # Провайдер альфы → прозрачность превью: Mix(Transparent, Emission) по маске.
-    if alpha_spec is not None:
+    if alpha_only_for_bake and alpha_spec is None:
+        if enabled:
+            tex = _img_node(_key(enabled[0]), -520)
+            nt.links.new(tex.outputs['Alpha'], emit.inputs['Color'])
+        else:
+            emit.inputs['Color'].default_value = (1.0, 1.0, 1.0, 1.0)
+    if alpha_spec is not None and (not opaque_for_bake or alpha_only_for_bake):
         decal = bool(alpha_spec.get('as_decal'))
         # Источник яркости: сама карта (декаль) / др. карта / прозрачность мат-ла.
         # Имя картинки — по ключу слоя (uid|map_id), не по «сырому» map_id.
@@ -188,6 +326,7 @@ def build_composite_material(specs, base_name, uv_name, vcol_name=None):
             atex = _img_node(fac_img, y - 320)
             fac_out = atex.outputs['Color']
             if decal:
+                fac_out = _surface(fac_out, alpha_spec)
                 # Порог/мягкость: clamp((b−lo)/(hi−lo)) двумя Math-нодами.
                 thr = float(alpha_spec.get('decal_threshold', 0.5))
                 soft = float(alpha_spec.get('decal_softness', 0.25))
@@ -256,6 +395,9 @@ def build_composite_material(specs, base_name, uv_name, vcol_name=None):
             strength.inputs[1].default_value = float(alpha_spec.get('opacity', 1.0))
             nt.links.new(fac_out, strength.inputs[0])
             fac_out = strength.outputs[0]
+            if alpha_only_for_bake:
+                nt.links.new(fac_out, emit.inputs['Color'])
+                return mat
             trans = nt.nodes.new('ShaderNodeBsdfTransparent')
             trans.location = (300, -260)
             mixsh = nt.nodes.new('ShaderNodeMixShader')

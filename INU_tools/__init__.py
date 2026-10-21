@@ -28,7 +28,7 @@
 bl_info = {
     "name": "INU_tools(gta_sa)",
     "author": "INU",
-    "version": (2, 5, 2),
+    "version": (2, 5, 3),
     # Минимум 2.83 LTS — поддержка через tools/compat.py:
     # • bake / preview / DFF I/O работают через legacy mesh.vertex_colors
     # • prelight preview shader использует ShaderNodeMixRGB на ≤3.3
@@ -552,10 +552,12 @@ from .ops.plants_ops import (
 # )
 # Material context-menu hook — register/unregister append/remove it.
 from .ui.panels import _draw_sort_materials_menu
+from .ops.bake_workflow_ops import CLASSES as BAKE_WORKFLOW_CLASSES
 from .ops.bake_ops import (
     GTATOOLS_OT_bake_run,
     GTATOOLS_OT_bake_paint_layer,
     GTATOOLS_OT_bake_select_layer,
+    GTATOOLS_OT_bake_select_area,
     GTATOOLS_OT_bake_layer_add,
     GTATOOLS_OT_bake_layer_remove,
     GTATOOLS_OT_bake_layer_move,
@@ -578,6 +580,7 @@ from .scene_settings import (
     INUTimecycWeather,
     INUTimecycProps,
     INUValidateIssue,
+    INUBakeMask,
     INUBakeLayer,
     _bake_layer_index_update,
     INULightCutRing,
@@ -3666,6 +3669,7 @@ classes = (
     INUAddonPreferences,
     GTATOOLS_OT_run_legacy_migrations,
     INUParticleKeyframe,
+    INUBakeMask,
     INUBakeLayer,          # ДО INUObjectProps: тот держит per-model стек слоёв
     INUObjectProps,
     INUMaterialProps,
@@ -4005,8 +4009,10 @@ classes = (
     # Phase 2: light_master must register before its 5 child light panels
     # so Blender can resolve their bl_parent_id at register time.
     GTATOOLS_OT_bake_run,
+    *BAKE_WORKFLOW_CLASSES,
     GTATOOLS_OT_bake_paint_layer,
     GTATOOLS_OT_bake_select_layer,
+    GTATOOLS_OT_bake_select_area,
     GTATOOLS_OT_bake_layer_add,
     GTATOOLS_OT_bake_layer_remove,
     GTATOOLS_OT_bake_layer_move,

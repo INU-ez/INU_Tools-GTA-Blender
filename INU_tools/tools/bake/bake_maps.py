@@ -13,6 +13,7 @@
 import math
 from collections import OrderedDict
 from dataclasses import dataclass
+from contextlib import ExitStack
 
 import bpy
 import mathutils
@@ -108,29 +109,28 @@ def build_bevel_material(params):
     inv.inputs[0].default_value = 1.0
     nt.links.new(dot.outputs['Value'], inv.inputs[1])
 
-    # «Только выделенные рёбра»: домножаем маску кромок на вертекс-атрибут
-    # (1 у вершин выделенных рёбер, 0 иначе) → эффект гаснет вне них.
-    edge_attr = params.get('bevel_edge_mask_attr')
+    # Distances interpolate per face corner, so shared vertices do not
+    # accidentally enable neighbouring edges. Selected edges also work on
+    # split game meshes where Cycles cannot find a connected bevel surface.
+    edge_attrs = params.get('bevel_edge_mask_attrs')
     mask_out = inv.outputs['Value']
-    if edge_attr:
-        vc = None
-        for _t in ('ShaderNodeColorAttribute', 'ShaderNodeVertexColor'):
-            try:
-                vc = nt.nodes.new(_t)
-                break
-            except RuntimeError:
-                vc = None
-        if vc is not None:
-            try:
-                vc.layer_name = edge_attr
-            except Exception:
-                pass
-            mul = nt.nodes.new('ShaderNodeMath')
-            mul.operation = 'MULTIPLY'
-            nt.links.new(inv.outputs['Value'], mul.inputs[0])
-            # Маска хранится в альфа-канале атрибута (1/0).
-            nt.links.new(vc.outputs['Alpha'], mul.inputs[1])
-            mask_out = mul.outputs['Value']
+    if edge_attrs:
+        distance = None
+        for name in edge_attrs:
+            attr = nt.nodes.new('ShaderNodeAttribute')
+            attr.attribute_name = name
+            value = attr.outputs['Fac']
+            if distance is not None:
+                minimum = _math_node(nt, 'MINIMUM')
+                nt.links.new(distance, minimum.inputs[0])
+                nt.links.new(value, minimum.inputs[1])
+                value = minimum.outputs['Value']
+            distance = value
+        scale = _math_node(nt, 'DIVIDE', b=max(float(params.get('bevel_size', 0.05)), 1e-8))
+        nt.links.new(distance, scale.inputs[0])
+        fade = _math_node(nt, 'SUBTRACT', a=1.0, clamp=True)
+        nt.links.new(scale.outputs['Value'], fade.inputs[1])
+        mask_out = fade.outputs['Value']
 
     nt.links.new(mask_out, emit.inputs['Color'])
     nt.links.new(emit.outputs['Emission'], out.inputs['Surface'])
@@ -142,100 +142,126 @@ def build_bevel_material(params):
 _BEVEL_EDGE_ATTR = 'INU_BevelEdgeMask'
 
 
-def _make_edge_mask_attr(obj):
-    """Вертекс-атрибут (FLOAT_COLOR, POINT): 1 у вершин ВЫДЕЛЕННЫХ рёбер, 0
-    иначе (значение в т.ч. в альфе). Возвращает имя или None (нет выделения)."""
-    me = getattr(obj, 'data', None)
-    edges = getattr(me, 'edges', None)
-    ca = getattr(me, 'color_attributes', None)
-    if not edges or ca is None:
-        return None
-    sel = set()
-    for e in edges:
-        if e.select:
-            sel.update(e.vertices)
-    if not sel:
-        return None
-    old = ca.get(_BEVEL_EDGE_ATTR)
-    if old is not None:
-        try:
-            ca.remove(old)
-        except Exception:
-            pass
-    try:
-        attr = ca.new(_BEVEL_EDGE_ATTR, 'FLOAT_COLOR', 'POINT')
-    except Exception:
-        return None
-    n = len(attr.data)
-    buf = [0.0] * (n * 4)
-    for vi in sel:
-        if 0 <= vi < n:
-            b = vi * 4
-            buf[b:b + 4] = (1.0, 1.0, 1.0, 1.0)
-    try:
-        attr.data.foreach_set('color', buf)
-    except Exception:
-        return None
-    return _BEVEL_EDGE_ATTR
+def _edge_distance_buffers(me, positions, radius, selected_faces=False):
+    """Per-corner distances to each selected edge line on the same face.
+
+    Keep a separate field per edge: interpolating a minimum at vertices
+    would fill a face when all its vertices belong to selected edges.
+    positions are world-space coordinates; no Blender API is needed here.
+    """
+    selected = ({me.loops[i].edge_index for p in me.polygons if p.select for i in p.loop_indices}
+                if selected_faces else {e.index for e in me.edges if e.select})
+    face_edges = [[me.loops[i].edge_index for i in p.loop_indices
+                   if me.loops[i].edge_index in selected] for p in me.polygons]
+    buffers = [[max(radius, 1e-8)] * len(me.loops)
+               for _ in range(max((len(es) for es in face_edges), default=0))]
+    if not buffers:
+        buffers = [[max(radius, 1e-8)] * len(me.loops)]
+    for poly, edges in zip(me.polygons, face_edges):
+        for slot, ei in enumerate(edges):
+            va, vb = me.edges[ei].vertices
+            a, b = positions[va], positions[vb]
+            direction = [b[j] - a[j] for j in range(3)]
+            length2 = sum(x * x for x in direction)
+            if length2 <= 1e-20:
+                continue
+            for li in poly.loop_indices:
+                point = positions[me.loops[li].vertex_index]
+                delta = [point[j] - a[j] for j in range(3)]
+                t = sum(delta[j] * direction[j] for j in range(3)) / length2
+                buffers[slot][li] = math.sqrt(sum(
+                    (delta[j] - t * direction[j]) ** 2 for j in range(3)))
+    return buffers
 
 
-def _remove_edge_mask_attr(obj):
-    ca = getattr(getattr(obj, 'data', None), 'color_attributes', None)
+def _make_edge_mask_attr(obj, radius, selected_faces=False):
+    me = obj.data
+    positions = [obj.matrix_world @ v.co for v in me.vertices]
+    buffers = _edge_distance_buffers(me, positions, radius, selected_faces)
+    names = []
+    try:
+        for i, values in enumerate(buffers):
+            # Blender chooses a unique name if a user's attribute exists.
+            attr = me.attributes.new(_BEVEL_EDGE_ATTR + str(i), 'FLOAT', 'CORNER')
+            names.append(attr.name)
+            attr.data.foreach_set('value', values)
+    except Exception:
+        _remove_edge_mask_attr(obj, names)
+        raise
+    return names
+
+
+def _remove_edge_mask_attr(obj, names):
+    ca = getattr(getattr(obj, 'data', None), 'attributes', None)
     if ca is None:
         return
-    a = ca.get(_BEVEL_EDGE_ATTR)
-    if a is not None:
-        try:
+    for name in names:
+        a = ca.get(name)
+        if a is not None:
             ca.remove(a)
-        except Exception:
-            pass
 
 
 def _prepare_bevel(obj, params):
     """Временно подменить материалы объекта на Bevel-материал. Возвращает
     teardown-замыкание, восстанавливающее исходные материалы."""
-    # «Только выделенные рёбра»: помечаем вершины выделенных рёбер атрибутом,
-    # Bevel-материал домножит маску кромок на него (эффект только у них).
-    _edge_attr = None
-    if params.get('bevel_selected_edges'):
-        _edge_attr = _make_edge_mask_attr(obj)
+    _edge_attr = []
+    if params.get('bevel_selected_edges') or params.get('bevel_selected_faces'):
+        _edge_attr = _make_edge_mask_attr(obj, float(params.get('bevel_size', 0.05)),
+                                        selected_faces=(params.get('bevel_selected_faces', False)
+                                                        and not params.get('bevel_selected_edges')))
         if _edge_attr:
             params = dict(params)
-            params['bevel_edge_mask_attr'] = _edge_attr
-    mat = build_bevel_material(params)
-    slots = obj.material_slots
-    if len(slots) > 0:
-        original = [s.material for s in slots]
-        for s in slots:
-            s.material = mat
+            params['bevel_edge_mask_attrs'] = _edge_attr
+    try:
+        restore = _swap_materials(obj, build_bevel_material(params))
+    except Exception:
+        _remove_edge_mask_attr(obj, _edge_attr)
+        raise
 
-        def teardown():
-            for s, m in zip(obj.material_slots, original):
-                s.material = m
-            if _edge_attr:
-                _remove_edge_mask_attr(obj)
-            if mat.users == 0:
-                try:
-                    bpy.data.materials.remove(mat)
-                except Exception:
-                    pass
-        return teardown
-
-    obj.data.materials.append(mat)
-
-    def teardown_appended():
+    def teardown():
         try:
-            obj.data.materials.pop()
-        except Exception:
-            pass
-        if _edge_attr:
-            _remove_edge_mask_attr(obj)
-        if mat.users == 0:
-            try:
-                bpy.data.materials.remove(mat)
-            except Exception:
-                pass
-    return teardown_appended
+            restore()
+        finally:
+            _remove_edge_mask_attr(obj, _edge_attr)
+    return teardown
+
+
+def _bake_selected_bevel_uv(context, obj, image, params, target_uv, margin):
+    """Union UV masks instead of letting overlapping faces erase each other."""
+    import numpy as np
+    from .bake_edge_mask import rasterize_bevel_uv
+    radius = float(params.get('bevel_size', 0.05))
+    names = _make_edge_mask_attr(obj, radius,
+        selected_faces=(params.get('bevel_selected_faces', False)
+                        and not params.get('bevel_selected_edges')))
+    evaluated = None
+    try:
+        obj.data.update()
+        depsgraph = context.evaluated_depsgraph_get()
+        depsgraph.update()
+        evaluated = obj.evaluated_get(depsgraph)
+        mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
+        mesh.calc_loop_triangles()
+        uv_name = target_uv or (obj.data.uv_layers.active.name if obj.data.uv_layers.active else '')
+        layer = mesh.uv_layers.get(uv_name)
+        if layer is None:
+            raise RuntimeError('Selected Bevel UV map is unavailable')
+        uv = np.empty(len(mesh.loops) * 2, dtype=np.float32)
+        layer.data.foreach_get('uv', uv)
+        fields = np.empty((len(names), len(mesh.loops)), dtype=np.float32)
+        for i, name in enumerate(names):
+            attribute = mesh.attributes.get(name)
+            if attribute is None or attribute.domain != 'CORNER':
+                raise RuntimeError('Evaluated mesh lost the selected-edge distance mask')
+            attribute.data.foreach_get('value', fields[i])
+        triangles = [tuple(t.loops) for t in mesh.loop_triangles]
+        result = rasterize_bevel_uv(uv.reshape(-1, 2), triangles, fields, radius,
+                                   int(image.size[0]), int(image.size[1]), margin)
+        bake_core.write_numpy_to_image(image, result, pack=False)
+    finally:
+        if evaluated is not None:
+            evaluated.to_mesh_clear()
+        _remove_edge_mask_attr(obj, names)
 
 
 # ── Процедурные EMIT-маски по геометрии (грязь/износ/кривизна/высота/
@@ -313,15 +339,25 @@ def _math_node(nt, op, a=None, b=None, clamp=False):
     return n
 
 
-# Pointiness ноды Geometry: 0.5 = плоскость, <0.5 вогнутость, >0.5 выпуклость.
-def build_dirt_material(params):
-    """Грязь во впадинах: маска ТЁМНАЯ во впадинах (blend MULTIPLY затемняет).
-    val = clamp(1 − (0.5 − pointiness)·k)."""
-    mat, nt, emit = _new_emit_mat(DIRT_MAT_NAME)
+def _cavity_node(nt, params, inside=False):
+    """Local ray-based cavity detection also works across split vertices."""
+    ao = nt.nodes.new('ShaderNodeAmbientOcclusion')
+    ao.inside = inside
+    ao.only_local = True
+    ao.samples = max(1, int(params.get('bevel_samples', 16)))
+    ao.inputs['Distance'].default_value = float(params.get('cavity_distance', 0.05))
     geo = nt.nodes.new('ShaderNodeNewGeometry')
+    nt.links.new(geo.outputs['True Normal'], ao.inputs['Normal'])
+    return ao
+
+
+def build_dirt_material(params):
+    """Darken locally occluded cavities; white is neutral for MULTIPLY."""
+    mat, nt, emit = _new_emit_mat(DIRT_MAT_NAME)
+    ao = _cavity_node(nt, params)
     k = float(params.get('cavity_gain', 4.0))
-    conc = _math_node(nt, 'SUBTRACT', a=0.5)            # 0.5 − point
-    nt.links.new(geo.outputs['Pointiness'], conc.inputs[1])
+    conc = _math_node(nt, 'SUBTRACT', a=1.0)
+    nt.links.new(ao.outputs['AO'], conc.inputs[1])
     mul = _math_node(nt, 'MULTIPLY', b=k)
     nt.links.new(conc.outputs['Value'], mul.inputs[0])
     inv = _math_node(nt, 'SUBTRACT', a=1.0, clamp=True)  # 1 − x
@@ -331,13 +367,12 @@ def build_dirt_material(params):
 
 
 def build_edgewear_material(params):
-    """Износ кромок: выпуклости СВЕТЛЫЕ (blend ADD подсвечивает углы).
-    val = clamp((pointiness − 0.5)·k)."""
+    """Inside AO detects convex edges; black is neutral for ADD."""
     mat, nt, emit = _new_emit_mat(EDGEWEAR_MAT_NAME)
-    geo = nt.nodes.new('ShaderNodeNewGeometry')
+    ao = _cavity_node(nt, params, inside=True)
     k = float(params.get('cavity_gain', 4.0))
-    conv = _math_node(nt, 'SUBTRACT', b=0.5)            # point − 0.5
-    nt.links.new(geo.outputs['Pointiness'], conv.inputs[0])
+    conv = _math_node(nt, 'SUBTRACT', a=1.0)
+    nt.links.new(ao.outputs['AO'], conv.inputs[1])
     mul = _math_node(nt, 'MULTIPLY', b=k, clamp=True)
     nt.links.new(conv.outputs['Value'], mul.inputs[0])
     nt.links.new(mul.outputs['Value'], emit.inputs['Color'])
@@ -345,14 +380,15 @@ def build_edgewear_material(params):
 
 
 def build_curvature_material(params):
-    """Кривизна: серая карта, 0.5 = плоскость, впадины темнее, выступы светлее.
-    val = clamp(0.5 + (pointiness − 0.5)·k)."""
+    """Signed local cavity mask: concave dark, convex light, flat 0.5."""
     mat, nt, emit = _new_emit_mat(CURVATURE_MAT_NAME)
-    geo = nt.nodes.new('ShaderNodeNewGeometry')
+    outside = _cavity_node(nt, params)
+    inside = _cavity_node(nt, params, inside=True)
     k = float(params.get('curvature_gain', 3.0))
-    sub = _math_node(nt, 'SUBTRACT', b=0.5)
-    nt.links.new(geo.outputs['Pointiness'], sub.inputs[0])
-    mul = _math_node(nt, 'MULTIPLY', b=k)
+    sub = _math_node(nt, 'SUBTRACT')
+    nt.links.new(outside.outputs['AO'], sub.inputs[0])
+    nt.links.new(inside.outputs['AO'], sub.inputs[1])
+    mul = _math_node(nt, 'MULTIPLY', b=0.5 * k)
     nt.links.new(sub.outputs['Value'], mul.inputs[0])
     add = _math_node(nt, 'ADD', b=0.5, clamp=True)
     nt.links.new(mul.outputs['Value'], add.inputs[0])
@@ -400,17 +436,71 @@ def build_thickness_material(params):
     return mat
 
 
-def build_grunge_material(params):
-    """Процедурный грандж: 3D-шум по object-координатам (бесшовный по
-    поверхности). blend MULTIPLY — грязь-пятна затемняют."""
-    mat, nt, emit = _new_emit_mat(GRUNGE_MAT_NAME)
+def _surface_pattern_output(nt, params):
+    """3D object-space patterns; seed offsets do not move geometry or UVs."""
+    kind = params.get('surface_pattern', 'NOISE')
     tc = nt.nodes.new('ShaderNodeTexCoord')
-    noise = nt.nodes.new('ShaderNodeTexNoise')
-    sc = noise.inputs.get('Scale')
-    if sc is not None:
-        sc.default_value = float(params.get('grunge_scale', 8.0))
-    nt.links.new(tc.outputs['Object'], noise.inputs['Vector'])
-    nt.links.new(noise.outputs['Fac'], emit.inputs['Color'])
+    coords = tc.outputs['Object']
+    seed = int(params.get('pattern_seed', 0))
+    if seed:
+        offset = nt.nodes.new('ShaderNodeVectorMath')
+        offset.operation = 'ADD'
+        offset.inputs[1].default_value = (seed * 0.754877, seed * 0.569841, seed * 0.438579)
+        nt.links.new(coords, offset.inputs[0])
+        coords = offset.outputs['Vector']
+    if kind == 'VORONOI':
+        node = nt.nodes.new('ShaderNodeTexVoronoi')
+        node.voronoi_dimensions = '3D'
+        node.feature = 'F1'
+        output = node.outputs['Distance']
+    elif kind == 'WAVE':
+        node = nt.nodes.new('ShaderNodeTexWave')
+        node.wave_type = 'BANDS'
+        node.bands_direction = 'DIAGONAL'
+        node.inputs['Distortion'].default_value = float(params.get('pattern_detail', 2.0))
+        output = node.outputs['Fac']
+    else:
+        node = nt.nodes.new('ShaderNodeTexNoise')
+        node.noise_dimensions = '3D'
+        node.inputs['Detail'].default_value = float(params.get('pattern_detail', 2.0))
+        output = node.outputs['Fac']
+    node.inputs['Scale'].default_value = float(params.get('pattern_scale', 8.0))
+    nt.links.new(coords, node.inputs['Vector'])
+    sub = _math_node(nt, 'SUBTRACT', b=0.5)
+    nt.links.new(output, sub.inputs[0])
+    gain = _math_node(nt, 'MULTIPLY', b=float(params.get('pattern_contrast', 1.0)))
+    nt.links.new(sub.outputs['Value'], gain.inputs[0])
+    bias = _math_node(nt, 'ADD', b=0.5, clamp=True)
+    nt.links.new(gain.outputs['Value'], bias.inputs[0])
+    return bias.outputs['Value']
+
+
+def _pattern_weight(nt, params):
+    pattern = _surface_pattern_output(nt, params)
+    strength = float(params.get('pattern_strength', 1.0))
+    scale = _math_node(nt, 'MULTIPLY', b=strength)
+    nt.links.new(pattern, scale.inputs[0])
+    bias = _math_node(nt, 'ADD', b=1.0 - strength)
+    nt.links.new(scale.outputs['Value'], bias.inputs[0])
+    return bias.outputs['Value']
+
+
+def _modulate_surface_output(nt, original, neutral, params):
+    """Pattern only weakens the effect; unmarked geometry stays neutral."""
+    sub = _math_node(nt, 'SUBTRACT', b=neutral)
+    nt.links.new(original, sub.inputs[0])
+    mul = _math_node(nt, 'MULTIPLY')
+    nt.links.new(sub.outputs['Value'], mul.inputs[0])
+    nt.links.new(_pattern_weight(nt, params), mul.inputs[1])
+    add = _math_node(nt, 'ADD', b=neutral, clamp=True)
+    nt.links.new(mul.outputs['Value'], add.inputs[0])
+    return add.outputs['Value']
+
+
+def build_grunge_material(params):
+    """Bake coverage only; Grunge's procedural pattern lives in the compositor."""
+    mat, nt, emit = _new_emit_mat(GRUNGE_MAT_NAME)
+    emit.inputs['Color'].default_value = (1.0, 1.0, 1.0, 1.0)
     return mat
 
 
@@ -432,6 +522,30 @@ def _prepare_thickness(obj, params):
 
 def _prepare_grunge(obj, params):
     return _swap_materials(obj, build_grunge_material(params))
+
+
+def build_highlight_material(params):
+    """Fixed world-space artificial specular lobe, independent of lights."""
+    mat, nt, emit = _new_emit_mat('INU_Highlight_Mat')
+    azimuth = math.radians(float(params.get('highlight_azimuth', -45.0)))
+    elevation = math.radians(float(params.get('highlight_elevation', 45.0)))
+    direction = (math.cos(elevation) * math.cos(azimuth),
+                 math.cos(elevation) * math.sin(azimuth), math.sin(elevation))
+    geo = nt.nodes.new('ShaderNodeNewGeometry')
+    dot = nt.nodes.new('ShaderNodeVectorMath')
+    dot.operation = 'DOT_PRODUCT'
+    nt.links.new(geo.outputs['Normal'], dot.inputs[0])
+    dot.inputs[1].default_value = direction
+    positive = _math_node(nt, 'MAXIMUM', b=0.0)
+    nt.links.new(dot.outputs['Value'], positive.inputs[0])
+    power = _math_node(nt, 'POWER', b=float(params.get('highlight_sharpness', 16.0)), clamp=True)
+    nt.links.new(positive.outputs['Value'], power.inputs[0])
+    nt.links.new(power.outputs['Value'], emit.inputs['Color'])
+    return mat
+
+
+def _prepare_highlight(obj, params):
+    return _swap_materials(obj, build_highlight_material(params))
 
 
 def _prepare_height(obj, params):
@@ -508,7 +622,8 @@ def _build_alpha_emit_material(name, src_mat):
     """Материал-эмиссия: серый = альфа исходного материала (белый =
     непрозрачно). Печётся как EMIT (свет не нужен). tex.Alpha — сырые данные
     (не цвет), поэтому colorspace исходной картинки не трогаем."""
-    m = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+    # Each Hi source/slot needs its own temporary shader until projection ends.
+    m = bpy.data.materials.new(name)
     m.use_nodes = True
     m.use_fake_user = False
     nt = m.node_tree
@@ -534,42 +649,34 @@ def _prepare_alpha(obj, params):
     """Подменить материалы объекта на альфа-эмиссию (по слоту — своя, т.к.
     альфа зависит от материала). Возвращает teardown, восстанавливающий
     исходные материалы и удаляющий временные."""
-    slots = obj.material_slots
-    temp = []
-    if len(slots) > 0:
-        original = [s.material for s in slots]
-        for i, s in enumerate(slots):
-            am = _build_alpha_emit_material(f'{ALPHA_MAT_PREFIX}{i}', s.material)
-            temp.append(am)
-            s.material = am
+    original = [s.material for s in obj.material_slots]
+    temp, appended = [], False
 
-        def teardown():
-            for s, m in zip(obj.material_slots, original):
-                s.material = m
-            for am in temp:
-                try:
-                    if am.users == 0:
-                        bpy.data.materials.remove(am)
-                except Exception:
-                    pass
-        return teardown
-
-    am = _build_alpha_emit_material(f'{ALPHA_MAT_PREFIX}0', None)
-    temp.append(am)
-    obj.data.materials.append(am)
-
-    def teardown_appended():
-        try:
+    def teardown():
+        if appended:
             obj.data.materials.pop()
-        except Exception:
-            pass
-        for am2 in temp:
+        else:
+            for slot, material in zip(obj.material_slots, original):
+                slot.material = material
+        for material in temp:
             try:
-                if am2.users == 0:
-                    bpy.data.materials.remove(am2)
+                if material.users == 0:
+                    bpy.data.materials.remove(material)
             except Exception:
                 pass
-    return teardown_appended
+    try:
+        for index, material in enumerate(original or [None]):
+            temp.append(_build_alpha_emit_material(f'{ALPHA_MAT_PREFIX}{index}', material))
+        if original:
+            for slot, material in zip(obj.material_slots, temp):
+                slot.material = material
+        else:
+            obj.data.materials.append(temp[0])
+            appended = True
+    except Exception:
+        teardown()
+        raise
+    return teardown
 
 
 # ── Self-contained light rig (Shadow / Diffuse-Lit) ──────────────────
@@ -753,6 +860,35 @@ def prepare_map(map_def, obj, context, params, keep_visible=()):
     return lambda: None
 
 
+def _prepare_map_for_bake(map_def, obj, context, params, *, selected_to_active=False,
+                          keep_visible=()):
+    if map_def.id != 'ALPHA' or not selected_to_active:
+        return prepare_map(map_def, obj, context, params, keep_visible=keep_visible)
+    # In selected-to-active Cycles samples Hi shaders, not the target Low shader.
+    candidates = keep_visible or context.selected_objects
+    sources = [source for source in candidates if source is not obj and source.type == 'MESH']
+    if not sources:
+        raise RuntimeError('Alpha Hi to Low requires a source mesh')
+    stack = ExitStack()
+    try:
+        for source in sources:
+            stack.callback(prepare_map(map_def, source, context, params, keep_visible=keep_visible))
+    except Exception:
+        stack.close()
+        raise
+    return stack.close
+
+
+def _try_alpha_pixel_projection(context, map_def, obj, image, *, selected_to_active,
+                                 sources, target_uv, cage_extrusion, max_ray, margin):
+    if not selected_to_active or map_def.id not in {'DIFFUSE', 'ALPHA'}:
+        return False
+    from .bake_projection import bake_alpha_projection
+    return bake_alpha_projection(context, obj, image, sources=sources,
+        map_id=map_def.id, target_uv=target_uv, cage_extrusion=cage_extrusion,
+        max_ray=max_ray, margin=margin)
+
+
 def bake_one_map(context, map_def, obj, image, *, margin=8, params=None,
                  samples=None, target_uv=None, selected_to_active=False,
                  cage_extrusion=0.0, max_ray=0.0, keep_visible=(),
@@ -769,9 +905,9 @@ def bake_one_map(context, map_def, obj, image, *, margin=8, params=None,
     (для LightMap: режим Combined / только Indirect / только Direct). None →
     брать из map_def.
 
-    target_uv (имя UV-карты) → печь в неё, а не в активную (UV→UV; нужно
-    для trim-развёрток: рабочая UV с наложениями даёт кашу, печём в
-    отдельную чистую). None → активная UV.
+    target_uv (имя UV-карты) → печь в указанную UV. None → активная UV.
+    Bevel по выбранным рёбрам/граням объединяет маски наложенных UV
+    по максимуму, сохраняя исходные координаты.
 
     Мульти-материал: один вызов bpy.ops.object.bake печёт все слоты в
     одну картинку (у всех активная image-нода указывает на неё) —
@@ -779,7 +915,43 @@ def bake_one_map(context, map_def, obj, image, *, margin=8, params=None,
     """
     if params is None:
         params = DEFAULT_PARAMS
-    teardown = prepare_map(map_def, obj, context, params, keep_visible=keep_visible)
+    if _try_alpha_pixel_projection(context, map_def, obj, image,
+            selected_to_active=selected_to_active, sources=keep_visible,
+            target_uv=target_uv, cage_extrusion=cage_extrusion, max_ray=max_ray, margin=margin):
+        return
+    if map_def.id == 'NORMAL':
+        from .bake_uv import uv_needs_unique_target
+        image.colorspace_settings.name = 'Non-Color'
+        uv_name = target_uv or (obj.data.uv_layers.active.name if obj.data.uv_layers.active else '')
+        image['inu_normal_space'] = ('TANGENT' if uv_needs_unique_target(obj.data, uv_name) else 'OBJECT')
+        if params.get('normal_bevel') and not selected_to_active:
+            import bpy
+            from .bake_normal import make_normal_bevel_source, normal_bevel_cage
+            selected = list(context.selected_objects)
+            active = context.view_layer.objects.active
+            source = make_normal_bevel_source(context, obj, params)
+            try:
+                for other in context.view_layer.objects:
+                    other.select_set(other in (obj, source))
+                context.view_layer.objects.active = obj
+                return bake_one_map(context, map_def, obj, image, margin=margin,
+                    params=dict(params, normal_bevel=False), samples=samples, target_uv=target_uv,
+                    selected_to_active=True,
+                    cage_extrusion=normal_bevel_cage(obj, params),
+                    keep_visible=(source,))
+            finally:
+                mesh = source.data
+                bpy.data.objects.remove(source, do_unlink=True)
+                bpy.data.meshes.remove(mesh)
+                for other in context.view_layer.objects:
+                    other.select_set(other in selected)
+                context.view_layer.objects.active = active
+    if (map_def.id == 'BEVEL' and not selected_to_active
+            and (params.get('bevel_selected_edges') or params.get('bevel_selected_faces'))):
+        _bake_selected_bevel_uv(context, obj, image, params, target_uv, margin)
+        return
+    teardown = _prepare_map_for_bake(map_def, obj, context, params,
+        selected_to_active=selected_to_active, keep_visible=keep_visible)
 
     # UV→UV: если печём в ДРУГУЮ UV, исходные текстуры надо приколоть к
     # исходной (текущей активной) UV — иначе они засэмплятся по целевой и
@@ -818,6 +990,8 @@ def bake_one_map(context, map_def, obj, image, *, margin=8, params=None,
                 selected_to_active=selected_to_active,
                 cage_extrusion=cage_extrusion,
                 max_ray_distance=max_ray,
+                normal_space=image.get('inu_normal_space', 'OBJECT'),
+                sources=keep_visible,
             )
         finally:
             bake_core.restore_bake_targets(rec)
@@ -861,26 +1035,24 @@ BAKE_MAPS = OrderedDict([
         node_group_builder=_prepare_bevel,
         samples=4, default_blend='ADD', default_opacity=1.0,
         default_contrast=1.0, default_gamma=1.0)),
-    # Процедурные маски по геометрии (light-free EMIT). Детерминированные
-    # (Dirt/EdgeWear/Curvature/Height/Grunge) — samples=1, сглаживает AA;
-    # Thickness — inside-AO, шумная (сэмплы+денойз в bake_ops).
+    # Ray-based cavity maps need sampling/denoising; Height/Grunge are deterministic.
     ('DIRT', BakeMapDef(
         id='DIRT', label_key='Dirt (Cavity)', bake_type='EMIT',
         needs_light=False, rig_kind='NONE',
         node_group_builder=_prepare_dirt,
-        samples=1, default_blend='MULTIPLY', default_opacity=1.0,
+        samples=16, default_blend='MULTIPLY', default_opacity=1.0,
         default_contrast=1.0, default_gamma=1.0)),
     ('EDGEWEAR', BakeMapDef(
         id='EDGEWEAR', label_key='Edge Wear', bake_type='EMIT',
         needs_light=False, rig_kind='NONE',
         node_group_builder=_prepare_edgewear,
-        samples=1, default_blend='ADD', default_opacity=1.0,
+        samples=16, default_blend='ADD', default_opacity=1.0,
         default_contrast=1.0, default_gamma=1.0)),
     ('CURVATURE', BakeMapDef(
         id='CURVATURE', label_key='Curvature', bake_type='EMIT',
         needs_light=False, rig_kind='NONE',
         node_group_builder=_prepare_curvature,
-        samples=1, default_blend='NORMAL', default_opacity=1.0,
+        samples=16, default_blend='NORMAL', default_opacity=1.0,
         default_contrast=1.0, default_gamma=1.0)),
     ('HEIGHT', BakeMapDef(
         id='HEIGHT', label_key='Height', bake_type='EMIT',
@@ -927,7 +1099,7 @@ BAKE_MAPS = OrderedDict([
     ('NORMAL', BakeMapDef(
         id='NORMAL', label_key='Normal Map', bake_type='NORMAL',
         needs_light=False, rig_kind='NONE', node_group_builder=None,
-        samples=1, default_blend='NORMAL', default_opacity=1.0,
+        samples=1, default_blend='MULTIPLY', default_opacity=1.0,
         default_contrast=1.0, default_gamma=1.0)),
     # ROUGHNESS убрана из списка карт по запросу — для GTA-текстур она не
     # нужна. Старые слои/пресеты со map_id='ROUGHNESS' безопасно
@@ -964,6 +1136,12 @@ BAKE_MAPS = OrderedDict([
         samples=128, default_blend='MULTIPLY', default_opacity=1.0,
         default_contrast=1.0, default_gamma=1.0,
         pass_direct=True, pass_indirect=True, pass_color=False)),
+    # Append new maps to preserve Blender's saved enum indices.
+    ('HIGHLIGHT', BakeMapDef(
+        id='HIGHLIGHT', label_key='Highlights', bake_type='EMIT',
+        needs_light=False, rig_kind='NONE', node_group_builder=_prepare_highlight,
+        samples=1, default_blend='ADD', default_opacity=0.35,
+        default_contrast=1.0, default_gamma=1.0)),
 ])
 
 

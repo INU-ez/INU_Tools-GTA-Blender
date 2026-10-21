@@ -29,7 +29,7 @@ def ui_literals():
         tree = ast.parse(path.read_text(encoding='utf-8-sig'))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
-                if (isinstance(node.func, ast.Name) and node.func.id == 'T'
+                if (isinstance(node.func, ast.Name) and node.func.id in {'T', '_projection_error'}
                         and node.args and isinstance(node.args[0], ast.Constant)):
                     result.add(node.args[0].value)
                 if getattr(node.func, 'id', '').endswith('Property'):

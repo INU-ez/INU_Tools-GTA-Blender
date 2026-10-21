@@ -6355,6 +6355,9 @@ class GTATOOLS_PT_bake_panel(bpy.types.Panel):
         idx = _blo.gtatools_bake_layers_index if _blo else 0
         base = obj.get("inu_bake_base", "") if obj else ""
 
+        from .bake_workflow_ui import (draw_workflow, draw_status, layer_status,
+                                      draw_surface_controls, draw_game_preview)
+
         # ── Создание слоя — ОТДЕЛЬНАЯ форма (не путать с редактором ниже) ──
         # Выбираешь карту → «Добавить». Карта слоя задаётся только тут, при
         # создании; в редакторе выбранного слоя её нет (другой слой = другая
@@ -6393,6 +6396,9 @@ class GTATOOLS_PT_bake_panel(bpy.types.Panel):
             r.prop(L, "expanded", text="", emboss=False,
                    icon=safe_icon('TRIA_DOWN' if L.expanded else 'TRIA_RIGHT'))
             _draw_bake_layer_eye(r, L, layers)
+            state = layer_status(context, obj, L, img)
+            if state == 'STALE':
+                r.label(text="", icon='ERROR')
             # [имя 60%] | [Bake + save].
             sp_name = r.split(factor=0.60, align=True)
             sp_name.operator("gtatools.bake_select_layer", text=nm,
@@ -6410,6 +6416,7 @@ class GTATOOLS_PT_bake_panel(bpy.types.Panel):
             if L.expanded:
                 sres = f"{img.size[0]}×{img.size[1]}" if img else "—"
                 det = lcol.box().column(align=True)
+                draw_status(det, context, obj, L, img, state)
                 if L.map_id == 'ALPHA':
                     # Альфа в RGB-стек не смешивается — задаёт альфа-канал
                     # (прозрачность) результата. Режим/контраст/гамма к ней
@@ -6423,10 +6430,79 @@ class GTATOOLS_PT_bake_panel(bpy.types.Panel):
                              **inu_icon(safe_icon('MOD_MASK')))
                     det.prop(L, "opacity", slider=True, text=T("Сила альфы"))
                 else:
-                    det.prop(L, "blend_mode")
+                    normal_lit = L.map_id == 'NORMAL' and L.normal_lighting
+                    if L.map_id == 'NORMAL':
+                        det.prop(L, "normal_lighting")
+                        det.prop(L, "normal_bevel")
+                        if L.normal_bevel:
+                            if s.gtatools_bake_mode != 'UV':
+                                det.label(text=T("Для скругления без Hi выберите UV → UV"), icon='INFO')
+                            det.prop(L, "normal_bevel_selection")
+                            det.prop(L, "normal_bevel_width")
+                            det.prop(L, "normal_bevel_segments")
+                            det.prop(L, "normal_bevel_profile")
+                            det.label(text=T("Изменение скругления — после запекания"), icon='INFO')
+                    if not normal_lit:
+                        det.prop(L, "blend_mode")
                     det.prop(L, "opacity", slider=True)
                     det.prop(L, "contrast")
                     det.prop(L, "gamma")
+                    if normal_lit:
+                        det.prop(L, "normal_light_mode")
+                        if L.normal_light_mode == 'DIRECTIONAL':
+                            det.prop(L, "normal_light_azimuth")
+                            det.prop(L, "normal_light_elevation")
+                        if L.normal_light_mode != 'EDGES':
+                            det.prop(L, "normal_ambient")
+                        det.prop(L, "normal_diffuse")
+                        det.prop(L, "normal_specular")
+                        det.prop(L, "normal_shininess")
+                        if img is not None:
+                            from ..tools.bake.bake_uv import uv_needs_unique_target
+                            space = img.get('inu_normal_space')
+                            needs_rebake = (space not in ('OBJECT', 'TANGENT') or (space == 'OBJECT'
+                                and uv_needs_unique_target(obj.data, img.get('inu_bake_uv', ''))))
+                            if needs_rebake:
+                                det.label(text=T("Перепеките Normal Map для корректной светотени"), icon='INFO')
+                    from ..tools.bake.bake_composite import (
+                        SURFACE_MAP_IDS, bevel_basis_key, uses_bevel_mask)
+                    if L.map_id in SURFACE_MAP_IDS:
+                        det.prop(L, "effect_basis")
+                        det.prop(L, "basis_invert")
+                        if L.effect_basis not in ('SELF', 'PATTERN', 'DIRECTION'):
+                            available = any(M.map_id == L.effect_basis and base
+                                and bpy.data.images.get(f"{base}_{getattr(M, 'uid', '') or M.map_id}")
+                                for M in layers)
+                            if L.effect_basis == 'BEVEL' and base:
+                                available = available or bpy.data.images.get(
+                                    f"{base}_{bevel_basis_key(getattr(L, 'uid', '') or L.map_id)}") is not None
+                            if not available:
+                                det.label(text=T("Запеките карту основы в этом стеке"), icon='INFO')
+                        det.prop(L, "use_color")
+                        if L.use_color:
+                            det.prop(L, "color_dark")
+                            det.prop(L, "color_light")
+                        draw_surface_controls(det, L)
+                        det.prop(L, "surface_pattern")
+                        if (L.surface_pattern != 'NONE' or L.map_id == 'GRUNGE'
+                                or any(m.basis == 'PATTERN' for m in L.masks)
+                                or L.direction_mode == 'STREAK'):
+                            det.prop(L, "pattern_scale")
+                            det.prop(L, "pattern_strength", slider=True)
+                            if L.surface_pattern != 'VORONOI':
+                                det.prop(L, "pattern_detail")
+                            det.prop(L, "pattern_contrast")
+                            det.prop(L, "pattern_seed")
+                    if (uses_bevel_mask(L.map_id, getattr(L, 'effect_basis', 'SELF'), L.masks)
+                            or (L.map_id == 'NORMAL' and L.normal_bevel)):
+                        from ..ops.bake_ops import _has_bevel_selection
+                        for domain, label in (('EDGE', T("Выделить рёбра")),
+                                              ('FACE', T("Выделить грани"))):
+                            area_row = det.row()
+                            area_row.enabled = _has_bevel_selection(obj, getattr(L, 'uid', '') or L.map_id, domain)
+                            area_op = area_row.operator("gtatools.bake_select_area", text=label)
+                            area_op.uid = getattr(L, 'uid', '') or L.map_id
+                            area_op.domain = domain
                     # «Рисовать» — правка карты кистью (Texture Paint, WYSIWYG).
                     # Доступно если карта запечена или это слой «Рисование».
                     _pr = det.row(align=True)
@@ -6436,9 +6512,8 @@ class GTATOOLS_PT_bake_panel(bpy.types.Panel):
                                         **inu_icon(safe_icon('BRUSH_DATA')))
                     _pop.uid = getattr(L, 'uid', '') or L.map_id
                     _pop.map_id = L.map_id
-                    # «Обесцветить» — только для Normal Map (убирает синий
-                    # tangent-space оттенок при сведении).
-                    if L.map_id == 'NORMAL':
+                    # Reversible grayscale display of raw Normal Map.
+                    if L.map_id == 'NORMAL' and not normal_lit:
                         det.prop(L, "desaturate", toggle=True,
                                  **inu_icon(safe_icon('IMAGE_ALPHA')))
                     # «Декаль» — увести яркость карты (напр.
@@ -6485,6 +6560,10 @@ class GTATOOLS_PT_bake_panel(bpy.types.Panel):
                           depress=over_on, **inu_icon(safe_icon('UV')))
             # «Обновить лайтмап» (пост-обработка) переехала в «Дополнительно»
             # под Интенсивность/Смягчение.
+
+        tools = box.column(align=True)
+        draw_workflow(tools, context, obj)
+        draw_game_preview(tools, s, obj)
 
         # (Настройки слоя теперь инлайн в развёрнутой строке списка выше —
         #  отдельный бокс «Выбранный слой» больше не нужен.)
@@ -6545,6 +6624,15 @@ class GTATOOLS_PT_bake_advanced(bpy.types.Panel):
                 col.prop(s, "gtatools_bake_bevel_samples")
                 col.prop(s, "gtatools_bake_selected_faces")
                 col.prop(s, "gtatools_bake_selected_edges")
+                shown = True
+            if md.id in ('DIRT', 'EDGEWEAR', 'CURVATURE'):
+                col.prop(s, "gtatools_bake_cavity_distance")
+                col.prop(s, "gtatools_bake_cavity_gain")
+                shown = True
+            if md.id == 'HIGHLIGHT':
+                col.prop(s, "gtatools_bake_highlight_azimuth")
+                col.prop(s, "gtatools_bake_highlight_elevation")
+                col.prop(s, "gtatools_bake_highlight_sharpness")
                 shown = True
             if md.id == 'LIGHTMAP':         # GI от реального света сцены
                 col.prop(s, "gtatools_bake_lightmap_quality")
