@@ -56,10 +56,12 @@ try:
     print('[native-nodes] Blender:', bpy.app.version_string, flush=True)
     print('[native-nodes] Addon:', INU_tools.__file__, flush=True)
     args = ['-v', '-s', '-rs', '-p', 'no:cacheprovider',
-            '--basetemp=' + str(OUTPUT / 'pytest_tmp'),
+            '--basetemp=' + str(OUTPUT / ('pytest_tmp_' + str(os.getpid()))),
             '--junitxml=' + str(OUTPUT / 'junit.xml'),
-            str(ROOT / 'dev/tests/test_ifp_preview.py'),
-            str(ROOT / 'dev/tests/e2e/test_nodes_edit_e2e.py')]
+           ]
+    targets = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
+    args.extend(targets or [str(ROOT / 'dev/tests/test_ifp_preview.py'),
+                            str(ROOT / 'dev/tests/e2e/test_nodes_edit_e2e.py')])
     exit_code = pytest.main(args)
     result['pytest_exit_code'] = int(exit_code)
     suite = ET.parse(OUTPUT / 'junit.xml').getroot().find('testsuite')

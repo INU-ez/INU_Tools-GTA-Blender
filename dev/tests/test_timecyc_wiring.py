@@ -605,6 +605,23 @@ def test_daynight_group_feeds_the_correction_chain():
     assert mat.node_tree.nodes.get(tp.NODE_NAME) is None
 
 
+def test_daynight_with_night_selected_keeps_both_colour_sources(monkeypatch):
+    mat = _make_material()
+    vc = mat.node_tree.nodes.get('Prelight_VertexColor')
+    vc.attribute_name = 'Night'
+    monkeypatch.setattr(tp, 'scan_color_attributes', lambda scene=None: ('Day', 'Night', {mat.name}))
+    tp.wire_material(mat, daynight=True, game_look=True)
+    group = mat.node_tree.nodes.get(tp.NODE_NAME)
+    assert _src_node(group.inputs['Day']).attribute_name == 'Day'
+    assert _src_node(group.inputs['Night']).attribute_name == 'Night'
+    assert vc.attribute_name == 'Night', 'Keep the selected single-layer source'
+    links = list(mat.node_tree.links)
+    tp.wire_material(mat, daynight=True, game_look=True)
+    assert list(mat.node_tree.links) == links
+    tp.wire_material(mat, daynight=False, game_look=True)
+    assert _src_node(mat.node_tree.nodes.get('Prelight_ViewBC').inputs['Color']) is vc
+
+
 def test_wiring_is_idempotent():
     """Повтор не должен плодить ноды и связи: материал в GTA-сцене общий
     на сотни объектов, каждая правка — перекомпиляция шейдера."""

@@ -39,7 +39,7 @@ for environment_name in ('BLENDER_USER_CONFIG', 'BLENDER_USER_EXTENSIONS'):
         Path(environment_path).mkdir(parents=True, exist_ok=True)
 REPORT = OUTPUT / 'extension-enable-result.json'
 arguments = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
-archive = Path(arguments[0]).resolve() if arguments else ROOT / 'inu_tools_gta_sa-2.5.3.zip'
+archive = Path(arguments[0]).resolve() if arguments else ROOT / 'inu_tools_gta_sa-2.5.4.zip'
 result = dict(status='running', blender=bpy.app.version_string, archive=str(archive))
 repo = None
 module_name = None

@@ -2,7 +2,7 @@ schema_version = "1.0.0"
 
 # Unique extension ID — reverse-DNS-style. Must not change between versions.
 id = "inu_tools_gta_sa"
-version = "2.5.3"
+version = "2.5.4"
 name = "INU Tools (GTA SA)"
 tagline = "Full-pipeline toolkit for GTA San Andreas modding"
 maintainer = "INU"
@@ -23,7 +23,7 @@ tags = [
 
 # Minimum supported Blender version. INU uses Blender 4.2+ extension API.
 blender_version_min = "4.2.0"
-# Optional max — leave blank for forward compatibility (tested up to 5.1).
+# Optional max — leave blank for forward compatibility (tested up to 5.2.3 LTS).
 # blender_version_max = ""
 
 # SPDX license expression — the EXTENSION's own license. Must be from the

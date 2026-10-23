@@ -18,7 +18,7 @@ param()
 $ErrorActionPreference = 'Stop'
 
 # --- Configure ---------------------------------------------------------
-$BlenderExe = "D:\Program\Blender 5.1\blender.exe"
+$BlenderExe = "D:\Program\Steam\steamapps\common\Blender\blender.exe"
 $SourceDir  = "INU_tools"
 $OutputDir  = "."
 

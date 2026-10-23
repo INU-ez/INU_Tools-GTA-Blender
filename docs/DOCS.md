@@ -104,6 +104,7 @@
 
 **Requirements:**
 - Blender 2.83+ (4.2+ for installs through extensions.blender.org)
+- Blender 5.2.3 LTS: background checks cover extension registration, DFF/COL round-trips, IFP preview, NODES editing, texture baking and Day/Night prelight. Older Blender support is retained. Checks requiring external game assets are skipped when those files are unavailable; background checks do not verify the interactive panel layout.
 - Itera Tools 3 — optional, for vertex lighting
 
 **Settings persistence:** all paths (Game Root, IDE, IPL, IMG, textures) and presets (profiles, material & ID presets, pipeline flag defaults) live in a user-writable data folder — `paths.json` plus per-feature subfolders. By default this is Blender's per-user extension directory; you can point it at any folder of your own via **Properties → Scene → INU Tools → Preset folder** (see [Preset / data folder](#preset--data-folder)). Settings survive addon updates and are restored automatically when Blender starts.

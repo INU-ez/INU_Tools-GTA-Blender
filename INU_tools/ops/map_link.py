@@ -1330,8 +1330,10 @@ def apply_inst_transform(obj, inst):
     q = q.normalized() if q.magnitude > 1e-8 else Quaternion()
     mw = obj.matrix_world
     s = mw.to_scale()
-    if mw.is_negative:
-        s = -s                  # to_scale() is always positive: keep a mirror
+    # mathutils may already return a signed scale for a negative matrix.
+    # Negating it unconditionally would remove the mirror a second time.
+    if mw.is_negative != (s.x * s.y * s.z < 0.0):
+        s = -s
     obj.matrix_world = (Matrix.Translation((inst.pos_x, inst.pos_y, inst.pos_z))
                         @ q.to_matrix().to_4x4()
                         @ Matrix.Diagonal((s.x, s.y, s.z, 1.0)))

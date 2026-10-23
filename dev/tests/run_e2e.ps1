@@ -22,6 +22,8 @@ if (-not $Blender -and $env:BLENDER) { $Blender = $env:BLENDER }
 
 if (-not $Blender) {
     $candidates = @(
+        "D:\Program\Steam\steamapps\common\Blender\blender.exe",
+        "D:\blender-4.2.23-windows-x64\blender.exe",
         "C:\Program Files\Blender Foundation\Blender 4.5\blender.exe",
         "C:\Program Files\Blender Foundation\Blender 4.4\blender.exe",
         "C:\Program Files\Blender Foundation\Blender 4.3\blender.exe",

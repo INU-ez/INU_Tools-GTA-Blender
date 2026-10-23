@@ -1955,13 +1955,13 @@ def _preview_graph_is_current(nodes, principled, base_color,
     sat = nodes.get("Prelight_ViewSat")
     if bc is None or gm is None or sat is None:
         return False
-    if not b.is_linked or b.links[0].from_node is not sat:
+    if not b.is_linked or b.links[0].from_node != sat:
         return False
     sat_in = sat.inputs['Color']
-    if not sat_in.is_linked or sat_in.links[0].from_node is not gm:
+    if not sat_in.is_linked or sat_in.links[0].from_node != gm:
         return False
     gm_in = gm.inputs['Color']
-    if not gm_in.is_linked or gm_in.links[0].from_node is not bc:
+    if not gm_in.is_linked or gm_in.links[0].from_node != bc:
         return False
     bc_in = bc.inputs['Color']
     if not bc_in.is_linked:
@@ -1969,7 +1969,7 @@ def _preview_graph_is_current(nodes, principled, base_color,
     bc_src = bc_in.links[0].from_node
     # В режиме «прилайт по времени суток» цвет приходит не из vc_node, а
     # из общей группы Day↔Night — это тоже актуальный граф.
-    if bc_src is not vc_node and bc_src.name != PRELIGHT_DAYNIGHT_NODE:
+    if bc_src != vc_node and bc_src.name != PRELIGHT_DAYNIGHT_NODE:
         return False
     if mat_game_look:
         # «Как в игре»: цвет идёт в Emission (через туман, если он есть),
@@ -1978,9 +1978,9 @@ def _preview_graph_is_current(nodes, principled, base_color,
         if emit is None or not emit.is_linked:
             return False
         emit_src = emit.links[0].from_node
-        if emit_src is not mix_node and emit_src.name != PRELIGHT_FOG_NODE:
+        if emit_src != mix_node and emit_src.name != PRELIGHT_FOG_NODE:
             return False
-    elif not base_color.is_linked or base_color.links[0].from_node is not mix_node:
+    elif not base_color.is_linked or base_color.links[0].from_node != mix_node:
         return False
 
     # Mix.A без текстуры допустим только если текстуры в графе и правда нет
@@ -2038,6 +2038,18 @@ def setup_prelight_preview(obj, enable=True):
     color_name = color_attr.name
 
     # Устаревшие modulate-ноды — могли остаться в файлах со старым превью.
+    colour_names = [a.name for a in compat.vcol_list(mesh)]
+    day_name = ('Day' if 'Day' in colour_names else
+                next((name for name in colour_names if name != 'Night'), color_name))
+    night_name = 'Night' if 'Night' in colour_names else ''
+
+    def wire_timecyc(material):
+        try:
+            from . import timecyc_prelight
+            timecyc_prelight.wire_material(material, day_attr=day_name, night_attr=night_name)
+        except Exception as exc:
+            print("[INU timecyc] wire_material(%s): %s" % (material.name, exc))
+
     _LEGACY = PRELIGHT_LEGACY_NODES
 
     # Визуальная коррекция (яркость/контраст/гамма) — одна на всю сцену.
@@ -2069,6 +2081,9 @@ def setup_prelight_preview(obj, enable=True):
             if _preview_graph_is_current(nodes, principled, base_color,
                                          vc_node, mix_node, color_name,
                                          mat_game_look=bool(mat.get('inu_tc_game_look'))):
+                # Old scenes may have the correct correction/output chain but
+                # a dangling Night input. Repair only the timecycle wiring.
+                wire_timecyc(mat)
                 continue
         else:
             if _preview_graph_is_absent(nodes, principled, base_color,
@@ -2141,14 +2156,7 @@ def setup_prelight_preview(obj, enable=True):
             # Режим тайм-цикла («как в игре», туман, Day↔Night) дособерёт
             # свою часть: без этого включение превью на объекте сбивало бы
             # игровой вид обратно в PBR.
-            try:
-                from . import timecyc_prelight
-                timecyc_prelight.wire_material(mat)
-            except Exception as exc:
-                # Не глушим молча: сбой врезки Day↔Night / игрового вида —
-                # это как раз «материал стал чёрным без причины», должно быть
-                # видно в системной консоли.
-                print("[INU timecyc] wire_material(%s): %s" % (mat.name, exc))
+            wire_timecyc(mat)
             modified_count += 1
 
         else:
@@ -2167,7 +2175,8 @@ def setup_prelight_preview(obj, enable=True):
 
             # Инстанс группы Day↔Night ставит tools/timecyc_prelight;
             # без превью он висел бы в материале ни к чему не подключён.
-            for nm in (PRELIGHT_DAYNIGHT_NODE, PRELIGHT_FOG_NODE):
+            for nm in (PRELIGHT_DAYNIGHT_NODE, PRELIGHT_FOG_NODE,
+                       "Prelight_DayColor", "Prelight_NightColor"):
                 extra = nodes.get(nm)
                 if extra is not None:
                     nodes.remove(extra)

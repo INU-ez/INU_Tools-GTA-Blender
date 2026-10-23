@@ -7,8 +7,8 @@
 **Blender-аддон для моддинга GTA San Andreas — полный пайплайн от моделинга до IMG-архива.**
 
 <p>
-  <img src="https://img.shields.io/badge/Blender-2.83%E2%80%935.1-orange?logo=blender" alt="Blender">
-  <img src="https://img.shields.io/badge/Version-2.5.3-green" alt="Version">
+  <img src="https://img.shields.io/badge/Blender-2.83%E2%80%935.2-orange?logo=blender" alt="Blender">
+  <img src="https://img.shields.io/badge/Version-2.5.4-green" alt="Version">
   <img src="https://img.shields.io/badge/License-GPL--3.0-blue" alt="License">
 </p>
 
@@ -85,7 +85,7 @@
 
 | | |
 |---|---|
-| **Blender** | 2.83 – 5.1 (для extensions.blender.org — 4.2+) |
+| **Blender** | 2.83 – 5.2 (для extensions.blender.org — 4.2+) |
 | **Игра** | GTA San Andreas (основная); Vice City и III — экспериментально |
 | **MTA** | Совместим с MTA:SA |
 | **ОС** | Windows / Linux / macOS |

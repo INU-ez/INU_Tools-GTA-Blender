@@ -38,6 +38,8 @@ def _find_blender() -> str | None:
             return env
 
     candidates = [
+        r"D:\Program\Steam\steamapps\common\Blender\blender.exe",
+        r"D:\blender-4.2.23-windows-x64\blender.exe",
         r"D:\Program\Blender 5.1\blender.exe",
         r"D:\Program\blender-4.2.20-windows-x64\blender.exe",
         r"C:\Program Files\Blender Foundation\Blender 4.5\blender.exe",

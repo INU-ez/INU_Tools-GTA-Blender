@@ -65,7 +65,10 @@ original_vertices = [v.co[:] for v in high.data.vertices]
 original_materials = list(high.data.materials)
 
 def bake(mid, floating=False, max_ray=0.):
-    image = B.setup_target_image('AlphaRay_'+mid, 32, 32, float_buffer=floating)
+    # Keep byte and float targets separate: setup_target_image intentionally
+    # preserves an existing float image when reusing a datablock.
+    image = B.setup_target_image('AlphaRay_'+mid+('_float' if floating else ''),
+                                 32, 32, float_buffer=floating)
     image.colorspace_settings.name = 'Non-Color' if mid == 'ALPHA' else 'sRGB'
     with B.BakeStateGuard(bpy.context):
         B.bake_one_map(bpy.context, B.get_map(mid), low, image,

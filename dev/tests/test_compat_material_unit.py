@@ -28,7 +28,7 @@ class MaterialNodeUsageTests(unittest.TestCase):
                 self.assertTrue(self.check_material(version, material))
 
     def test_missing_material_or_tree_is_not_node_based(self):
-        for version in ((4, 2, 0), (5, 0, 0)):
+        for version in ((4, 2, 0), (5, 0, 0), (5, 2, 3)):
             with self.subTest(version=version):
                 self.assertFalse(self.check_material(version, None))
                 self.assertFalse(self.check_material(
@@ -42,7 +42,9 @@ class MaterialNodeUsageTests(unittest.TestCase):
             def use_nodes(self):
                 raise AssertionError('Deprecated property was read')
 
-        self.assertTrue(self.check_material((5, 0, 0), Material()))
+        for version in ((5, 0, 0), (5, 2, 3)):
+            with self.subTest(version=version):
+                self.assertTrue(self.check_material(version, Material()))
 
 
 if __name__ == '__main__':

@@ -7,8 +7,8 @@
 **Blender addon for GTA SA/VC/III modding — full pipeline from modeling to IMG archive.**
 
 <p>
-  <img src="https://img.shields.io/badge/Blender-2.83%E2%80%935.1-orange?logo=blender" alt="Blender">
-  <img src="https://img.shields.io/badge/Version-2.5.3-green" alt="Version">
+  <img src="https://img.shields.io/badge/Blender-2.83%E2%80%935.2-orange?logo=blender" alt="Blender">
+  <img src="https://img.shields.io/badge/Version-2.5.4-green" alt="Version">
   <img src="https://img.shields.io/badge/License-GPL--3.0-blue" alt="License">
 </p>
 
@@ -84,7 +84,7 @@ regions when existing node IDs change; see [Compiled Nodes](docs/DOCS.md#compile
 
 | | |
 |---|---|
-| **Blender** | 2.83 – 5.1 (4.2+ for extensions.blender.org) |
+| **Blender** | 2.83 – 5.2 (4.2+ for extensions.blender.org) |
 | **Game** | GTA San Andreas (primary); Vice City and III — experimental |
 | **MTA** | MTA:SA compatible |
 | **OS** | Windows / Linux / macOS |

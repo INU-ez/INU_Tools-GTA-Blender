@@ -53,6 +53,7 @@ GROUP_NAME = "INU_Timecyc_DayNight"
 NODE_NAME = "Prelight_DayNight"
 # Ночной атрибут читается нодой В МАТЕРИАЛЕ, рядом с дневной.
 NIGHT_NODE_NAME = "Prelight_NightColor"
+DAY_NODE_NAME = "Prelight_DayColor"
 
 # Свойства сцены, из которых группа читает значения.
 SCENE_BALANCE_PROP = "inu_tc_night_balance"
@@ -299,10 +300,10 @@ def set_ambient(scene, color):
 
 # ── Врезка в материалы ──────────────────────────────────────────────
 
-def _night_node(mat, night_attr):
-    """Читалка ночного слоя — рядом с дневной, в самом материале."""
+def _colour_node(mat, name, attribute, label, offset):
+    """Read a named colour layer outside the shared shader group."""
     nodes = mat.node_tree.nodes
-    node = nodes.get(NIGHT_NODE_NAME)
+    node = nodes.get(name)
     wanted = ('ShaderNodeAttribute' if bpy.app.version >= (4, 0, 0)
               else 'ShaderNodeVertexColor')
     if node is not None and node.bl_idname != wanted:
@@ -310,25 +311,29 @@ def _night_node(mat, night_attr):
         node = None
     if node is None:
         node = nodes.new(wanted)
-        node.name = NIGHT_NODE_NAME
-        node.label = "Night"
+        node.name = name
+        node.label = label
         vc = nodes.get("Prelight_VertexColor")
-        node.location = ((vc.location.x, vc.location.y - 180) if vc
-                         else (-800, -180))
+        node.location = ((vc.location.x, vc.location.y + offset) if vc
+                         else (-800, offset))
     if hasattr(node, 'attribute_type'):
         node.attribute_type = 'GEOMETRY'
-        if node.attribute_name != night_attr:
-            node.attribute_name = night_attr
-    elif node.layer_name != night_attr:
-        node.layer_name = night_attr
+        if node.attribute_name != attribute:
+            node.attribute_name = attribute
+    elif node.layer_name != attribute:
+        node.layer_name = attribute
     return node
+
+
+def _night_node(mat, night_attr):
+    return _colour_node(mat, NIGHT_NODE_NAME, night_attr, "Night", -180)
 
 
 def group_node(mat, vc_node, links, day_attr=None, night_attr=None):
     """Инстанс общей группы в материале, подключённый к читалкам слоёв.
 
-    Дневной цвет берём из ноды, которую собрал prelight.py — она уже
-    смотрит на нужный слой; ночную заводим свою, рядом."""
+    The single-layer reader may currently show Night. Keep that selection
+    and use a separate Day reader when needed."""
     nodes = mat.node_tree.nodes
     node = nodes.get(NODE_NAME)
     if node is not None and node.bl_idname != 'ShaderNodeGroup':
@@ -347,7 +352,15 @@ def group_node(mat, vc_node, links, day_attr=None, night_attr=None):
     day_in = node.inputs.get('Day')
     night_in = node.inputs.get('Night')
     if vc_node is not None and day_in is not None:
-        _link_if_needed(links, vc_node.outputs['Color'], day_in)
+        current = getattr(vc_node, 'attribute_name', getattr(vc_node, 'layer_name', ''))
+        day_node = vc_node
+        if day_attr and current != day_attr:
+            day_node = _colour_node(mat, DAY_NODE_NAME, day_attr, "Day", -360)
+        else:
+            stale = nodes.get(DAY_NODE_NAME)
+            if stale is not None:
+                nodes.remove(stale)
+        _link_if_needed(links, day_node.outputs['Color'], day_in)
     if night_in is not None:
         if night_attr:
             _link_if_needed(links, _night_node(mat, night_attr).outputs['Color'],
@@ -373,9 +386,10 @@ def color_source(mat, nodes, links, vc_node, enabled, day_attr=None,
         stale = nodes.get(NODE_NAME)
         if stale is not None:
             nodes.remove(stale)
-        stale = nodes.get(NIGHT_NODE_NAME)
-        if stale is not None:
-            nodes.remove(stale)
+        for name in (DAY_NODE_NAME, NIGHT_NODE_NAME):
+            stale = nodes.get(name)
+            if stale is not None:
+                nodes.remove(stale)
         return vc_node.outputs['Color']
     return group_node(mat, vc_node, links, day_attr, night_attr).outputs[0]
 
@@ -498,6 +512,10 @@ def wire_material(mat, daynight=None, game_look=None, scene=None,
         daynight = bool(props and props.prelight_daynight)
     if game_look is None:
         game_look = bool(props and props.game_look)
+    if daynight and (day_attr is None or night_attr is None):
+        detected_day, detected_night, _ = scan_color_attributes(scene)
+        day_attr = detected_day if day_attr is None else day_attr
+        night_attr = detected_night if night_attr is None else night_attr
 
     nodes, links = nt.nodes, nt.links
     bc = nodes.get("Prelight_ViewBC")
