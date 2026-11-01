@@ -1324,9 +1324,7 @@ Create and configure 2DFX effects that export into DFF files.
 
 **Attach to Model:** parent 2DFX Empty to mesh object. Coordinates auto-recalculate on export.
 
-> ⚠ **Gotcha — effect textures (coronas/shadows/water) are NOT bundled with the addon.** They are GTA SA assets (Rockstar IP), so the preview pulls them from your own game. The 2DFX panel header shows the **real source** inline on the **"Create Effect: …"** line — a short `.txd` path, or **"Not selected"** when there's no source. The folder button (📁) next to it picks your own `.txd` (e.g. `particle.txd`) — picking it loads the textures; there's no separate "Load" button anymore.
->
-> With no explicit `.txd`, the addon resolves from the **Game Root** in order: `models/particle.txd` → `particle2.txd` / `effectsPC.txd` / `misc.txd` → embedded `gta3.img/particle.txd`. The preview pulls textures lazily. With no source, the corona/shadow render as a flat placeholder (doesn't affect DFF export — only the texture name is written there).
+> **Effect sources:** the Effects panel shows two path rows: a globe icon with the shared **Game Root**, then an image icon with the resolved **TXD source**. Both paths are plain labels; the folder button on each row opens its picker. Choosing the game folder here updates the same setting used by model import. Particle definitions come from `<game>/models/effects.fxp`. Effect textures are game assets and are not bundled; an explicitly chosen TXD (for example `particle.txd`) takes priority and loads immediately.
 
 **Detach All from Mesh:** batch detach all 2DFX from selected mesh. The mesh's UI shows a list of all attached 2DFX with individual detach buttons.
 
@@ -2249,184 +2247,49 @@ Searchable animation list in the panel.
 
 ## Animated Map Objects
 
-**Panel:** View3D → Sidebar (N) → GTA Tools → Animated Map Object
+**Panel:** View3D → Sidebar (N) → GTA Tools → **Animations → Objects**.
 
-GTA SA's standard way to animate **static map props with moving parts** — windmills, cranes, weather vanes, gate doors, propellers, fans. INU Tools uses an **Empty-rig** approach (mimics the Kams 3ds Max script) instead of an armature — this sidesteps the `rest_quat` bug of the bone-flow that caused IFP geometry stepping.
+Moving map props use an **Empty rig**: a static root, one pivot per moving part, and mesh objects parented to those frames. Character/skinned models use the separate armature workflow.
 
-### Required artifacts
+### Create the rig
 
-For one animated model the game needs **three coordinated artifacts**:
+1. Select the static base mesh.
+2. Use the **Object** eyedropper in **Animated Map Object** to pick the moving mesh. The addon creates the root and pivot, places the base under the root, and parents the moving mesh to the pivot. There is no separate Setup button.
+3. To add another moving part, choose **New pivot** and pick that mesh. **Existing pivot** makes it share the first pivot's motion; **Root (static)** attaches a static part.
+4. Select a pivot or its child mesh. Use **Auto** for slider-driven rotation. For hand-authored animation, switch to **Manual** before editing its rotation/location keys. Export preserves those manual keys and rotation order.
+5. Use **Validate** to inspect the rig before export.
 
-| File | Contains |
-|------|----------|
-| `<base>.dff` | Frame hierarchy + HAnim PLG (marks animated "bones" by `bone_id`) + meshes |
-| `<base>.ifp` | One animation with a track per animated part |
-| IDE `anim` entry | `model_id, model_name, txd_name, anim_file, drawdist, flags` |
-
-At runtime: engine parses IDE → sees `anim` entry → loads DFF + IFP → applies the IFP track to the bone hierarchy from the DFF by matching frame names.
-
-INU automates **all three steps** via the **Empty-rig** flow.
-
-### 🚨 Critical rules (READ BEFORE STARTING)
-
-1. **Model name length ≤ 12 chars.** GTA SA uses fixed-size buffers for frame/bone names. Names longer than ~16 chars **crash the game** when the IFP is applied (access violation at `0x534134`). Use short names like `mill`, `gate`, `vane` — NOT `airport_billboard_lvS`.
-2. **Animation name in IFP = model name.** The IDE's 4th field is the IFP pack name; inside the pack the game looks for an animation **named equal to the model name (2nd field)**. INU forces this automatically (`action_name=base` in the exporter).
-3. **IFP must live inside an IMG archive** (`gta3.img`), NOT as a loose file in `anim/`. The streaming system only scans IMG archives for map-object animations.
-4. **IDE entry must be in the `anim` section**, not `objs`. This tells the engine the model has an associated IFP.
-
-### Mesh preparation
-
-Split the model into **two (or more) parts**:
-- **Static mesh** — windmill base / crane chassis / vane frame. **Name:** `mill_base` (no suffix), **Model ID:** `0` (not set).
-- **Animated mesh** — blades / boom / rooster. **Name:** `mill_blades`, **Model ID:** unique game ID (e.g. `19000`).
-
-> ⚠️ **Model ID is set ONLY on the animated mesh** in Object → INU Tools → Model ID. On the static mesh it stays `0`. Both meshes end up in one `.dff` and the game references the whole model via the single `model_id` in the IDE anim entry.
-
-> ⚠️ **Keep names ≤ 12 chars.** The pivot is auto-named `<rig_name>_pivot1`. With rig `mill` (4 chars) → pivot `mill_pivot1` (11) is fine. With rig `airprtbits12_lvS` (16) → pivot `airprtbits12_lvS_pivot1` (23) → **GAME CRASHES**.
-
-### Setup
-
-Select the animated mesh, **N → Animated Map Object → Setup** (popup):
-- **Base name:** short, ≤ 12 chars. E.g. `mill`, `gate`, `vane`. Used as:
-  - Empty prefix (`mill_root`, `mill_pivot1`)
-  - File names (`mill.dff`, `mill.ifp`)
-  - `model_name` in IDE
-  - **Animation name in IFP** (forced by the exporter)
-- **Action name:** informational only (shown in Action Editor), does NOT control the IFP animation name
-- **Rotation axis:** Z (windmill blades) / Y (airplane propeller) / X (boom gate)
-- **Turns per cycle:** 1
-- **Duration:** 60 frames (= 2 sec @ FPS=30)
-- **Active mesh:** "Parent to pivot" — animated mesh attaches to pivot1
-
-Result:
-```
-mill_root           Empty (ARROWS)    bone_id=0   ← root, static base anchor
-└── mill_pivot1     Empty (SPHERE)    bone_id=1   ← rotates, Action on rotation_quaternion
-    └── mill_blades                                ← animated mesh
+```text
+mill_root          Empty
+├── mill_base      Mesh, static
+└── mill_pivot1    Empty, animated
+    └── mill_blades  Mesh, moving
 ```
 
-### Parent the static mesh
+### Export DFF + IFP + IDE
 
-The static mesh (`mill_base`) goes **under root**, NOT under pivot (otherwise it would rotate too):
+Select the root, pivot, or a mesh in the intended rig and click **DFF+IFP+IDE**. Set the output folder, a short ASCII base name, TXD name, Model ID, and draw distance. The Model ID addresses the complete model; check the value in the export dialog.
 
-- **Manually:** select `mill_base` → Shift-click `mill_root` → `Ctrl+P → Object`
-- **Via eyedropper:** in N-panel, click the eyedropper "To root (static)" → click `mill_base` in viewport
+- **Write IDE entry** updates an entry in the chosen IDE file's `anim` section. Disable it when testing only the DFF/IFP pair.
+- **IFP format:** **ANP3** is the compressed SA format; **ANPK** is the float format and is also supported. Both preserve the same frame-to-track mapping. ANPK is the current dialog default.
+- **IFP mode:** **New** replaces the destination pack; **Append** keeps other animations and replaces matching names; **Update matches** replaces existing matching animations only. Use an empty test folder and **New** when diagnosing a single rig.
+- **IFP name / Existing IFP** can select a shared pack independently of the DFF filename. The exported animation name follows the model's base name.
 
-### Multi-part rig
+The DFF stores the root/pivot/mesh hierarchy, names and HAnim data. The IFP stores a track for each animated pivot. For the game, the model also needs a corresponding IDE `anim` entry and the required model/texture/animation resources in its configured archives.
 
-Two animated parts at once (blades + a rooster on top)? Press **N → Animated Map Object → +Pivot**:
+**Timing and keys:** IFP export/import uses a fixed 30 FPS conversion. Set the scene to **30 FPS** when comparing real-time playback. Manual motion is sampled on each frame to preserve Blender's Bezier movement. Export leaves the original Action unchanged; reimporting the IFP produces those sampled keys, not the original sparse keys/Bezier handles. No sidecar file for restoring the original keys is currently written.
 
-- Creates `mill_pivot2` (bone_id=2) with its own Action
-- Attach the second animated mesh under it via the "To pivot" eyedropper
-- The IFP will contain **both** tracks in one animation; both parts rotate independently in-game
+### Import the exported pair
 
-### Validate (optional, recommended)
+1. Import the **DFF** through INU's DFF importer. For custom models, leave **Standard GTA SA model (vanilla)** off.
+2. A non-skinned Empty rig with separate mesh frames keeps the same **root → pivot → mesh** hierarchy. It is not converted to an Armature. Legacy rigid models whose atomics sit directly on bone frames, and skinned models, retain the armature import path.
+3. Select the imported root or one of its descendants. Under **Animations → Objects**, click **Import** and choose the matching **IFP**. **File → Import → INU IFP Animation (.ifp)** opens the same importer and is searchable via F3 using `IFP`.
+4. Select the imported clip in **Animation**, then click **Apply**. Import loads the clip list; Apply assigns its tracks to the selected rig's Empty frames. The Objects tab does not use the character-only Export/Merge operators for this step.
+5. Play the scene at 30 FPS. Compare it with the source, including both static and moving parts. Immediately after export, also check that the source Action itself did not change.
 
-**N → Animated Map Object → Validate** checks:
-- All pivots under one root
-- Unique `inu_bone_id` (no collisions)
-- Action exists on each animated pivot
-- Mesh-children parented correctly
-- **Name length within the safe limit**
+Reimporting into a scene that already has these object names may add Blender suffixes such as `.001`. The addon retains the original frame names for matching IFP tracks and reexporting; each rig keeps its own parent relationships and Actions. Applied clips remain usable after saving and reopening `.blend`.
 
-Issues appear in Blender's Info area.
-
-### Export
-
-Select **any object of the rig** (Empty root, pivot, or mesh — the exporter auto-finds the rig via `_find_animobj_empty_root`). Press **`DFF+IFP+IDE`** in the N-panel (NOT the "Export" button — that's for standalone IFP flow). Popup:
-
-- **Folder:** where to write
-- **Base name:** `mill` — DFF / IFP / IDE `model_name`
-- **TXD name:** `mill` (usually same as base)
-- **Model ID:** auto-filled from the animated mesh
-- **Draw distance:** 300
-- **Write IDE entry:** ✓ — appends to the `anim` section of `Scene → INU Tools → IDE Path`
-- **IFP name:** empty = base name. Or a shared name like `myhood_anims` to bundle multiple rigs into one IFP
-- **IFP mode:** `Append` (default) — adds to existing .ifp without loss
-- **Existing IFP:** optional path to an existing file (e.g. `<game>/anim/myhood.ifp`)
-
-Outputs:
-- **`mill.dff`** — Empty hierarchy + static + animated meshes + HAnim PLG on root (with full bone tree) and each pivot
-- **`mill.ifp`** — **ANP3** format (SA compressed), one animation named `'mill'` (== base name), `bone_id=-1`, first keyframe at `t=0.0`
-- IDE file updated with:
-  ```
-  anim
-  19000, mill, mill, mill, 300, 0
-  end
-  ```
-
-### Place in-game
-
-1. **DFF + TXD → into `gta3.img`** via **N → IDE/IPL/IMG → Export to IMG**, or with IMG Tool manually
-2. **IFP → into `gta3.img` too** (NOT into loose `anim/` folder!). All vanilla animated map object IFPs live in `gta3.img` (counxref.ifp, airport.ifp, etc.).
-3. **IDE** already updated by the exporter
-4. **IPL** — place the object on the map via `Object IDE/IPL` (Properties → Object) → IPL Export. The game animates wherever an `inst <model_id>` row references this ID.
-
-**Rebuild Archive** after replacing any file in the IMG — without it the game uses stale offsets.
-
-After launch — the model animates at every placement.
-
-### 🛑 Pitfalls (ALL CRITICAL)
-
-#### A. Names
-
-| Problem | Symptom | Fix |
-|---------|---------|-----|
-| **Name > 12 chars** | Crash `0x534134` access violation on animation apply | Use short names (≤ 12 chars) |
-| **Cyrillic in Action name** | IFP gets name `'????????'` → game doesn't find animation | INU forces `action_name=base` (ASCII model name) — should auto-fix |
-| **Animation name ≠ model name** | Game doesn't find animation → silently doesn't animate (no crash) | INU does this automatically; don't hand-edit IDE |
-
-#### B. IDE
-
-| Problem | Symptom | Fix |
-|---------|---------|-----|
-| **Entry in `objs` section** | Game loads as a static object, IFP isn't applied | Move to `anim` section (INU does this automatically) |
-| **Flag ≠ 0 or = 2097152** | Optional. Vanilla uses `2097152` (bit 21) for animated. Works without it too. | Set `2097152` in the 6th field to match vanilla |
-| **Model ID on the static mesh** | Duplicate IDE entries, game gets confused | Static mesh Model ID must be `0` |
-
-#### C. IMG / streaming
-
-| Problem | Symptom | Fix |
-|---------|---------|-----|
-| **IFP in `anim/` folder** | Game can't find the animation (loose .ifp isn't scanned by streaming for map objects) | Put IFP in `gta3.img` |
-| **Forgot Rebuild Archive** | Stale offsets, new file invisible | After any IMG file replacement — Rebuild |
-| **Duplicate name across IDEs** | Conflict, undefined behavior | One model_name = one IDE entry across the whole mod |
-
-#### D. DFF internals (INU handles automatically)
-
-| Aspect | What INU does | Why |
-|--------|---------------|-----|
-| **HAnim PLG on root** | Writes full bone tree | Engine requires this for bone hierarchy |
-| **HAnim PLG on each pivot** | Minimal `{bone_id}` | Marks the bone in the hierarchy |
-| **`bone_type` in bone list** | `[0, 1]` for 2 bones, `[0, 3, 0, …, 1]` for more | Exact match with vanilla RW format |
-| **`frame.flags = 0x20003` on root** | Auto-set for animobj root | Without this the HAnim hierarchy walker fails inside the engine |
-| **ATOMIC `flags = 5`** (render + collision) | Default in `core/dff.py` | Without the collision bit the engine crashes on collision tests |
-| **DFS pivot sort** | Empties with `inu_bone_id` come first in hierarchy | Pivot becomes `idx=1` (as in vanilla), not `idx=2+` |
-
-#### E. IFP internals (INU handles automatically)
-
-| Aspect | What INU does | Why |
-|--------|---------------|-----|
-| **ANP3 format** | Forced in `build_ifp_from_empty_rig` | The vanilla SA format (counxref.ifp, airport.ifp) |
-| **`bone_id = -1`** | For all bones | Vanilla always uses `-1`; the game matches by frame name |
-| **First keyframe at t=0.0** | Normalised via `(frame - frame_start) / fps` | Without this the game can't find the initial key |
-| **Root excluded** | `inu_animobj_empty_root` is skipped in IFP | In vanilla the root is never animated |
-
-#### F. Other
-
-- **"No animations to export"** — you pressed **«Export»** instead of **`DFF+IFP+IDE`**. «Export» is the standalone IFP operator for armatures, not for Empty-rigs.
-- **DFF stepping in-game** — quaternions weren't normalised at export. Fixed in v2.0.0 (`ifp_export.py` via `bl_quat.normalize()`). Re-export if you used an older version.
-- **Skinned peds:** Empty-rig is for **map objects**. Skinned characters use the armature + IK-rig workflow (`ik_rig.py`).
-
-### 🔬 Crash diagnostics
-
-If the game crashes when the model appears:
-
-1. **Check name length** — over 12 chars? Shorten it.
-2. **Check IDE section** — is the model in `anim`? (not `objs`)
-3. **Check IFP in IMG** — does `gta3.img` contain `<base>.ifp`?
-4. **Install `crashes.asi` + `CrashRpt1402.dll`** — captures the address. `0x534134` typically = HAnim / CClumpAnimMgr (name length or structure issue).
-5. **Isolation:** temporarily move the IDE entry into `objs` (flag=0). If it loads — the crash is in the animation. If it still crashes — something else is wrong (other mod / config / scripts).
+Use short ASCII frame names that fit the exporter's limits; the generated `_root`/`_pivot` suffixes count toward the limit. File size alone is not a validity check: compare frame names, parent relationships and playback. **Import** loads an IFP; **Apply** assigns it. The character workflow's **Merge/Add** button writes an existing IFP and does not import animation.
 
 ---
 

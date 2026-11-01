@@ -6418,4 +6418,9 @@ LANG = {
     'Не найдена UV-карта Low': 'Low UV map is missing',
     'Топология Low и клетки проекции различается': 'Low and cage topology differ',
     'На пути луча запекания больше 128 прозрачных поверхностей': 'More than 128 transparent surfaces along a bake ray',
+    'Не найдена импортированная анимация IFP: {0}': 'Imported IFP animation not found: {0}',
+    'Анимация «{0}» не найдена в IFP': "Animation '{0}' not found in IFP",
+    'Не найдены фреймы IFP: {0}': 'IFP frames not found: {0}',
+    'Применена анимация «{0}»: треков {1}': "Applied animation '{0}': {1} tracks",
+    'Выбрать папку': 'Choose folder',
 }

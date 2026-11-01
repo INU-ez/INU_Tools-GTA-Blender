@@ -1344,7 +1344,11 @@ def _build_frame(obj, parent_index: int = -1,
     there the cached snapshot is authoritative and must not be overridden.
     """
     frame = DffFrame()
-    frame.name = _strip_ext(obj.name)
+    if obj.type == 'EMPTY' and 'inu_bone_id' in obj:
+        from .animobj_ops import _animobj_frame_name
+        frame.name = _animobj_frame_name(obj)
+    else:
+        frame.name = _strip_ext(obj.name)
     frame.parent = parent_index
 
     # Use original frame data if available (round-trip)
@@ -1646,6 +1650,11 @@ def _is_col_primitive_empty(obj):
     FrameList → движок читает мусорные позиции в GetWheelPosn и краш на спавне.
     """
     if getattr(obj, 'empty_display_type', '') not in ('SPHERE', 'CUBE'):
+        return False
+    # Animated-object pivots are SPHERE empties too, but carry HAnim/rig
+    # markers instead of the imported dff_frame_* transform cache.
+    if ('inu_bone_id' in obj or 'inu_animobj_empty_root' in obj
+            or 'inu_animobj_empty_pivot' in obj):
         return False
     # Дамми DFF-фрейма (в т.ч. wheel_*_dummy/chassis_dummy) — это КАДР, не COL.
     if ('dff_frame_pos' in obj or 'dff_frame_rot' in obj

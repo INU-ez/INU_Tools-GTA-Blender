@@ -303,6 +303,34 @@ class GTATOOLS_OT_pick_setting_path(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class GTATOOLS_OT_pick_setting_directory(bpy.types.Operator):
+    """Choose a directory for a shared scene setting shown as a path label."""
+    bl_idname = "gtatools.pick_setting_directory"
+    bl_label = "Выбрать папку"
+    bl_options = {'REGISTER'}
+
+    setting: StringProperty(default="gtatools_game_root")
+    directory: StringProperty(subtype='DIR_PATH')
+    filter_folder: BoolProperty(default=True, options={'HIDDEN'})
+
+    def invoke(self, context, event):
+        current = getattr(context.scene.inu_settings, self.setting, '')
+        if current:
+            self.directory = os.path.join(bpy.path.abspath(current), '')
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        if not self.directory:
+            return {'CANCELLED'}
+        try:
+            setattr(context.scene.inu_settings, self.setting, self.directory)
+        except (AttributeError, TypeError) as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
 def _get_scene_game(context):
     try:
         from ..core import game_versions as gv

@@ -395,6 +395,7 @@ class GTATOOLS_OT_inu_import(bpy.types.Operator, ImportHelper):
 def menu_func_import(self, context):
     self.layout.operator(GTATOOLS_OT_inu_import.bl_idname,
                          text="INU Import (.dff/.col/.cst/.txd/.ide/.ipl)")
+    self.layout.operator("gtatools.import_ifp", text="INU IFP Animation (.ifp)")
 
 
 # ──────────────────── Shared group-export engine ─────────────────────

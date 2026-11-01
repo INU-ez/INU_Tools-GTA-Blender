@@ -2760,6 +2760,12 @@ class GTATOOLS_PT_2dfx_panel(bpy.types.Panel):
         # зазоров между строками.
         col = box.column(align=True)
 
+        grow = col.row(align=True)
+        grow.label(text=context.scene.inu_settings.gtatools_game_root or T("Не выбран"),
+                   **inu_icon(safe_icon('WORLD')))
+        grow.operator("gtatools.pick_setting_directory", text="",
+                      **inu_icon(safe_icon('FILE_FOLDER'))).setting = "gtatools_game_root"
+
         # Источник .txd + выбор папки.
         trow = col.row(align=True)
         trow.label(text=status, **inu_icon(safe_icon('IMAGE_DATA')))
@@ -5241,6 +5247,14 @@ class GTATOOLS_PT_zon_panel(bpy.types.Panel):
                       **inu_icon(safe_icon('ERROR')))
 
 
+def _draw_ifp_apply_controls(layout, scene):
+    layout.prop_search(scene.inu_settings, "gtatools_ifp_action",
+                       bpy.data, "actions", text=T("Анимация"), icon=safe_icon('ACTION'))
+    row = layout.row(align=True)
+    row.operator("gtatools.apply_ifp", text=T("Применить"), **inu_icon(safe_icon('PLAY')))
+    return row
+
+
 def _find_animobj_rig_name():
     """Name of the Animated-Map-Object rig root Empty, or ''.
 
@@ -5308,18 +5322,13 @@ class GTATOOLS_PT_anim_panel(bpy.types.Panel):
         obj = context.active_object
 
         # ── Top action row ──
-        # In the Object tab the «Импорт» slot from the Character tab is
-        # replaced by the combo «DFF+IFP+IDE»: importing an IFP rarely
-        # makes sense when you're authoring a new animated prop from
-        # scratch, but writing all three artefacts at once is the main
-        # action for this workflow.
+        # Object rigs export through the combo operator; IFP import/apply
+        # works directly on the preserved root/pivot Empty hierarchy.
         row = (top or layout).row(align=True)
         row.operator("gtatools.animobj_export",
                      text=T("DFF+IFP+IDE"), **inu_icon(safe_icon('EXPORT')))
-        row.operator("gtatools.export_ifp",
-                     text=T("Экспорт"), **inu_icon(safe_icon('EXPORT')))
-        row.operator("gtatools.merge_ifp",
-                     text=T("Добавить"), **inu_icon(safe_icon('FILE_REFRESH')))
+        row.operator("gtatools.import_ifp",
+                     text=T("Импорт"), **inu_icon(safe_icon('IMPORT')))
 
         # Actions live outside the depsgraph, so len(bpy.data.actions) goes
         # into the key — an IFP import bumps it and the count refreshes.
@@ -5329,6 +5338,7 @@ class GTATOOLS_PT_anim_panel(bpy.types.Panel):
         if n_ifp_actions:
             layout.label(
                 text=f"{n_ifp_actions} {T('анимаций загружено')}")
+            _draw_ifp_apply_controls(layout, scene)
 
         layout.separator()
 
@@ -5650,12 +5660,7 @@ class GTATOOLS_PT_anim_panel(bpy.types.Panel):
                 # только string `icon`. Поэтому используем safe_icon
                 # напрямую, не через inu_icon (который может вернуть
                 # icon_value для PNG-bake'нутых Lucide-иконок).
-                layout.prop_search(scene.inu_settings, "gtatools_ifp_action",
-                                   bpy.data, "actions",
-                                   text=T("Анимация"), icon=safe_icon('ACTION'))
-                ar = layout.row(align=True)
-                ar.operator("gtatools.apply_ifp",
-                            text=T("Применить"), **inu_icon(safe_icon('PLAY')))
+                ar = _draw_ifp_apply_controls(layout, scene)
                 try:
                     from ..ops.ifp_import import preview_is_active as _pv
                     _pv_on = _pv()

@@ -373,7 +373,7 @@ class GTATOOLS_OT_animobj_export(bpy.types.Operator):
         # flag now so re-exports from old rigs pick up named frames
         # without the user having to recreate the hierarchy.
         for o in rig_objs:
-            if o.type == 'EMPTY' and not o.get('dff_frame_write_name'):
+            if o.type in {'EMPTY', 'MESH'} and not o.get('dff_frame_write_name'):
                 o['dff_frame_write_name'] = True
 
         # DFF export — select rig + meshes, reuse the file operator.
@@ -517,6 +517,10 @@ def _rebuild_animobj_empty_action(empty_obj):
     if empty_obj is None or empty_obj.type != 'EMPTY':
         return
     props = empty_obj.inu_animobj_empty_props
+    # Export calls this for every pivot, including hand-authored Actions.
+    # Manual mode must preserve the user's curves and rotation order.
+    if not props.auto_mode:
+        return
 
     ad = empty_obj.animation_data
     if ad is None:
@@ -671,6 +675,14 @@ def _find_animobj_empty_root(obj):
             return obj
         obj = obj.parent
     return None
+
+
+def _animobj_frame_name(obj):
+    """RW name, independent of Blender's automatic .001 import suffix."""
+    source_name = obj.get('inu_animobj_frame_name')
+    if source_name and obj.name == obj.get('inu_animobj_import_name'):
+        return source_name
+    return obj.name
 
 
 def _collect_empty_rig_descendants(root):

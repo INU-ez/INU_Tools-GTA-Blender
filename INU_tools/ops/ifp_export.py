@@ -1,6 +1,7 @@
 # INU_tools.ops.ifp_export — Export Blender actions to GTA SA IFP
 
 import bpy
+import math
 import mathutils
 from ..core.ifp import (
     IFPFile, Animation, AnimBone, KeyFrame,
@@ -601,7 +602,7 @@ def _build_animation_from_empty_rig(action_name: str, root_empty, fps: float,
     *frame_start* before dividing by *fps* (vanilla IFPs always start
     at exactly t=0.000000).
     """
-    from .animobj_ops import _collect_empty_rig_descendants
+    from .animobj_ops import _collect_empty_rig_descendants, _animobj_frame_name
 
     anim = Animation(name=action_name)
     if root_empty is None:
@@ -670,7 +671,7 @@ def _build_animation_from_empty_rig(action_name: str, root_empty, fps: float,
             if not rot_active:
                 has_rot = False
 
-        bone = AnimBone(name=emp.name)
+        bone = AnimBone(name=_animobj_frame_name(emp))
         # Animated map objects: bone_id=-1, game matches by frame.name.
         # Verified vs. vanilla counxref.ifp (derrick01, nt_windmill,
         # nt_noddonkbase, oilplodbitbase) — all use bone_id=-1.
@@ -683,8 +684,12 @@ def _build_animation_from_empty_rig(action_name: str, root_empty, fps: float,
         if not bone.key_type:
             continue
 
-        # Densify euler intervals — same as armature path.
-        if has_euler and len(times) >= 2:
+        # IFP interpolates samples, not Blender's Bezier handles. Sample
+        # hand-authored motion on each frame so export/reimport keeps its
+        # timing and trajectory, including non-linear location curves.
+        if not emp.inu_animobj_empty_props.auto_mode and len(times) >= 2:
+            times.update(range(math.ceil(min(times)), math.floor(max(times)) + 1))
+        elif has_euler and len(times) >= 2:
             sorted_times = sorted(times)
             for a, b in zip(sorted_times, sorted_times[1:]):
                 step = (b - a) / 4.0

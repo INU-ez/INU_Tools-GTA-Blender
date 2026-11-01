@@ -1230,6 +1230,16 @@ def _build_armature(clump: DffClump, name: str):
     # Get skin data for bone matrices
     skin = _get_skinned_data(clump)
 
+    def bone_frame_index(hbone):
+        # Non-skinned map rigs can repeat an id (e.g. duplicated pivots).
+        # Their HAnim node index identifies the actual frame; an id-only
+        # dict collapses both pivots onto the last frame and loses a mesh.
+        if skin is None and 0 <= hbone.index < len(clump.frames):
+            candidate = clump.frames[hbone.index]
+            if candidate.hanim and candidate.hanim.bone_id == hbone.bone_id:
+                return hbone.index
+        return bone_id_to_frame_idx.get(hbone.bone_id)
+
     print(f"[INU] Building armature: {len(hanim_root_frame.hanim.bones)} bones, "
           f"skin={'yes' if skin else 'no'}, "
           f"bone_matrices={len(skin.bone_matrices) if skin else 0}")
@@ -1242,7 +1252,7 @@ def _build_armature(clump: DffClump, name: str):
     bone_list = {}  # frame_index → (edit_bone, has_connected_child)
 
     for bone_idx, hbone in enumerate(hanim_root_frame.hanim.bones):
-        frame_idx = bone_id_to_frame_idx.get(hbone.bone_id)
+        frame_idx = bone_frame_index(hbone)
         if frame_idx is None:
             print(f"[INU] Bone id={hbone.bone_id} has no matching frame, skipping")
             bone_names.append(f"Bone_{hbone.bone_id}")
@@ -1316,7 +1326,7 @@ def _build_armature(clump: DffClump, name: str):
     import json
     frame_data = {}
     for hbone in hanim_root_frame.hanim.bones:
-        fi = bone_id_to_frame_idx.get(hbone.bone_id)
+        fi = bone_frame_index(hbone)
         if fi is None:
             continue
         f = clump.frames[fi]
@@ -1579,6 +1589,15 @@ def import_dff_from_clump(clump, base_name: str, *, skip_2dfx=None,
     frame_to_obj = {}  # frame_index → Blender object (MESH or EMPTY dummy)
 
     is_skinned = _has_skeleton(clump)
+    # A root/pivot Empty rig already has separate mesh frames. Keep that
+    # exact hierarchy instead of replacing its frames with an armature.
+    preserve_empty_rig = (
+        not bulk_mode and is_skinned and bool(clump.atomics)
+        and not any(geom.skin for geom in clump.geometries)
+        and all(0 <= atomic.frame_index < len(clump.frames)
+                and clump.frames[atomic.frame_index].hanim is None
+                for atomic in clump.atomics))
+    is_skinned = is_skinned and not preserve_empty_rig
 
     # Suffix used for the fallback object name when the DFF frame
     # carries no name of its own. Reads the user-configured suffix from
@@ -1635,7 +1654,9 @@ def import_dff_from_clump(clump, base_name: str, *, skip_2dfx=None,
         # Многосоставный DFF (транспорт, оружие): имена деталей важны для
         # иерархии и round-trip — берём имя фрейма, если оно «чистое»
         # (иначе fallback на имя файла).
-        if _n_geoms <= 1:
+        if preserve_empty_rig and frame and frame.name and _frame_name_usable(frame.name):
+            obj_name = frame.name
+        elif _n_geoms <= 1:
             obj_name = _fallback_name(gi)
         elif frame and frame.name and _frame_name_usable(frame.name):
             obj_name = frame.name
@@ -1730,6 +1751,15 @@ def import_dff_from_clump(clump, base_name: str, *, skip_2dfx=None,
             dummy['dff_frame_rot'] = list(frame.rotation)
             dummy['dff_frame_pos'] = list(frame.position)
             dummy['dff_frame_write_name'] = frame.write_name
+            if preserve_empty_rig and frame.hanim:
+                is_root = bool(frame.hanim.bones)
+                dummy['inu_bone_id'] = frame.hanim.bone_id
+                dummy['inu_animobj_frame_name'] = frame.name
+                dummy['inu_animobj_import_name'] = dummy.name
+                dummy['inu_animobj_empty_root' if is_root else 'inu_animobj_empty_pivot'] = True
+                dummy.empty_display_type = 'ARROWS' if is_root else 'SPHERE'
+                if not is_root:
+                    dummy.inu_animobj_empty_props.auto_mode = False
 
             if frame.user_data:
                 _store_user_data(dummy, frame.user_data)
@@ -1783,12 +1813,21 @@ def import_dff_from_clump(clump, base_name: str, *, skip_2dfx=None,
             # on vanilla fam3.dff: transposed → skeleton↔bind consistent to
             # 0.0000, un-transposed → 2.0 error. (animobj meshes are skipped
             # above and don't reach this path.)
-            obj.matrix_basis = mathutils.Matrix((
-                (rot[0], rot[3], rot[6], pos[0]),
-                (rot[1], rot[4], rot[7], pos[1]),
-                (rot[2], rot[5], rot[8], pos[2]),
-                (0, 0, 0, 1),
-            ))
+            if preserve_empty_rig and frame.hanim:
+                # Empty HAnim frames are written row-major by our exporter.
+                obj.matrix_basis = mathutils.Matrix((
+                    (rot[0], rot[1], rot[2], pos[0]),
+                    (rot[3], rot[4], rot[5], pos[1]),
+                    (rot[6], rot[7], rot[8], pos[2]),
+                    (0, 0, 0, 1),
+                ))
+            else:
+                obj.matrix_basis = mathutils.Matrix((
+                    (rot[0], rot[3], rot[6], pos[0]),
+                    (rot[1], rot[4], rot[7], pos[1]),
+                    (rot[2], rot[5], rot[8], pos[2]),
+                    (0, 0, 0, 1),
+                ))
 
         if not bulk_mode:
             bpy.context.view_layer.update()
@@ -1802,7 +1841,7 @@ def import_dff_from_clump(clump, base_name: str, *, skip_2dfx=None,
     # Animated map objects (windmills, cranes, doors) have HAnim WITHOUT
     # skin and DO need an armature for IFP playback in Blender — so we
     # don't gate on ``has_skin`` here.
-    if not bulk_mode and _has_skeleton(clump):
+    if not bulk_mode and not preserve_empty_rig and _has_skeleton(clump):
         try:
             arm_obj, bone_names = _build_armature(clump, base_name)
             imported_objects.append(arm_obj)
@@ -1822,13 +1861,36 @@ def import_dff_from_clump(clump, base_name: str, *, skip_2dfx=None,
                     # Skinned mesh (peds, skinned vehicles) — per-vertex
                     # bone weights wire the mesh to the armature.
                     _apply_skin_weights(obj, geom, arm_obj, bone_names)
-                elif frame and frame.hanim:
+                elif frame:
                     # Animated map object — mesh rigidly follows ONE
                     # bone via Armature modifier + all-weight vertex
                     # group (NOT parent_type='BONE', which would
                     # re-align the mesh under the bone's tail and tip
                     # it 90° around X for a tail=+Z bone).
-                    target_bone = frame.name
+                    # Empty-rig exports put HAnim on the pivot and the
+                    # atomic on a separate child frame. Find that pivot;
+                    # checking only the atomic frame leaves the mesh
+                    # detached even though an armature was imported.
+                    target_frame = frame
+                    relative = mathutils.Matrix.Identity(4)
+                    for _ in range(len(clump.frames)):
+                        if target_frame.hanim:
+                            break
+                        rot, pos = target_frame.rotation, target_frame.position
+                        local = mathutils.Matrix((
+                            (rot[0], rot[3], rot[6], pos[0]),
+                            (rot[1], rot[4], rot[7], pos[1]),
+                            (rot[2], rot[5], rot[8], pos[2]),
+                            (0, 0, 0, 1),
+                        ))
+                        relative = local @ relative
+                        parent = target_frame.parent
+                        if not 0 <= parent < len(clump.frames):
+                            break
+                        target_frame = clump.frames[parent]
+                    if not target_frame.hanim:
+                        continue
+                    target_bone = target_frame.name
                     if target_bone and target_bone in bone_names:
                         obj.parent = arm_obj
                         obj.parent_type = 'OBJECT'
@@ -1836,7 +1898,14 @@ def import_dff_from_clump(clump, base_name: str, *, skip_2dfx=None,
                         # Reset the mesh's own transform — the matrix_basis
                         # loop above skipped writing here, but be defensive
                         # in case a future code path wires it differently.
-                        obj.matrix_basis = mathutils.Matrix.Identity(4)
+                        if frame.hanim:
+                            obj.matrix_basis = mathutils.Matrix.Identity(4)
+                        else:
+                            # Keep the child frame's placement in armature
+                            # space. Armature deformation then rotates it
+                            # around the pivot without moving it at rest.
+                            obj.matrix_basis = (
+                                arm_obj.data.bones[target_bone].matrix_local @ relative)
 
                         vg = obj.vertex_groups.get(target_bone)
                         if vg is None:

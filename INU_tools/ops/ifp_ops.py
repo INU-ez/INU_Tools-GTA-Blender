@@ -31,6 +31,8 @@ class GTATOOLS_OT_import_ifp(bpy.types.Operator):
         from .ifp_import import import_ifp
         try:
             actions = import_ifp(filepath=self.filepath, context=context)
+            if actions:
+                context.scene.inu_settings.gtatools_ifp_action = actions[0].name
             self.report({'INFO'}, f"IFP: {len(actions)} animations imported")
             return {'FINISHED'}
         except Exception as e:
@@ -466,8 +468,9 @@ class GTATOOLS_OT_apply_ifp(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
+        from .animobj_ops import _find_animobj_empty_root
         obj = context.active_object
-        return (obj and obj.type == 'ARMATURE' and
+        return (obj and (obj.type == 'ARMATURE' or _find_animobj_empty_root(obj) is not None) and
                 context.scene.inu_settings.gtatools_ifp_action != '')
 
     def execute(self, context):
@@ -475,7 +478,9 @@ class GTATOOLS_OT_apply_ifp(bpy.types.Operator):
         name = context.scene.inu_settings.gtatools_ifp_action
         armature = context.active_object
 
-        if not armature or armature.type != 'ARMATURE':
+        from .animobj_ops import _find_animobj_empty_root
+        if not armature or (armature.type != 'ARMATURE'
+                            and _find_animobj_empty_root(armature) is None):
             self.report({'ERROR'}, T("Выделите скелет (Armature)"))
             return {'CANCELLED'}
 

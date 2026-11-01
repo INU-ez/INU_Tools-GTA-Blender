@@ -100,12 +100,93 @@ def import_ifp(filepath: str, context=None):
     return created
 
 
+def _apply_ifp_to_empty_rig(action_name, root, context=None):
+    """Apply named IFP tracks directly to the preserved Empty frames."""
+    from .animobj_ops import _collect_empty_rig_descendants, _animobj_frame_name
+    action = bpy.data.actions.get(action_name)
+    if action is None or not action.get('ifp_source'):
+        return False, T("Не найдена импортированная анимация IFP: {0}").format(action_name)
+    path = action['ifp_source']
+    pack = _ifp_cache.get(path)
+    if pack is None:
+        pack = read_ifp(path)
+        _ifp_cache[path] = pack
+    index = action.get('ifp_anim_index', -1)
+    if not 0 <= index < len(pack.animations):
+        return False, T("Анимация «{0}» не найдена в IFP").format(action_name)
+    anim = pack.animations[index]
+    frames = {_animobj_frame_name(obj).lower(): obj
+              for obj in _collect_empty_rig_descendants(root)}
+    # Rigs imported by previous builds have the DFF transform cache but
+    # no canonical-name marker. Recover an unambiguous Blender suffix
+    # within this rig, never by searching unrelated scene objects.
+    import re
+    for track in anim.bones:
+        if track.name.lower() in frames:
+            continue
+        matches = [obj for obj in frames.values()
+                   if not obj.get('inu_animobj_frame_name')
+                   and 'dff_frame_rot' in obj
+                   and re.fullmatch(re.escape(track.name) + r'\.\d{3,}', obj.name, re.IGNORECASE)]
+        if len(matches) == 1:
+            frames[track.name.lower()] = matches[0]
+    missing = [track.name for track in anim.bones if track.name.lower() not in frames]
+    if missing:
+        return False, T("Не найдены фреймы IFP: {0}").format(', '.join(missing))
+    # Per-frame Actions live on the pivots; retain the source clip used
+    # by the picker as well so it remains applicable after saving .blend.
+    action.use_fake_user = True
+    keyed_frames = []
+    for track in anim.bones:
+        if not track.keyframes:
+            continue
+        obj = frames[track.name.lower()]
+        if not obj.get('inu_animobj_frame_name') and obj.name.lower() != track.name.lower():
+            obj['inu_animobj_frame_name'] = track.name
+            obj['inu_animobj_import_name'] = obj.name
+        obj.inu_animobj_empty_props.auto_mode = False
+        obj.rotation_mode = 'QUATERNION'
+        clip = bpy.data.actions.new(name=anim.name)
+        clip['ifp_source'] = path
+        clip['ifp_package'] = pack.name
+        clip['ifp_anim_index'] = index
+        curves = _create_action_fcurves(clip, obj)
+        channels = []
+        if track.key_type & HAS_ROT:
+            channels += [('rotation_quaternion', axis, component)
+                         for axis, component in enumerate((3, 0, 1, 2))]
+        if track.key_type & HAS_TRANS:
+            channels += [('location', axis, axis) for axis in range(3)]
+        for data_path, axis, component in channels:
+            fc = curves.new(data_path, index=axis)
+            for key in track.keyframes:
+                frame = round(key.time * 30.)
+                values = key.rotation if data_path == 'rotation_quaternion' else key.translation
+                point = fc.keyframe_points.insert(frame, values[component], options={'FAST'})
+                point.interpolation = 'LINEAR'
+                keyed_frames.append(frame)
+            fc.update()
+        obj.animation_data_create().action = clip
+        if _USE_LAYERED and clip.slots:
+            obj.animation_data.action_slot = clip.slots[0]
+    if keyed_frames:
+        scene = (context or bpy.context).scene
+        scene.frame_start = min(keyed_frames)
+        scene.frame_end = max(keyed_frames)
+        scene.frame_set(min(keyed_frames))
+    return True, T("Применена анимация «{0}»: треков {1}").format(anim.name, len(anim.bones))
+
+
 def apply_ifp_action(action_name: str, armature, context=None):
     """Apply a cached IFP animation to an armature.
 
     Only works on ARMATURE objects. Finds the animation data from cache
     and creates fcurves on the action.
     """
+    from .animobj_ops import _find_animobj_empty_root
+    root = _find_animobj_empty_root(armature)
+    if root is not None:
+        return _apply_ifp_to_empty_rig(action_name, root, context)
     if not armature or armature.type != 'ARMATURE':
         return False, "Select an armature"
 

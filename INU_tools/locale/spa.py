@@ -6177,4 +6177,9 @@ LANG = {
     'Не найдена UV-карта Low': 'No se encontró el mapa UV de Low',
     'Топология Low и клетки проекции различается': 'La topología de Low y de la jaula de proyección es diferente',
     'На пути луча запекания больше 128 прозрачных поверхностей': 'Más de 128 superficies transparentes en la trayectoria de un rayo de horneado',
+    'Не найдена импортированная анимация IFP: {0}': 'No se encontró la animación IFP importada: {0}',
+    'Анимация «{0}» не найдена в IFP': "No se encontró la animación '{0}' en el IFP",
+    'Не найдены фреймы IFP: {0}': 'No se encontraron los nodos IFP: {0}',
+    'Применена анимация «{0}»: треков {1}': "Animación '{0}' aplicada: {1} pistas",
+    'Выбрать папку': 'Elegir carpeta',
 }
