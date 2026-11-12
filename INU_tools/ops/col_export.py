@@ -548,6 +548,8 @@ def _collect_empty(obj, model: ColModel, anchor=None):
     Any other display type (`ARROWS`, `PLAIN_AXES`, …) is treated as
     sphere for backward compat with files imported by older versions
     that only knew about sphere empties."""
+    if getattr(getattr(obj, 'inu', None), 'type', '') in ('2DFX', 'NON'):
+        return
     if obj.empty_display_type == 'CUBE':
         _collect_box(obj, model, anchor)
     else:

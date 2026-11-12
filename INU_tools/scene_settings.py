@@ -381,6 +381,11 @@ def _update_particle_sim(self, context):
         particle_sim.stop_simulation()
 
 
+def _update_fx_preview_hidden(self, context):
+    from .ops.fx_preview import set_preview_visibility
+    set_preview_visibility(context.scene)
+
+
 def _update_uv_grid(self, context):
     for area in context.screen.areas:
         if area.type == 'IMAGE_EDITOR':
@@ -1298,6 +1303,13 @@ class INUSceneSettings(bpy.types.PropertyGroup):
     gtatools_pfx_exp_physics: BoolProperty(default=False)
     gtatools_pfx_exp_system: BoolProperty(default=False)
     gtatools_pfx_exp_curves: BoolProperty(default=False)
+
+    gtatools_fx_preview_hidden: BoolProperty(
+        name=T("Только пустышки"),
+        description=T("Скрыть превью всех 2DFX: короны, свет и частицы; оставить пустышки"),
+        default=False,
+        update=_update_fx_preview_hidden,
+    )
 
     gtatools_particle_sim: BoolProperty(
         name="Particle Simulation",

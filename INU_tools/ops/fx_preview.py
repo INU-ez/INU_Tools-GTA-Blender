@@ -167,6 +167,9 @@ def _lock_child(obj, lock_rotation=True):
     # подстроке имени родителя (после переименования Empty подстрока не
     # совпадает → таймер строил ДУБЛЬ рига, а старый становился сиротой).
     obj["inu_2dfx_preview"] = 1
+    # A deleted Blender parent leaves its children in the scene. Keep an
+    # ownership marker so the timer can remove only our generated previews.
+    obj["inu_2dfx_owned_preview"] = 1
 
     # Non-selectable in viewport
     obj.hide_select = True
@@ -175,6 +178,32 @@ def _lock_child(obj, lock_rotation=True):
     obj.lock_location = (True, True, True)
     obj.lock_rotation = (lock_rotation, lock_rotation, lock_rotation)
     obj.lock_scale = (True, True, True)
+    apply_preview_visibility(obj)
+
+
+def apply_preview_visibility(child, scene=None):
+    """Hide generated viewport helpers without changing render/export state."""
+    scene = scene or bpy.context.scene
+    hidden = bool(getattr(scene.inu_settings, 'gtatools_fx_preview_hidden', False))
+    key = 'inu_2dfx_preview_hidden_before'
+    if hidden:
+        if key not in child:
+            child[key] = child.hide_viewport
+        child.hide_viewport = True
+    elif key in child:
+        child.hide_viewport = bool(child[key])
+        del child[key]
+
+
+def set_preview_visibility(scene=None):
+    scene = scene or bpy.context.scene
+    for child in scene.objects:
+        parent = child.parent
+        if (parent is not None and getattr(parent, 'inu', None)
+                and parent.inu.type == '2DFX'
+                and (_is_preview_child(child, parent)
+                     or child.get('inu_2dfx_owned_preview'))):
+            apply_preview_visibility(child, scene)
 
 
 def _create_corona_material(tex_name: str, color_rgb, edge_power=2.0, emission_strength=0.7, unique_key: str = "") -> bpy.types.Material:
@@ -193,8 +222,9 @@ def _create_corona_material(tex_name: str, color_rgb, edge_power=2.0, emission_s
     mat_name = f"2dfx_corona_{tex_name}_{unique_key}" if unique_key else f"2dfx_corona_{tex_name}"
 
     # Recreate this object's own material to apply current params.
-    if mat_name in bpy.data.materials:
-        bpy.data.materials.remove(bpy.data.materials[mat_name])
+    old_mat = bpy.data.materials.get(mat_name)
+    if old_mat is not None and old_mat.users == 0:
+        bpy.data.materials.remove(old_mat)
 
     mat = bpy.data.materials.new(mat_name)
     mat.use_nodes = True
@@ -328,6 +358,9 @@ def create_light_preview(parent_obj):
     - A Point Light (color, range)
     - A billboard plane with corona texture (vertical, facing Y)
     """
+    # RNA property updates can build a preview before DFF import finishes.
+    # Repeated creation must replace that rig, not leave untextured duplicates.
+    remove_preview_children(parent_obj)
     # Явная сборка снимает подавление авто-таймера (см. rebuild_missing_previews).
     parent_obj.pop("inu_2dfx_no_preview", None)
     inu = getattr(parent_obj, 'inu', None)
@@ -525,8 +558,9 @@ def _create_particle_material(effect_name: str, color_rgb, tex_name, unique_key:
         from the other's billboard).
     """
     mat_name = f"2dfx_particle_{effect_name}_{unique_key}" if unique_key else f"2dfx_particle_{effect_name}"
-    if mat_name in bpy.data.materials:
-        bpy.data.materials.remove(bpy.data.materials[mat_name], do_unlink=True)
+    old_mat = bpy.data.materials.get(mat_name)
+    if old_mat is not None and old_mat.users == 0:
+        bpy.data.materials.remove(old_mat)
 
     mat = bpy.data.materials.new(mat_name)
     mat.use_nodes = True
@@ -641,6 +675,10 @@ def create_particle_preview(parent_obj):
 
     tint, scale, tex_name = _particle_appearance_from_obj(parent_obj)
 
+    # Lazy FXP migration above triggers RNA updates which can build a nested
+    # preview. Replace it only after migration finishes, leaving one rig.
+    remove_preview_children(parent_obj)
+
     collection = parent_obj.users_collection[0] if parent_obj.users_collection else bpy.context.collection
 
     billboard_name = f"{parent_obj.name}_particle"
@@ -726,6 +764,30 @@ def remove_preview_children(parent_obj):
         # datablock leaks every time the preview is rebuilt on edit.
         if curve_data and curve_data.users == 0:
             bpy.data.curves.remove(curve_data)
+
+
+def remove_orphan_previews():
+    """Remove generated children whose effect was deleted with ordinary Delete."""
+    removed = 0
+    for child in list(bpy.data.objects):
+        if not (child.get('inu_2dfx_preview') or
+                child.get('inu_2dfx_owned_preview')):
+            continue
+        parent = child.parent
+        inu = getattr(parent, 'inu', None) if parent is not None else None
+        if inu is not None and inu.type == '2DFX':
+            continue
+        unregister_billboard(child.name)
+        data = child.data
+        kind = child.type
+        bpy.data.objects.remove(child, do_unlink=True)
+        if data is not None and data.users == 0:
+            store = {'MESH': bpy.data.meshes, 'LIGHT': bpy.data.lights,
+                     'FONT': bpy.data.curves}.get(kind)
+            if store is not None:
+                store.remove(data)
+        removed += 1
+    return removed
 
 
 def update_light_preview(parent_obj):
@@ -1218,6 +1280,8 @@ def _apply_show_mode_visibility(corona_obj, parent_obj):
       4 - NO_RAIN: hidden in rain (preview: normal, steady)
       5 - FLASH_5: fast strobe flashing
     """
+    if 'inu_2dfx_preview_hidden_before' in corona_obj:
+        return  # the scene's Empty-only toggle takes precedence over flashing
     mode = _get_show_mode(parent_obj)
     t = time.time()
     key = parent_obj.name
@@ -1494,6 +1558,27 @@ def _has_preview_children(obj):
     return any(_is_preview_child(c, obj) for c in obj.children)
 
 
+def sync_preview_collections(obj):
+    """Generated previews follow the effect when it moves between collections.
+
+    Parenting alone does not change collection membership in Blender. Leaving
+    previews behind also keeps ghost parent rows in the old Outliner collection
+    and bypasses hiding/excluding the effect's new collection.
+    """
+    collections = set(obj.users_collection)
+    if not collections:
+        return
+    for child in obj.children:
+        if not (_is_preview_child(child, obj) or
+                child.get('inu_2dfx_owned_preview')):
+            continue
+        previous = set(child.users_collection)
+        for collection in collections - previous:
+            collection.objects.link(child)
+        for collection in previous - collections:
+            collection.objects.unlink(child)
+
+
 def rebuild_missing_previews():
     """Rebuild the preview for every 2DFX Empty that lost it. Returns the
     count rebuilt. Only LIGHT / PARTICLE effects have a preview rig; other
@@ -1502,12 +1587,11 @@ def rebuild_missing_previews():
     gtatools.remove_2dfx_preview), НЕ пересобираются — иначе удаление
     было бы невозможно (таймер воскрешал бы риг за один тик)."""
     rebuilt = 0
-    for obj in bpy.data.objects:
-        if obj.type != 'EMPTY':
-            continue
+    for obj in [obj for obj in bpy.data.objects if obj.type == 'EMPTY']:
         inu = getattr(obj, 'inu', None)
         if not inu or getattr(inu, 'type', '') != '2DFX':
             continue
+        sync_preview_collections(obj)
         eff = getattr(inu, 'effect_2dfx', '')
         if eff not in ('LIGHT', 'PARTICLE', 'ESCALATOR', 'ROAD_SIGN', 'ENTER_EXIT'):
             continue
@@ -1534,6 +1618,10 @@ def rebuild_missing_previews():
 
 def _preview_autobuild_tick():
     try:
+        wm = bpy.context.window_manager
+        if wm is not None and wm.is_interface_locked:
+            return _PREVIEW_AUTOBUILD_INTERVAL
+        remove_orphan_previews()
         rebuild_missing_previews()
     except Exception as e:
         print(f"[2DFX] preview autobuild tick: {e}")

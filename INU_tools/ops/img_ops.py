@@ -1474,6 +1474,8 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
                             new_obj.inu.lod_object = None
                         target_collection.objects.link(new_obj)
                         new_objects.append(new_obj)
+                    from ..tools.model_utils import remap_copied_parents
+                    remap_copied_parents(src_list, new_objects)
                     if _scene_src is not None:
                         reused_count += 1
                         imported_models[model_name] = new_objects
@@ -1595,7 +1597,7 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
                     # Встроенная коллизия DFF (тег COL/SHA) — без _DFF: маркер
                     # перебил бы тег, и экспорт записал бы её как геометрию.
                     if obj.type == 'MESH' and getattr(getattr(obj, 'inu', None),
-                                                      'type', 'OBJ') not in ('COL', 'SHA'):
+                                                      'type', 'OBJ') not in ('COL', 'SHA', 'NON'):
                         base = obj.name
                         if '.dff' in base.lower():
                             base = base.split('.dff')[0]
@@ -1631,6 +1633,8 @@ class GTATOOLS_OT_import_from_img(bpy.types.Operator):
                                 obj.name = _pfx_dff + base
 
                 for obj in new_objects:
+                    if getattr(getattr(obj, 'inu', None), 'type', '') == 'NON':
+                        continue  # preview children inherit their effect's transform
                     if obj.type == 'MESH':
                         obj.location = pos
                         obj.rotation_mode = 'QUATERNION'

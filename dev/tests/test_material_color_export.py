@@ -181,3 +181,24 @@ def test_linked_base_color_swatch_still_wins():
     bc = mat.principled.inputs['Base Color']
     bc.is_linked = True
     assert read_base_color(mat) == RGBA(255, 0, 0, 255)
+
+
+def test_imported_textured_vehicle_markers_and_decal_tints_survive():
+    for rgb in ((60, 255, 0), (255, 0, 175), (0, 255, 255),
+                (255, 0, 255), (255, 175, 0), (0, 255, 200),
+                (185, 255, 0), (255, 60, 0), (30, 45, 60)):
+        for legacy in (False, True):
+            mat = _Mat(dff=(*rgb, 255))
+            mat['dff_texture_name'] = 'vehiclegrunge256'
+            if legacy:
+                mat._props.pop('inu_dff_color')
+            mat.principled.inputs['Base Color'].is_linked = True
+            assert read_base_color(mat) == RGBA(*rgb, 255)
+
+
+def test_unimported_linked_socket_residue_still_exports_white():
+    mat = _Mat()
+    mat._props.clear()
+    mat.diffuse_color = [0.8, 0.8, 0.8, 1.0]
+    mat.principled.inputs['Base Color'].is_linked = True
+    assert read_base_color(mat) == RGBA(255, 255, 255, 255)

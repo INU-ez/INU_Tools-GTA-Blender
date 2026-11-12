@@ -915,6 +915,8 @@ When you import a single region (Map Region ≠ ALL), the old folder rule only l
 
 ### GTA Material Presets
 
+DFF export preserves imported vehicle paint/light colour markers and decal tints even when Base Color is linked to a texture. Enabled Reflection Material settings (scale, offset and intensity) are written to DFF and restored on reimport.
+
 **Panel:** View3D → Sidebar (N) → GTA Tools → **GTA Material** → **EFFECTS** tab → **Quick presets**
 
 Four one-click buttons write a full GTA effect setup onto the active material in a single click — no dropdown, no save dialog. The button labels appear in the UI in Russian:
@@ -1300,6 +1302,10 @@ Shows per-vertex transparency in the viewport, independent of the RGB prelight p
 
 Create and configure 2DFX effects that export into DFF files.
 
+**Empties only** at the top of the Effects panel hides generated 2DFX previews (coronas, lights and particle meshes) throughout the scene while keeping the editable Empty markers visible. Click again to restore visibility. Hidden particle simulation is paused; render flags and exported effect settings are unchanged.
+
+On DFF import (including drag-and-drop), effects are parented to their mesh and placed in the model's collection. Companion RW light frames, including `Omni01d` / `Omni02d` and unnamed linked light frames, do not create duplicate editable markers. Copied map instances retain their own effect hierarchy. Ordinary deletion of an effect also clears its generated preview on the next preview timer tick.
+
 **Effect types:**
 - **Light** — street lights, neons, coronas
 - **Particle** — smoke, fire
@@ -1307,6 +1313,10 @@ Create and configure 2DFX effects that export into DFF files.
 - **Sun Glare** — sun reflection on surfaces
 
 ### Light Properties
+
+2DFX markers are excluded from collision export, regardless of their Empty display shape. Existing embedded COL primitives in older DFF files are still imported as collision data; coincident effects and spheres are not automatically deleted. This version has no automatic repair option for previously exported files.
+
+Uniform scaling of a Light effect Empty is included in its exported corona and shadow sizes, so those sizes survive DFF reimport. The model's own scale is preserved separately in its frame. DFF stores each size as a single radius; for nonuniform effect scaling, the largest axis is used rather than preserving an ellipsoid.
 
 | Property | Options |
 |----------|---------|

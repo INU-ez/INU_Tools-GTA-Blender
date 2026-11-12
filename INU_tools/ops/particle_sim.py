@@ -107,6 +107,9 @@ def _get_or_create_sim_mesh(empty):
     if hasattr(obj, 'inu'):
         obj.inu.type = 'NON'
     obj.hide_select = True
+    obj['inu_2dfx_owned_preview'] = 1
+    from .fx_preview import apply_preview_visibility
+    apply_preview_visibility(obj)
     obj.lock_location = (True, True, True)
     obj.lock_rotation = (True, True, True)
     obj.lock_scale = (True, True, True)
@@ -435,13 +438,19 @@ def _tick():
             _sim_timer_running = False
             return None  # unregister
 
+        wm = bpy.context.window_manager
+        if wm is not None and wm.is_interface_locked:
+            return TICK_INTERVAL
+        if getattr(scene.inu_settings, 'gtatools_fx_preview_hidden', False):
+            return TICK_INTERVAL
+
         dt = TICK_INTERVAL
         right, up = _current_view_basis()
 
         active_names = set()
-        for obj in bpy.data.objects:
-            if obj.type != 'EMPTY':
-                continue
+        # Creating the pool changes bpy.data.objects: never mutate the
+        # collection being iterated (including the first tick with 5 emitters).
+        for obj in [obj for obj in scene.objects if obj.type == 'EMPTY']:
             inu = getattr(obj, 'inu', None)
             if inu is None or inu.type != '2DFX' or inu.effect_2dfx != 'PARTICLE':
                 continue
@@ -489,7 +498,7 @@ def _tick():
 def start_simulation():
     """Register the tick timer if not already running."""
     global _sim_timer_running
-    if _sim_timer_running:
+    if _sim_timer_running and bpy.app.timers.is_registered(_tick):
         return
     if bpy.app.timers.is_registered(_tick):
         bpy.app.timers.unregister(_tick)
@@ -511,9 +520,7 @@ def stop_simulation(clear_meshes: bool = True):
     _emit_accum.clear()
 
     if clear_meshes:
-        for obj in bpy.data.objects:
-            if obj.type != 'EMPTY':
-                continue
+        for obj in [obj for obj in bpy.data.objects if obj.type == 'EMPTY']:
             inu = getattr(obj, 'inu', None)
             if inu is None or inu.type != '2DFX' or inu.effect_2dfx != 'PARTICLE':
                 continue

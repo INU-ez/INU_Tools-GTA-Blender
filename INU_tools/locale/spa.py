@@ -3,6 +3,8 @@
 # Values are Spanish translations.
 
 LANG = {
+    "Только пустышки": "Solo vacíos",
+    "Скрыть превью всех 2DFX: короны, свет и частицы; оставить пустышки": "Ocultar todas las vistas previas 2DFX: coronas, luces y partículas; mantener los vacíos",
     "Sync импорт": "Importar sync",
     "Импортировать 2DFX": "Importar 2DFX",
     "Импорт:": "Importar:",

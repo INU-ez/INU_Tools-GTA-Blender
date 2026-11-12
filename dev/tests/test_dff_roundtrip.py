@@ -21,6 +21,7 @@ from core.dff import (  # noqa: E402
     DffFrame,
     DffGeometry,
     DffAtomic,
+    DffLight,
     DffMaterial,
     DffTexture,
     Triangle,
@@ -93,6 +94,15 @@ def _wrap(geom, frame_name="root"):
 
 
 # ── Basic geometry shapes ────────────────────────────────────────
+
+def test_rw_light_frame_link_roundtrip_without_frame_name():
+    clump = _wrap(_basic_geom())
+    clump.frames.append(DffFrame(parent=0))
+    clump.lights = [DffLight(frame_index=1, radius=25.0,
+        color=(0.25, 0.5, 0.75), direction=0.125, flags=1, light_type=128)]
+    parsed = read_dff(write_dff(clump))
+    assert parsed.lights == clump.lights
+
 
 def test_geometry_with_uv_layer():
     geom = _basic_geom(with_uv=True)
@@ -196,16 +206,16 @@ def test_material_with_specular():
     assert mat.specular.name == "vehiclespecdot64"
 
 
-def test_material_reflection_not_written():
-    # W7: Reflection Material (0x0253F2FC) — остаток 3ds Max-экспортёра, ваниль
-    # SA его не пишет и движку он не нужен. Экспортёр его НЕ сериализует, чтобы
-    # DFF совпадал с ванильным → после round-trip reflection отсутствует.
+def test_material_reflection_roundtrip():
     geom = _basic_geom(with_uv=True)
     geom.materials[0].reflection = ReflectionMaterial(
         scale_x=2.0, scale_y=1.0, offset_x=0.1, offset_y=0.2, intensity=0.05)
     parsed = read_dff(write_dff(_wrap(geom)))
     mat = parsed.geometries[0].materials[0]
-    assert mat.reflection is None
+    assert mat.reflection is not None
+    for field in ('scale_x', 'scale_y', 'offset_x', 'offset_y', 'intensity'):
+        assert abs(getattr(mat.reflection, field) -
+                   getattr(geom.materials[0].reflection, field)) < 1e-6
 
 
 def test_material_with_dual_texture():

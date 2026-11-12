@@ -3,6 +3,8 @@
 # Values are English translations.
 
 LANG = {
+    "Только пустышки": "Empties only",
+    "Скрыть превью всех 2DFX: короны, свет и частицы; оставить пустышки": "Hide all 2DFX previews: coronas, lights and particles; keep the Empties",
     "Sync импорт": "Sync import",
     "Импортировать 2DFX": "Import 2DFX",
     "Импорт:": "Import:",

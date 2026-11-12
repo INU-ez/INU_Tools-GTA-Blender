@@ -2731,6 +2731,11 @@ class GTATOOLS_PT_2dfx_panel(bpy.types.Panel):
             layout.prop(_ov, "show_relationship_lines",
                         text=T("Связи (пунктир)"))
 
+        _helpers_hidden = context.scene.inu_settings.gtatools_fx_preview_hidden
+        layout.prop(context.scene.inu_settings, "gtatools_fx_preview_hidden",
+                    text=T("Только пустышки"), toggle=True,
+                    **inu_icon(safe_icon('HIDE_ON' if _helpers_hidden else 'HIDE_OFF')))
+
         # Источник текстур эффектов: явный .txd, либо particle.txd/gta3.img из
         # Game Root (resolve_fx_txd_display). «Не выбран» — если нет ни того,
         # ни другого. Справа — папка выбора .txd (gtatools.pick_fx_txd).

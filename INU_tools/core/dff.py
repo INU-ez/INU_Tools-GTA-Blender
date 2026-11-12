@@ -571,11 +571,11 @@ class DffMaterial:
             spec_data += spec_name + b'\x00' * (24 - len(spec_name))
             ext_data += _chunk(CHUNK_SPECULAR_MAT, spec_data, lib_id)
 
-        # W7: Reflection Material (CHUNK 0x0253F2FC) — остаток 3ds Max-экспортёра.
-        # Ваниль SA его НЕ пишет, движку он не нужен: env-map машин идёт через
-        # MatFX (_matfx_bytes выше). Поэтому не сериализуем — так DFF совпадает
-        # с ванильным. Данные (self.reflection) сохраняются в объекте на случай
-        # анализа, но в файл не попадают.
+        if self.reflection is not None:
+            refl = self.reflection
+            refl_data = pack('<5f4x', refl.scale_x, refl.scale_y,
+                             refl.offset_x, refl.offset_y, refl.intensity)
+            ext_data += _chunk(CHUNK_REFLECTION_MAT, refl_data, lib_id)
 
         if self.user_data and self.user_data.sections:
             ext_data += self.user_data.to_bytes(lib_id)
@@ -2945,6 +2945,7 @@ def read_dff(data: bytes) -> DffClump:
         r.skip(cs)
 
     # Read child chunks
+    light_frame_index = None
     while r.pos < clump_end:
         ct, cs, cl = _read_chunk_header(r)
         chunk_end = r.pos + cs
@@ -2999,6 +3000,21 @@ def read_dff(data: bytes) -> DffClump:
                                 clump.geometries[gi].pipeline = r.read_one('<I')
                             r.seek(plugin_end)
             r.seek(atom_end)
+
+        elif ct == CHUNK_STRUCT and cs == 4:
+            # RpLight frame link precedes its Light chunk. Frame names are
+            # optional, so import must retain this link rather than guess Omni.
+            light_frame_index = r.read_one('<I')
+
+        elif ct == CHUNK_LIGHT:
+            lct, lcs, _ = _read_chunk_header(r)
+            if lct == CHUNK_STRUCT and lcs >= 24 and light_frame_index is not None:
+                radius, red, green, blue, direction, flags_type = r.read('<5fI')
+                clump.lights.append(DffLight(
+                    frame_index=light_frame_index, radius=radius,
+                    color=(red, green, blue), direction=direction,
+                    flags=flags_type & 0xFFFF, light_type=flags_type >> 16))
+            light_frame_index = None
 
         elif ct == CHUNK_EXTENSION:
             ext_end = r.pos + cs

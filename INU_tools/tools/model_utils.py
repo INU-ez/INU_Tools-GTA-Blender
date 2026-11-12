@@ -1,13 +1,20 @@
 # INU_tools.tools.model_utils — Model detection utilities and geometry checks
 
 import bpy
-import bmesh
 import re
 
 # Blender appends `.001`, `.002`, … when a name collides on import or
 # duplicate. Strip the suffix before any suffix/prefix-based type
 # detection so `ali_road_sign_1_col.007` is still recognised as COL.
 _BLENDER_DUP_SUFFIX = re.compile(r'\.\d{3}$')
+
+
+def remap_copied_parents(sources, copies):
+    """Keep copied model parts and 2DFX attached to their own instance."""
+    mapping = dict(zip(sources, copies))
+    for source, copy in mapping.items():
+        if source.parent in mapping:
+            copy.parent = mapping[source.parent]
 
 
 def _strip_dup_suffix(name: str) -> str:
@@ -383,6 +390,7 @@ def bmesh_from_object_safe(obj):
     'FastMesh' от стороннего аддона / спец-состояние Blender 5.x), из-за
     чего ``bmesh.from_mesh`` бросает TypeError. Тогда читаем вычисленную
     копию меша через ``to_mesh()``. Вызывающий обязан сделать ``bm.free()``."""
+    import bmesh
     bm = bmesh.new()
     try:
         bm.from_mesh(obj.data)

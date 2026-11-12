@@ -163,6 +163,15 @@ def _read_base_color(mat) -> RGBA:
             if getattr(bc, 'is_linked', False):
                 alpha = (int(alpha_input.default_value * 255)
                          if alpha_input else 255)
+                # Imported material colours are RW data, including vehicle
+                # paint/light markers and decal tints. A linked texture must
+                # not erase them. Only an unauthored socket defaults to white.
+                imported = mat.get('inu_dff_color')
+                if imported is None and mat.get('dff_texture_name') is not None:
+                    imported = getattr(mat, 'diffuse_color', None)
+                if imported is not None:
+                    return RGBA(*(max(0, min(255, int(round(v * 255))))
+                                  for v in imported[:3]), alpha)
                 return RGBA(255, 255, 255, alpha)
 
             c = bc.default_value
@@ -1526,6 +1535,12 @@ def _collect_2dfx(objects) -> Extension2dfx:
         loc = (_lp.x, _lp.y, _lp.z)
 
         if effect_type == 'LIGHT':
+            # The effect Empty itself is not serialized as a model frame.
+            # Bake its scale into the scalar radii, in geometry-local space;
+            # the mesh frame already carries the model's own scale.
+            effect_matrix = (mesh_inv @ obj.matrix_world
+                             if mesh_inv is not None else obj.matrix_world)
+            radius_scale = max(abs(v) for v in effect_matrix.to_scale())
             light = Light2dfx(loc=loc)
             inu = getattr(obj, 'inu', None)
             if inu and hasattr(inu, 'color_2dfx'):
@@ -1540,12 +1555,12 @@ def _collect_2dfx(objects) -> Extension2dfx:
             light.pointlight_range = obj.get('2dfx_pointlight_range', 0.0)
             inu = getattr(obj, 'inu', None)
             if inu:
-                light.corona_size = inu.corona_size_2dfx
-                light.shadow_size = inu.shadow_size_2dfx
+                light.corona_size = inu.corona_size_2dfx * radius_scale
+                light.shadow_size = inu.shadow_size_2dfx * radius_scale
             else:
                 # Legacy fallback for objects without INUObjectProps
-                light.corona_size = obj.get('2dfx_corona_size', 0.0)
-                light.shadow_size = obj.get('2dfx_shadow_size', 0.0)
+                light.corona_size = obj.get('2dfx_corona_size', 0.0) * radius_scale
+                light.shadow_size = obj.get('2dfx_shadow_size', 0.0) * radius_scale
             light.corona_show_mode = int(inu.show_mode_2dfx) if inu else obj.get('2dfx_corona_show_mode', 0)
             light.corona_enable_reflection = obj.get('2dfx_corona_enable_reflection', 0)
             light.corona_flare_type = int(inu.flare_type_2dfx) if inu else obj.get('2dfx_corona_flare_type', 0)
@@ -1649,6 +1664,8 @@ def _is_col_primitive_empty(obj):
     флаги кадра), col-примитивы — нет. Если спутать, дамми колёс выпадут из
     FrameList → движок читает мусорные позиции в GetWheelPosn и краш на спавне.
     """
+    if getattr(getattr(obj, 'inu', None), 'type', '') in ('2DFX', 'NON'):
+        return False
     if getattr(obj, 'empty_display_type', '') not in ('SPHERE', 'CUBE'):
         return False
     # Animated-object pivots are SPHERE empties too, but carry HAnim/rig

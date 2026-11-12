@@ -107,10 +107,10 @@ _GLYPH_SET = (
 
 def _bake_font_atlas(px_size):
     """Render every glyph through blf into a GPUOffScreen; return
-    {'metrics', 'texture', 'offscreen'} or None on failure.
+    {'metrics', 'texture'} or None on failure.
 
-    The offscreen must stay alive — its color texture is what the text
-    shader samples. Cell layout: each glyph gets a (advance_w × row_h)
+    The offscreen is copied to a standalone texture and freed in this
+    draw context. Cell layout: each glyph gets a (advance_w × row_h)
     cell that includes both the ascender and the descender space, so
     the renderer can paste the whole cell at the baseline without
     per-glyph bearing math."""
@@ -189,6 +189,12 @@ def _bake_font_atlas(px_size):
                     baseline_gl = cell_top_gl - ascent
                     blf.position(font_id, p['x'], baseline_gl, 0)
                     blf.draw(font_id, ch)
+            # Copy the atlas out while the GPU context is valid. Keeping a
+            # GPUOffScreen until unregister can access a destroyed context
+            # during Blender shutdown (reported traceback on 4.5 LTS).
+            pixels = fb.read_color(0, 0, atlas_w, atlas_h, 4, 0, 'FLOAT')
+            texture = gpu.types.GPUTexture((atlas_w, atlas_h),
+                                          format='RGBA16F', data=pixels)
     except Exception as e:
         print(f"[INU Floater] atlas bake failed @ {px_size}px: {e}")
         try:
@@ -196,6 +202,7 @@ def _bake_font_atlas(px_size):
         except Exception:
             pass
         return None
+    offscreen.free()
 
     metrics = {
         'px_size': px_size,
@@ -212,8 +219,7 @@ def _bake_font_atlas(px_size):
           f"ascent={ascent} descent={descent}")
     return {
         'metrics': metrics,
-        'texture': offscreen.texture_color,
-        'offscreen': offscreen,
+        'texture': texture,
     }
 
 
@@ -246,12 +252,6 @@ def _text_px_size(size=None):
 
 def _free_font_atlases():
     """Release all baked atlases — call from unregister()."""
-    for a in _FONT_ATLASES.values():
-        if a and a.get('offscreen'):
-            try:
-                a['offscreen'].free()
-            except Exception:
-                pass
     _FONT_ATLASES.clear()
     # Cached glyph batches reference the (now freed) atlas UVs — drop them
     # too so a re-register rebakes cleanly instead of drawing stale glyphs.

@@ -57,8 +57,13 @@ def _is_light_frame_name(nm: str) -> bool:
     frame per 2DFX light to carry the RW light source. These are light
     dummies, not real geometry frames, so map import skips them together
     with the 2DFX extension when «Без 2DFX» is on."""
-    return (bool(nm) and len(nm) > 4
-            and nm[:4].lower() == 'omni' and nm[4:].isdigit())
+    if not nm or nm[:4].lower() != 'omni':
+        return False
+    suffix = nm[4:]
+    # Vanilla SA frames also use Omni01d / Omni02d, not only Omni001.
+    if suffix.lower().endswith('d'):
+        suffix = suffix[:-1]
+    return bool(suffix) and suffix.isascii() and suffix.isdigit()
 
 
 def _store_user_data(target, user_data: UserData):
@@ -1587,6 +1592,7 @@ def import_dff_from_clump(clump, base_name: str, *, skip_2dfx=None,
     weld_targets = []
     editable_targets = []  # authored-normal, non-skinned meshes (vehicles)
     frame_to_obj = {}  # frame_index → Blender object (MESH or EMPTY dummy)
+    geometry_objects = {}  # geometry_index → instances that own its 2DFX
 
     is_skinned = _has_skeleton(clump)
     # A root/pivot Empty rig already has separate mesh frames. Keep that
@@ -1702,6 +1708,7 @@ def import_dff_from_clump(clump, base_name: str, *, skip_2dfx=None,
 
         collection.objects.link(obj)
         imported_objects.append(obj)
+        geometry_objects.setdefault(gi, []).append(obj)
         if not (geom.normals and len(geom.normals) == len(geom.vertices)):
             weld_targets.append(obj)
         elif not geom.skin:
@@ -1722,6 +1729,7 @@ def import_dff_from_clump(clump, base_name: str, *, skip_2dfx=None,
             _set_object_props(obj, geom)
             collection.objects.link(obj)
             imported_objects.append(obj)
+            geometry_objects.setdefault(gi, []).append(obj)
             if not (geom.normals and len(geom.normals) == len(geom.vertices)):
                 weld_targets.append(obj)
             elif not geom.skin:
@@ -1730,6 +1738,12 @@ def import_dff_from_clump(clump, base_name: str, *, skip_2dfx=None,
     # Создаём Empty для каждого фрейма БЕЗ atomic'а (это dummy вроде wheel_lf_dummy)
     # Пропускаем если в DFF есть скелет — там фреймы представлены костями армутуры
     if not is_skinned:
+        light_frames = {light.frame_index for light in clump.lights}
+        has_2dfx_lights = any(
+            isinstance(entry, Light2dfx)
+            for geom in clump.geometries if geom.ext_2dfx
+            for entry in geom.ext_2dfx.entries)
+        parent_frames = {frame.parent for frame in clump.frames}
         for fi, frame in enumerate(clump.frames):
             if fi in frame_to_obj:
                 continue
@@ -1737,6 +1751,13 @@ def import_dff_from_clump(clump, base_name: str, *, skip_2dfx=None,
             # system — drop them when 2DFX import is off, otherwise a map
             # imported «Без 2DFX» is still littered with Omni light dummies.
             if skip_2dfx and _is_light_frame_name(frame.name):
+                continue
+            # RW light leaf frames accompany the 2DFX light already imported
+            # below. They are not a second editable object. Keep structural
+            # frames (parents of model parts), HAnim and unrelated dummies.
+            if (has_2dfx_lights and fi not in parent_frames
+                    and frame.hanim is None
+                    and (fi in light_frames or _is_light_frame_name(frame.name))):
                 continue
             dummy_name = (frame.name
                           if (frame.name and _frame_name_usable(frame.name))
@@ -1939,20 +1960,23 @@ def import_dff_from_clump(clump, base_name: str, *, skip_2dfx=None,
             print(f"[INU_tools] Skeleton import error: {e}")
             traceback.print_exc()
 
-    # Импорт 2DFX эффектов (собираем из всех геометрий) → коллекция "2DFX"
+    # Effects belong to the geometry instance, in the model's collection.
     if not skip_2dfx:
-        fx_col = None
-        for geom in clump.geometries:
+        for gi, geom in enumerate(clump.geometries):
             if geom.ext_2dfx and geom.ext_2dfx.entries:
-                if fx_col is None:
-                    col_name = "2DFX"
-                    if col_name in bpy.data.collections:
-                        fx_col = bpy.data.collections[col_name]
-                    else:
-                        fx_col = bpy.data.collections.new(col_name)
-                        bpy.context.scene.collection.children.link(fx_col)
-                fx_objects = _import_2dfx(geom.ext_2dfx, fx_col, base_name)
-                imported_objects.extend(fx_objects)
+                for owner in geometry_objects.get(gi, [None]):
+                    fx_objects = _import_2dfx(geom.ext_2dfx, collection, base_name)
+                    for effect in fx_objects:
+                        if owner is not None:
+                            effect.parent = owner
+                            effect.matrix_parent_inverse.identity()
+                        # Keep the editable marker visible through its locked
+                        # preview planes, so it can be selected in the viewport.
+                        effect.show_in_front = True
+                        if effect.inu.effect_2dfx == 'LIGHT':
+                            effect.empty_display_type = 'SPHERE'
+                            effect.empty_display_size = 0.3
+                    imported_objects.extend(fx_objects)
 
     # Embedded collision — vehicles and skinned characters store COL
     # primitives (spheres + boxes + meshes) INSIDE the .dff as a

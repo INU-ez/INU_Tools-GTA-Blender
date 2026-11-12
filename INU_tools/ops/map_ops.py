@@ -1121,6 +1121,8 @@ class GTATOOLS_OT_import_map(bpy.types.Operator):
                                         o.inu.lod_object = None
                                     target.objects.link(o)
                                     new_objs.append(o)
+                                from ..tools.model_utils import remap_copied_parents
+                                remap_copied_parents(imported_models[model_name], new_objs)
                         else:
                             fut = parse_futures.pop(model_name, None)
                             if fut is None:

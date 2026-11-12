@@ -6,6 +6,7 @@ Run without Blender: python dev/tests/test_animobj_frames_unit.py
 import ast
 from pathlib import Path
 import unittest
+from types import SimpleNamespace
 
 
 EXPORTER = Path(__file__).resolve().parents[2] / 'INU_tools/ops/dff_export.py'
@@ -40,6 +41,14 @@ class Object:
 
 
 class AnimatedObjectFrameTests(unittest.TestCase):
+    def test_effect_marker_is_never_collision_or_frame(self):
+        for display in ('SPHERE', 'CUBE', 'CIRCLE'):
+            for tag in ('2DFX', 'NON'):
+                obj = Object('effect', display=display)
+                obj.inu = SimpleNamespace(type=tag)
+                self.assertFalse(is_col_primitive(obj))
+                self.assertEqual(collect_frames([obj]), [])
+
     def test_rig_preserves_pivot_and_mesh_parent(self):
         for display in ('SPHERE', 'CUBE'):
             with self.subTest(display=display):
